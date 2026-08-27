@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+.env
+.env.*
+bot-session
+*.log
+.DS_Store

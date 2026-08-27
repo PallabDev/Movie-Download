@@ -15,10 +15,11 @@
         "isolatedModules": true,
         "noUncheckedSideEffectImports": true,
         "moduleDetection": "force",
-        "rootDir": "./src",
+        "rootDir": ".",
         "outDir": "./dist"
     },
     "include": [
-        "src/**/*.ts"
+        "src/**/*.ts",
+        "command/**/*.ts"
     ]
 }
