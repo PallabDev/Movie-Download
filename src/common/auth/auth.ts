@@ -101,7 +101,7 @@ export async function deleteUser(id: number) {
 }
 
 // Middleware helper: extract user from cookie/header
-export function extractUser(req: { headers: { authorization?: string; cookie?: string } }): TokenPayload | null {
+export function extractUser(req: { headers: { authorization?: string; cookie?: string; host?: string } }): TokenPayload | null {
     // Try Authorization header
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith("Bearer ")) {
@@ -110,10 +110,13 @@ export function extractUser(req: { headers: { authorization?: string; cookie?: s
 
     // Try cookie
     const cookie = req.headers.cookie;
+    console.log(`[AUTH] Host: ${req.headers.host}, Cookie header: ${cookie ? cookie.substring(0, 80) + "..." : "NONE"}`);
     if (cookie) {
         const match = cookie.match(/token=([^;]+)/);
         if (match) {
-            return verifyToken(match[1]);
+            const payload = verifyToken(match[1]);
+            console.log(`[AUTH] Token valid: ${!!payload}, role: ${payload?.role}`);
+            return payload;
         }
     }
 

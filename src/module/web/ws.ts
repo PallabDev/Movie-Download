@@ -1,4 +1,4 @@
-import { WebSocket } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import type { Server } from "http";
 
 interface WSClient {
@@ -10,8 +10,6 @@ interface WSClient {
 const clients: Set<WSClient> = new Set();
 
 export function setupWebSocket(server: Server) {
-    // Use express-ws or raw ws
-    const { WebSocketServer } = require("ws");
     const wss = new WebSocketServer({ server, path: "/ws" });
 
     wss.on("connection", (ws: WebSocket) => {

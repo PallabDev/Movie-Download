@@ -23,6 +23,10 @@ services:
     build: .
     container_name: movie-app
     restart: unless-stopped
+    user: "1000:1000"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     ports:
       - "3000:3000"
     env_file:

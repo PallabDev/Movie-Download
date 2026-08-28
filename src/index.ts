@@ -1,4 +1,5 @@
 import client from "./module/bot/bot.js";
+import { setBotConnected, setBotConnecting } from "./module/bot/bot.js";
 import { env } from "./common/utils/env.js";
 import { initHarness } from "../command/harness.js";
 import { createDownloadWorker } from "./module/queue/queue.js";
@@ -94,38 +95,24 @@ try {
 
 // Connect Telegram
 console.log("[INIT] Connecting Telegram client...");
-const isDocker = process.env.DOCKER === "true" || !process.stdin.isTTY;
 
-try {
-    if (isDocker) {
-        // Non-interactive: try to connect with existing session
-        await client.connect();
-        const me = await client.getMe();
-        console.log(`[TELEGRAM] Signed in as ${me.username ?? me.firstName ?? me.id}`);
-    } else {
-        // Interactive: full auth flow
+const hasStdin = process.stdin.isTTY === true;
+
+if (hasStdin) {
+    const ask = async (prompt: string): Promise<string> => {
+        const { createInterface } = await import("node:readline/promises");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await rl.question(prompt);
+        rl.close();
+        return answer;
+    };
+
+    try {
+        setBotConnecting(true);
         await client.start({
-            phoneNumber: async () => {
-                const { createInterface } = await import("node:readline/promises");
-                const rl = createInterface({ input: process.stdin, output: process.stdout });
-                const phone = await rl.question("Phone: ");
-                rl.close();
-                return phone;
-            },
-            phoneCode: async () => {
-                const { createInterface } = await import("node:readline/promises");
-                const rl = createInterface({ input: process.stdin, output: process.stdout });
-                const code = await rl.question("Code from Telegram: ");
-                rl.close();
-                return code;
-            },
-            password: async () => {
-                const { createInterface } = await import("node:readline/promises");
-                const rl = createInterface({ input: process.stdin, output: process.stdout });
-                const pw = await rl.question("2FA password (if set): ");
-                rl.close();
-                return pw;
-            },
+            phoneNumber: () => ask("Phone: "),
+            phoneCode: () => ask("Code from Telegram: "),
+            password: () => ask("2FA password (if set): "),
             onError: async (err: Error) => {
                 harness.logError(`[TELEGRAM] Error: ${err.message}`);
                 console.error("[TELEGRAM] Error:", err);
@@ -133,12 +120,27 @@ try {
             },
         });
         const me = await client.getMe();
+        setBotConnected(true);
+        setBotConnecting(false);
         console.log(`[TELEGRAM] Signed in as ${me.username ?? me.firstName ?? me.id}`);
+    } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[TELEGRAM] Failed:", errMsg);
+        setBotConnecting(false);
+        console.log("[TELEGRAM] Continuing without Telegram...");
     }
-} catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error("[TELEGRAM] Failed:", errMsg);
-    console.log("[TELEGRAM] Continuing without Telegram...");
+} else {
+    console.log("[TELEGRAM] No TTY (Docker) - use web dashboard to authenticate");
+    try {
+        await client.connect();
+        const me = await client.getMe();
+        setBotConnected(true);
+        console.log(`[TELEGRAM] Auto-connected as ${me.username ?? me.firstName ?? me.id}`);
+    } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.log(`[TELEGRAM] Auto-connect failed: ${errMsg}`);
+        console.log("[TELEGRAM] Use web dashboard Reconnect to authenticate");
+    }
 }
 
 console.log("=========================================");
