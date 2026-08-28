@@ -121,12 +121,17 @@ When responding with actions, use this format:
 
         const allMessages = [systemMessage, ...messages];
 
-        const response = await this.client.chat.completions.create({
-            model: this.model,
-            messages: allMessages,
-            temperature: 0.7,
-            max_tokens: 2048,
-        });
+        const response = await Promise.race([
+            this.client.chat.completions.create({
+                model: this.model,
+                messages: allMessages,
+                temperature: 0.7,
+                max_tokens: 2048,
+            }),
+            new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("AI API timeout (60s)")), 60000)
+            ),
+        ]);
 
         return response.choices[0]?.message?.content ?? "";
     }

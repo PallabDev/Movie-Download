@@ -19,9 +19,9 @@ RUN npm prune --production
 
 # Create required directories and set permissions
 RUN mkdir -p download/movies download/shows bot-session && \
+    touch /app/logs.md /app/error.md /app/memory.md /app/movie.md && \
     chmod -R 777 download bot-session && \
-    chown -R 1000:1000 /app/logs.md /app/error.md /app/memory.md /app/movie.md /app/command 2>/dev/null; \
-    chmod 666 /app/logs.md /app/error.md /app/memory.md /app/movie.md 2>/dev/null; \
+    chmod 666 /app/logs.md /app/error.md /app/memory.md /app/movie.md && \
     true
 
 EXPOSE 3000

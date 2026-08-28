@@ -108,7 +108,7 @@ async function downloadFileWithResume(
             try {
                 for await (const chunk of client.iterDownload(msg, {
                     offset: downloadedBytes,
-                    requestSize: 5 * 1024 * 1024,
+                    requestSize: 512 * 1024,
                 })) {
                     await fileHandle.write(chunk, 0, chunk.length, downloadedBytes);
                     downloadedBytes += chunk.length;
@@ -172,7 +172,7 @@ export function createDownloadWorker() {
         try {
             // Step 1: Get the button message from the bot
             console.log(`[WORKER] Fetching button message ${data.btnMsgId} from @${data.bot}`);
-            const messages = await client.getMessages(data.bot, { limit: 10 });
+            const messages = await client.getMessages(data.bot, { limit: 30 });
             let btnMsg: any = null;
             for (const msg of messages) {
                 if (msg.id === data.btnMsgId) {
@@ -190,9 +190,39 @@ export function createDownloadWorker() {
 
             // Step 2: Click the button if buttonText is provided (bulk download)
             if (data.buttonText) {
-                console.log(`[WORKER] Clicking button: "${data.buttonText.substring(0, 50)}"`);
-                await btnMsg.click({ text: data.buttonText });
-                await sleep(2000);
+                let clickText: string = data.buttonText;
+                if (!clickText.includes("[")) {
+                    const btns = await btnMsg.getButtons();
+                    let found: string | null = null;
+                    for (const row of btns as any) {
+                        for (const b of row) {
+                            const t = b.text || "";
+                            if (t.includes(clickText) || clickText.includes(t.substring(0, 10))) { found = t; break; }
+                        }
+                        if (found) break;
+                    }
+                    if (found) {
+                        console.log(`[WORKER] Resolved "${clickText}" -> "${found.substring(0, 60)}"`);
+                        clickText = found;
+                    }
+                }
+                console.log(`[WORKER] Clicking button: "${clickText.substring(0, 80)}"`);
+                try {
+                    await btnMsg.click({ text: clickText });
+                } catch (e: any) {
+                    console.log(`[WORKER] Click exact failed, trying contains: ${e.message}`);
+                    const btns2 = await btnMsg.getButtons();
+                    for (const row of btns2 as any) {
+                        for (const b of row) {
+                            const t = b.text || "";
+                            if (t.includes(data.buttonText) || data.buttonText.includes(t.slice(0,8))) {
+                                await btnMsg.click({ text: t });
+                                break;
+                            }
+                        }
+                    }
+                }
+                await sleep(2500);
             }
 
             // Step 3: Wait for the file
@@ -200,9 +230,10 @@ export function createDownloadWorker() {
             await updateDB(data.requestId, { status: "downloading" });
 
             let fileReceived = false;
+            const expectedEp = data.title.match(/S(\d+)E(\d+)/i);
             for (let attempt = 0; attempt < 30; attempt++) {
                 await sleep(3000);
-                const recent = await client.getMessages(data.bot, { limit: 5 });
+                const recent = await client.getMessages(data.bot, { limit: 15 });
 
                 for (const msg of recent) {
                     if (msg.id <= data.btnMsgId) continue;
@@ -219,13 +250,28 @@ export function createDownloadWorker() {
                             if (fnameAttr?.fileName) fileName = fnameAttr.fileName;
                         }
 
+                        if (data.type === "series" && expectedEp) {
+                            const epTag = `S${expectedEp[1].padStart(2,"0")}E${expectedEp[2].padStart(2,"0")}`.toLowerCase();
+                            if (!fileName.toLowerCase().includes(epTag.toLowerCase()) && !fileName.toLowerCase().includes(`s${expectedEp[1]}e${expectedEp[2]}`)) {
+                                const msgText = (msg.message || "").toLowerCase();
+                                if (!msgText.includes(epTag.toLowerCase())) continue;
+                            }
+                        }
+
                         console.log(`[TG] File: "${fileName}" (${(totalSize / (1024 * 1024)).toFixed(0)} MB)`);
 
                         let downloadPath: string;
                         if (data.type === "movie") {
                             downloadPath = getMoviePath(data.title, data.year || "unknown");
                         } else {
-                            downloadPath = getSeriesPath(data.title, 1, 1);
+                            const m = data.title.match(/^(.*?)\s*S(\d+)E(\d+)/i);
+                            if (m) {
+                                const baseTitle = m[1].trim();
+                                const s = parseInt(m[2]); const e = parseInt(m[3]);
+                                downloadPath = getSeriesPath(baseTitle, s, e);
+                            } else {
+                                downloadPath = getSeriesPath(data.title, 1, 1);
+                            }
                         }
 
                         const success = await downloadFileWithResume(

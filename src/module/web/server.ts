@@ -118,15 +118,12 @@ app.post("/api/bot/reconnect", requireAdmin, async (_req, res) => {
     if (isBotConnecting()) return res.status(400).json({ error: "Already connecting" });
     if (isBotConnected()) return res.json({ success: true, message: "Already connected" });
 
-    const result = await startWebAuth();
-    if (result.ok && result.step === "done") {
-        return res.json({ success: true, message: "Connected" });
-    }
-    if (result.error) {
-        return res.status(500).json({ error: result.error });
-    }
-    // Return the current auth step so the UI knows what to show
-    return res.json({ success: false, step: getAuthState().step });
+    // Fire-and-forget — startWebAuth blocks until auth completes
+    startWebAuth().catch(() => {});
+    // Wait briefly for state to change
+    await new Promise(r => setTimeout(r, 1500));
+    const state = getAuthState();
+    return res.json({ success: false, step: state.step });
 });
 
 app.post("/api/bot/auth/phone", requireAdmin, async (req, res) => {
@@ -536,19 +533,35 @@ app.get("/api/queue", requireAuth, (_req, res) => {
 
 app.post("/api/chat", requireAdmin, async (req: any, res) => {
     try {
-        const { message, history } = req.body;
+        const { message, history, sessionId } = req.body;
         if (!message) return res.status(400).json({ error: "Message required" });
 
-        console.log(`[CHAT] User: ${message}`);
-        const result = await handleChat(message, history || []);
+        // Use provided sessionId or generate one per user
+        const sid = sessionId || `chat_${req.user.userId}_${Date.now()}`;
+
+        console.log(`[CHAT] User: ${message} (session: ${sid})`);
+        const result = await handleChat(message, history || [], sid);
         console.log(`[CHAT] Reply: ${result.reply.substring(0, 100)}`);
 
-        res.json(result);
+        res.json({ ...result, sessionId: sid });
     } catch (err: any) {
         console.error(`[CHAT] Error:`, err.message);
         res.status(500).json({ error: err.message });
     }
 });
+
+// ─── INNGEST SERVE ───
+
+import { serve } from "inngest/express";
+import { inngest } from "../inngest/client.js";
+import { movieSearchWorkflow, seriesSearchWorkflow, downloadWorkflow } from "../inngest/functions.js";
+
+const inngestApp = serve({
+    client: inngest,
+    functions: [movieSearchWorkflow, seriesSearchWorkflow, downloadWorkflow],
+});
+app.use("/api/inngest", inngestApp);
+console.log("[INNGEST] Serve handler mounted at /api/inngest");
 
 // ─── PAGES ───
 
@@ -696,6 +709,7 @@ function getDashboardPage(user: any): string {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Movie Downloader</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:'Segoe UI',system-ui,sans-serif;background:#111118;color:#d4d4d8;height:100vh;display:flex;flex-direction:column}
@@ -709,21 +723,6 @@ function getDashboardPage(user: any): string {
         .topbar a{color:#f87171;text-decoration:none;font-size:11px;transition:color .2s}
         .topbar a:hover{color:#ef4444}
 
-        /* Auth Modal */
-        #authModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
-        .auth-box{background:#1e1e26;border:1px solid #2a2a35;border-radius:12px;padding:28px;width:90%;max-width:380px}
-        .auth-box h3{color:#e4e4e7;margin-bottom:4px;font-size:16px}
-        .auth-box p{font-size:12px;color:#71717a;margin-bottom:16px}
-        .auth-box label{display:block;font-size:10px;color:#71717a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}
-        .auth-box input{width:100%;padding:10px 12px;background:#27272a;border:1px solid #3f3f46;border-radius:8px;color:#e4e4e7;font-size:13px;margin-bottom:12px;transition:border-color .2s}
-        .auth-box input:focus{outline:none;border-color:#60a5fa}
-        .auth-box .btn{width:100%;padding:10px;background:#60a5fa;border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;transition:background .2s}
-        .auth-box .btn:hover{background:#3b82f6}
-        .auth-steps{display:none}
-        .auth-waiting{text-align:center;padding:20px 0}
-        .spinner{display:inline-block;width:14px;height:14px;border:2px solid #3f3f46;border-top-color:#60a5fa;border-radius:50%;animation:spin .6s linear infinite;margin-right:6px;vertical-align:middle}
-        @keyframes spin{to{transform:rotate(360deg)}}
-        .auth-err{font-size:12px;color:#f87171;margin-top:8px}
 
         /* Main Layout */
         .main-wrap{flex:1;display:flex;justify-content:center;overflow:hidden}
@@ -759,18 +758,38 @@ function getDashboardPage(user: any): string {
         .result-label{font-size:9px;color:#4ade80;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px;font-weight:600}
         .msg-system{align-self:center;font-size:11px;color:#52525b;padding:4px 14px;background:#1e1e26;border-radius:20px;border:1px solid #27272a}
         .msg-error{align-self:center;font-size:12px;color:#f87171;background:#f8717112;padding:8px 16px;border-radius:8px;border:1px solid #f8717133}
+        .msg-ai table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}
+        .msg-ai th,.msg-ai td{border:1px solid #3f3f46;padding:6px 8px;text-align:left}
+        .msg-ai th{background:#1e1e26;color:#e4e4e7}
+        .msg-ai h1,.msg-ai h2,.msg-ai h3{margin:6px 0;font-size:14px;color:#e4e4e7}
+        .msg-ai code{background:#1e1e26;padding:1px 4px;border-radius:3px;font-size:11px}
+        .msg-ai pre{background:#1e1e26;padding:8px;border-radius:6px;overflow:auto;margin:6px 0}
+        .msg-ai ul,.msg-ai ol{margin:6px 0 6px 18px}
 
-        /* Progress cards in chat */
-        .progress-card{align-self:flex-start;background:#27272a;border:1px solid #3f3f46;border-radius:12px;padding:14px 18px;max-width:70%;animation:fadeIn .15s ease-out}
-        .progress-card .pc-title{font-size:13px;color:#e4e4e7;margin-bottom:8px;font-weight:500}
-        .progress-card .pc-bar{width:100%;height:6px;background:#3f3f46;border-radius:3px;overflow:hidden;margin-bottom:6px}
-        .progress-card .pc-fill{height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);transition:width .4s ease;border-radius:3px}
-        .progress-card .pc-info{display:flex;justify-content:space-between;font-size:11px;color:#71717a}
+        /* Quick actions */
+        .quick-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:8px}
+        .quick-btn{padding:8px 16px;background:#27272a;border:1px solid #3f3f46;border-radius:20px;color:#a1a1aa;font-size:12px;cursor:pointer;transition:all .2s}
+        .quick-btn:hover{border-color:#60a5fa;color:#60a5fa;background:#27272a}
+
+        /* Progress cards in chat - circular */
+        .progress-card{align-self:flex-start;background:#27272a;border:1px solid #3f3f46;border-radius:12px;padding:14px 18px;max-width:70%;animation:fadeIn .15s ease-out;display:flex;align-items:center;gap:14px}
+        .progress-card .pc-circle-wrap{position:relative;width:48px;height:48px;flex-shrink:0}
+        .progress-card .pc-circle-wrap svg{transform:rotate(-90deg);width:48px;height:48px}
+        .progress-card .pc-circle-bg{fill:none;stroke:#3f3f46;stroke-width:4}
+        .progress-card .pc-circle-fill{fill:none;stroke:#3b82f6;stroke-width:4;stroke-linecap:round;stroke-dasharray:113.1;stroke-dashoffset:113.1;transition:stroke-dashoffset .4s ease, stroke .3s ease}
+        .progress-card .pc-circle-fill.pc-downloading{stroke:#60a5fa;animation:pulseRing 1.5s infinite}
+        .progress-card .pc-circle-fill.pc-completed{stroke:#4ade80}
+        .progress-card .pc-circle-fill.pc-failed{stroke:#f87171}
+        .progress-card .pc-percent{font-size:9px;fill:#e4e4e7;font-weight:600;transform:rotate(90deg);transform-origin:24px 24px}
+        .progress-card .pc-details{flex:1;min-width:0}
+        .progress-card .pc-title{font-size:13px;color:#e4e4e7;margin-bottom:4px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         .progress-card .pc-status{font-size:11px;font-weight:600}
+        .progress-card .pc-speed{font-size:10px;color:#71717a;margin-top:2px}
         .pc-status.pc-downloading{color:#60a5fa}
         .pc-status.pc-completed{color:#4ade80}
         .pc-status.pc-failed{color:#f87171}
         .pc-status.pc-queued{color:#fbbf24}
+        @keyframes pulseRing{0%,100%{opacity:1}50%{opacity:.6}}
 
         /* Typing indicator */
         .typing-dots{display:flex;gap:4px;padding:4px 0}
@@ -815,36 +834,6 @@ function getDashboardPage(user: any): string {
         </div>
     </div>
 
-    <div id="authModal">
-        <div class="auth-box">
-            <h3>Telegram Login</h3>
-            <p id="authStepDesc"></p>
-            <div class="auth-steps" id="authPhoneStep">
-                <label>Phone Number</label>
-                <input type="tel" id="authPhone" placeholder="+91XXXXXXXXXX">
-                <button class="btn" onclick="submitAuthPhone()" id="btnAuthPhone">Send Code</button>
-            </div>
-            <div class="auth-steps" id="authCodeStep">
-                <label>Verification Code</label>
-                <input type="text" id="authCode" placeholder="12345">
-                <button class="btn" onclick="submitAuthCode()" id="btnAuthCode">Verify</button>
-            </div>
-            <div class="auth-steps" id="authPassStep">
-                <label>2FA Password</label>
-                <input type="password" id="authPassword" placeholder="Your 2FA password">
-                <button class="btn" onclick="submitAuthPassword()" id="btnAuthPass">Submit</button>
-            </div>
-            <div class="auth-steps auth-waiting" id="authWaitingStep">
-                <div class="spinner" style="width:22px;height:22px;margin:0 auto 8px"></div>
-                <p id="authWaitingText" style="font-size:12px;color:#71717a"></p>
-            </div>
-            <div class="auth-err" id="authMsg"></div>
-            <div style="text-align:right;margin-top:12px">
-                <button style="background:none;border:none;color:#71717a;cursor:pointer;font-size:11px" onclick="closeAuthModal()">Cancel</button>
-            </div>
-        </div>
-    </div>
-
     <div class="main-wrap" style="position:relative">
         <div class="chat-container">
             <div class="bot-bar">
@@ -854,12 +843,17 @@ function getDashboardPage(user: any): string {
                 </div>
                 <div class="top-actions">
                     <button class="new-chat" onclick="newChat()">+ New Chat</button>
-                    <button id="btnReconnect" onclick="startBotAuth()" style="display:none">Reconnect Bot</button>
                 </div>
             </div>
 
             <div class="chat-messages" id="chatMessages">
                 <div class="msg-system">Ask me to search, download, or check your library</div>
+                <div class="quick-actions" id="quickActions">
+                    <button class="quick-btn" onclick="quickAction('connect bot')">Connect Bot</button>
+                    <button class="quick-btn" onclick="quickAction('search Bahubali 2 movie')">Search Bahubali 2</button>
+                    <button class="quick-btn" onclick="quickAction('check if Breaking Bad is in Jellyfin')">Check Jellyfin</button>
+                    <button class="quick-btn" onclick="quickAction('show my recent downloads')">Recent Downloads</button>
+                </div>
             </div>
 
             <button class="scroll-btn" id="scrollBtn" onclick="scrollToBottom()">&#8595;</button>
@@ -874,7 +868,7 @@ function getDashboardPage(user: any): string {
     </div>
 
     <script>
-    let ws, chatHistory=[], sending=false;
+    let ws, chatHistory=[], sending=false, sessionId=null;
     const chatEl=document.getElementById('chatMessages');
     const inputEl=document.getElementById('chatInput');
     const sendBtn=document.getElementById('btnSend');
@@ -926,7 +920,7 @@ function getDashboardPage(user: any): string {
         const d=document.createElement('div');
         d.className='progress-card';
         d.id='pc-'+jobId;
-        d.innerHTML='<div class="pc-title">'+escHtml(title)+'</div><div class="pc-bar"><div class="pc-fill" style="width:0%"></div></div><div class="pc-info"><span class="pc-status pc-queued">Queued</span><span></span></div>';
+        d.innerHTML='<div class="pc-circle-wrap"><svg viewBox="0 0 48 48"><circle class="pc-circle-bg" cx="24" cy="24" r="18"/><circle class="pc-circle-fill pc-queued" cx="24" cy="24" r="18" style="stroke-dashoffset:113.1"/><text x="24" y="28" text-anchor="middle" class="pc-percent">0%</text></svg></div><div class="pc-details"><div class="pc-title">'+escHtml(title)+'</div><div class="pc-status pc-queued">Queued</div><div class="pc-speed"></div></div>';
         chatEl.appendChild(d);
         scrollToBottom();
         return d;
@@ -934,38 +928,41 @@ function getDashboardPage(user: any): string {
     function updateProgressCard(jobId,data){
         const el=document.getElementById('pc-'+jobId);
         if(!el)return;
-        const fill=el.querySelector('.pc-fill');
+        const fill=el.querySelector('.pc-circle-fill');
+        const pctEl=el.querySelector('.pc-percent');
         const status=el.querySelector('.pc-status');
-        const info=el.querySelectorAll('.pc-info span');
-        if(fill)fill.style.width=data.percent+'%';
-        if(status){
-            status.textContent=data.status;
-            status.className='pc-status pc-'+data.status.toLowerCase().replace(/[^a-z]/g,'');
-        }
-        if(info[1])info[1].textContent=data.speed?(data.percent+'% \u00b7 '+data.speed+' \u00b7 ETA '+data.eta):'';
+        const speedEl=el.querySelector('.pc-speed');
+        const circ=113.1;
+        const offset=circ*(1-(data.percent||0)/100);
+        if(fill){ fill.style.strokeDashoffset=offset; fill.className='pc-circle-fill pc-'+data.status.toLowerCase().replace(/[^a-z]/g,''); }
+        if(pctEl) pctEl.textContent=(data.percent||0)+'%';
+        if(status){ status.textContent=data.status; status.className='pc-status pc-'+data.status.toLowerCase().replace(/[^a-z]/g,''); }
+        if(speedEl) speedEl.textContent=data.speed?(data.speed+' \u00b7 ETA '+data.eta):'';
         scrollToBottom();
     }
     function completeProgressCard(jobId,success,error){
         const el=document.getElementById('pc-'+jobId);
         if(!el)return;
+        const fill=el.querySelector('.pc-circle-fill');
+        const pctEl=el.querySelector('.pc-percent');
         const status=el.querySelector('.pc-status');
-        const fill=el.querySelector('.pc-fill');
-        if(status){
-            status.textContent=success?'Completed':'Failed';
-            status.className='pc-status pc-'+(success?'completed':'failed');
-        }
-        if(fill)fill.style.background=success?'linear-gradient(90deg,#22c55e,#4ade80)':'linear-gradient(90deg,#ef4444,#f87171)';
-        if(!success&&error){
-            const info=el.querySelector('.pc-info');
-            if(info){const s=document.createElement('span');s.style.color='#f87171';s.textContent=error;info.appendChild(s)}
-        }
+        if(fill){ fill.style.strokeDashoffset=success?'0':'113.1'; fill.className='pc-circle-fill pc-'+(success?'completed':'failed'); }
+        if(pctEl) pctEl.textContent=success?'✓':'✕';
+        if(status){ status.textContent=success?'Completed':'Failed'; status.className='pc-status pc-'+(success?'completed':'failed'); }
+        if(!success&&error){ const sEl=el.querySelector('.pc-speed'); if(sEl) sEl.textContent=error; sEl.style.color='#f87171'; }
         scrollToBottom();
     }
 
     function newChat(){
-        chatHistory=[];
+        chatHistory=[];sessionId=null;
         chatEl.innerHTML='<div class="msg-system">New chat started</div>';
         inputEl.focus();
+    }
+
+    function quickAction(text){
+        inputEl.value=text;
+        inputEl.focus();
+        sendMessage();
     }
 
     async function sendMessage(){
@@ -977,9 +974,10 @@ function getDashboardPage(user: any): string {
         chatHistory.push({role:'user',content:text});
         showTyping();
         try{
-            const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({message:text,history:chatHistory.slice(-20)})});
+            const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({message:text,history:chatHistory.slice(-20),sessionId})});
             const d=await r.json();
             removeTyping();
+            if(d.sessionId)sessionId=d.sessionId;
             if(d.error){addError(d.error)}
             else{
                 if(d.toolCalls&&d.toolCalls.length>0){
@@ -989,7 +987,7 @@ function getDashboardPage(user: any): string {
                         addMsg('<div class="result-label">Result</div>'+escHtml(tc.result?.message||''),'ai tool-result');
                     }
                 }
-                addMsg(escHtml(d.reply).replace(/\\n/g,'<br>'),'ai');
+                try{ addMsg(marked.parse(d.reply),'ai'); } catch{ addMsg(escHtml(d.reply).replace(/\\n/g,'<br>'),'ai'); }
                 chatHistory.push({role:'assistant',content:d.reply});
             }
         }catch(e){removeTyping();addError('Connection error: '+e.message)}
@@ -1012,8 +1010,7 @@ function getDashboardPage(user: any): string {
         ws.onclose=()=>setTimeout(connectWS,3000);
     }
 
-    // Bot status
-    let authPollTimer=null,curAuthStep='';
+    // Bot status - just shows dot, no modal
     async function checkBotStatus(){
         try{
             const r=await fetch('/api/bot/status',{credentials:'include'});
@@ -1022,32 +1019,20 @@ function getDashboardPage(user: any): string {
             const el=document.getElementById('botStatus');
             const btn=document.getElementById('btnReconnect');
             if(!el)return;
-            if(d.connected){dot.className='bot-dot on';el.textContent='Bot Connected';el.style.color='#4ade80';btn.style.display='none';closeAuthModal()}
-            else if(d.auth&&d.auth.step!=='idle'&&d.auth.step!=='done'&&d.auth.step!=='error'){
+            if(d.connected){
+                dot.className='bot-dot on';el.textContent='Bot Connected';el.style.color='#4ade80';
+                btn.style.display='none';
+            }else if(d.auth&&d.auth.step!=='idle'&&d.auth.step!=='done'&&d.auth.step!=='error'){
                 dot.className='bot-dot wait';el.textContent='Auth: '+d.auth.step;el.style.color='#fbbf24';
-                btn.style.display='inline-block';btn.textContent='Continue';
-                if(document.getElementById('authModal').style.display!=='flex'){const s=d.auth.step==='authenticating'?'waiting':d.auth.step;curAuthStep='';showAuthStep(s)}
-            }else if(d.connecting){dot.className='bot-dot wait';el.textContent='Connecting...';el.style.color='#fbbf24';btn.style.display='none'}
-            else{dot.className='bot-dot off';el.textContent='Bot Disconnected';el.style.color='#f87171';btn.style.display='inline-block';btn.textContent='Reconnect'}
+                btn.style.display='none';
+            }else if(d.connecting){
+                dot.className='bot-dot wait';el.textContent='Connecting...';el.style.color='#fbbf24';btn.style.display='none';
+            }else{
+                dot.className='bot-dot off';el.textContent='Bot Disconnected - type "connect bot" to start';el.style.color='#f87171';
+                btn.style.display='none';
+            }
         }catch(e){}
     }
-    function showAuthStep(step){
-        if(curAuthStep===step)return;curAuthStep=step;
-        document.getElementById('authModal').style.display='flex';
-        ['authPhoneStep','authCodeStep','authPassStep','authWaitingStep'].forEach(id=>{document.getElementById(id).style.display='none'});
-        document.getElementById('authMsg').textContent='';
-        if(step==='phone'){document.getElementById('authPhoneStep').style.display='block';document.getElementById('authStepDesc').textContent='Enter your Telegram phone number with country code';setTimeout(()=>{const el=document.getElementById('authPhone');if(el&&!el.value)el.focus()},100)}
-        else if(step==='code'){document.getElementById('authCodeStep').style.display='block';document.getElementById('authStepDesc').textContent='Enter the verification code sent to your Telegram';const el=document.getElementById('authCode');el.value='';setTimeout(()=>el.focus(),100)}
-        else if(step==='password'){document.getElementById('authPassStep').style.display='block';document.getElementById('authStepDesc').textContent='Enter your 2FA password';setTimeout(()=>{const el=document.getElementById('authPassword');if(!el.value)el.focus()},100)}
-        else if(step==='waiting'||step==='authenticating'){document.getElementById('authWaitingStep').style.display='block';document.getElementById('authStepDesc').textContent='Processing...';startAuthPoll()}
-    }
-    function closeAuthModal(){document.getElementById('authModal').style.display='none';curAuthStep='';stopAuthPoll()}
-    function startAuthPoll(){stopAuthPoll();authPollTimer=setInterval(async()=>{try{const r=await fetch('/api/bot/auth/status',{credentials:'include'});const d=await r.json();if(d.step==='need_phone'){curAuthStep='';showAuthStep('phone')}else if(d.step==='need_code'){curAuthStep='';showAuthStep('code')}else if(d.step==='need_password'){curAuthStep='';showAuthStep('password')}else if(d.step==='done'){closeAuthModal();checkBotStatus()}else if(d.step==='error'){stopAuthPoll();document.getElementById('authMsg').textContent=d.error||'Auth failed'}}catch(e){}},2000)}
-    function stopAuthPoll(){if(authPollTimer){clearInterval(authPollTimer);authPollTimer=null}}
-    async function startBotAuth(){document.getElementById('authModal').style.display='flex';showAuthStep('waiting');try{const r=await fetch('/api/bot/reconnect',{method:'POST',credentials:'include'});const d=await r.json();if(d.success){closeAuthModal();checkBotStatus();return}if(d.step==='need_phone')showAuthStep('phone');else if(d.step==='need_code')showAuthStep('code');else if(d.step==='need_password')showAuthStep('password');else showAuthStep('waiting')}catch(e){}}
-    async function submitAuthPhone(){const phone=document.getElementById('authPhone').value.trim();if(!phone){document.getElementById('authMsg').textContent='Enter phone number';return}const btn=document.getElementById('btnAuthPhone');btn.disabled=true;btn.textContent='Sending...';try{const r=await fetch('/api/bot/auth/phone',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({phone})});const d=await r.json();btn.disabled=false;btn.textContent='Send Code';curAuthStep='';if(d.step==='need_code')showAuthStep('code');else if(d.step==='need_password')showAuthStep('password');else if(d.step==='done'||d.success){closeAuthModal();checkBotStatus()}else if(d.error)document.getElementById('authMsg').textContent=d.error}catch(e){btn.disabled=false;btn.textContent='Send Code'}}
-    async function submitAuthCode(){const code=document.getElementById('authCode').value.trim();if(!code){document.getElementById('authMsg').textContent='Enter code';return}const btn=document.getElementById('btnAuthCode');btn.disabled=true;btn.textContent='Verifying...';try{const r=await fetch('/api/bot/auth/code',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({code})});const d=await r.json();btn.disabled=false;btn.textContent='Verify';curAuthStep='';if(d.step==='need_password')showAuthStep('password');else if(d.step==='done'||d.success){closeAuthModal();checkBotStatus()}else if(d.error)document.getElementById('authMsg').textContent=d.error}catch(e){btn.disabled=false;btn.textContent='Verify'}}
-    async function submitAuthPassword(){const password=document.getElementById('authPassword').value;if(!password){document.getElementById('authMsg').textContent='Enter password';return}const btn=document.getElementById('btnAuthPass');btn.disabled=true;btn.textContent='Verifying...';try{const r=await fetch('/api/bot/auth/password',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({password})});const d=await r.json();btn.disabled=false;btn.textContent='Submit';curAuthStep='';if(d.step==='done'||d.success){closeAuthModal();checkBotStatus()}else if(d.error)document.getElementById('authMsg').textContent=d.error}catch(e){btn.disabled=false;btn.textContent='Submit'}}
     async function logout(){await fetch('/api/auth/logout',{method:'POST',credentials:'include'});location.href='/login'}
 
     checkBotStatus();setInterval(checkBotStatus,15000);

@@ -34,12 +34,25 @@ services:
     environment:
       - DATABASE_URL=postgresql://movieuser:moviepass@postgres:5432/moviedownloader
       - DOCKER=true
+      - INNGEST_BASE_URL=http://movie-inngest:8288
+      - INNGEST_EVENT_KEY=
+      - INNGEST_SIGNING_KEY=
     volumes:
       - ./download:/app/download
       - bot-session:/app/bot-session
     depends_on:
       postgres:
         condition: service_healthy
+
+  inngest:
+    image: inngest/inngest:latest
+    container_name: movie-inngest
+    restart: unless-stopped
+    ports:
+      - "8288:8288"
+    command: ["inngest", "dev", "-u", "http://app:3000/api/inngest", "--host", "0.0.0.0", "--port", "8288"]
+    depends_on:
+      - app
 
 volumes:
   pgdata:

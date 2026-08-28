@@ -11,38 +11,69 @@ export async function webSearch(query: string): Promise<WebSearchResult[]> {
     harness.logActivity(`[WEB] Searching: ${query}`);
 
     try {
-        // Use DuckDuckGo lite for simple web search
-        const encodedQuery = encodeURIComponent(query);
-        const response = await fetch(
-            `https://lite.duckduckgo.com/lite/?q=${encodedQuery}`,
-            {
-                headers: {
-                    "User-Agent":
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                },
-            }
-        );
-
-        const html = await response.text();
         const results: WebSearchResult[] = [];
 
-        // Simple HTML parsing for search results
-        const linkRegex = /<a[^>]+href="([^"]+)"[^>]*class="result-link"[^>]*>([^<]+)<\/a>/gi;
-        const snippetRegex = /<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi;
+        // Try Wikipedia API first (reliable, no rate limits)
+        try {
+            const wikiQuery = encodeURIComponent(query);
+            const wikiResp = await fetch(
+                `https://en.wikipedia.org/api/rest_v1/page/summary/${wikiQuery}`,
+                { headers: { "User-Agent": "MovieDownloader/1.0" } }
+            );
 
-        let match;
-        while ((match = linkRegex.exec(html)) !== null) {
-            results.push({
-                url: match[1],
-                title: match[2].trim(),
-                snippet: "",
-            });
-        }
+            if (wikiResp.ok) {
+                const data = await wikiResp.json() as any;
+                if (data.title && data.extract) {
+                    results.push({
+                        title: data.title,
+                        url: data.content_urls?.desktop?.page || `https://en.wikipedia.org/wiki/${wikiQuery}`,
+                        snippet: data.extract.substring(0, 300),
+                    });
+                }
+            }
+        } catch {}
 
-        let snippetIdx = 0;
-        while ((match = snippetRegex.exec(html)) !== null && snippetIdx < results.length) {
-            results[snippetIdx].snippet = match[1].replace(/<[^>]+>/g, "").trim();
-            snippetIdx++;
+        // Also try Wikipedia search API for multiple results
+        try {
+            const searchResp = await fetch(
+                `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3`,
+                { headers: { "User-Agent": "MovieDownloader/1.0" } }
+            );
+
+            if (searchResp.ok) {
+                const data = await searchResp.json() as any;
+                const searchResults = data?.query?.search || [];
+                for (const r of searchResults) {
+                    if (!results.find(x => x.title === r.title)) {
+                        results.push({
+                            title: r.title,
+                            url: `https://en.wikipedia.org/wiki/${encodeURIComponent(r.title)}`,
+                            snippet: (r.snippet || "").replace(/<[^>]+>/g, "").substring(0, 300),
+                        });
+                    }
+                }
+            }
+        } catch {}
+
+        // Try DuckDuckGo with delay
+        if (results.length === 0) {
+            try {
+                const DDG = await import("duck-duck-scrape");
+                await new Promise(r => setTimeout(r, 1000));
+                const searchResults = await DDG.default.search(query, {
+                    safeSearch: DDG.default.SafeSearchType.OFF,
+                });
+
+                if (searchResults?.results) {
+                    for (const r of searchResults.results.slice(0, 3)) {
+                        results.push({
+                            title: r.title || "",
+                            url: r.url || "",
+                            snippet: (r.description || "").substring(0, 300),
+                        });
+                    }
+                }
+            } catch {}
         }
 
         harness.logActivity(`[WEB] Found ${results.length} results`);

@@ -57,6 +57,13 @@ try {
             source VARCHAR(50),
             metadata JSONB,
             created_at TIMESTAMP DEFAULT NOW() NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_memory (
+            id SERIAL PRIMARY KEY,
+            session_id VARCHAR(100) NOT NULL,
+            role VARCHAR(20) NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW() NOT NULL
         )
     `);
     console.log("[INIT] Database tables ready");

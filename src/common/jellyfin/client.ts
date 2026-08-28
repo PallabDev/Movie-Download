@@ -1,7 +1,7 @@
 const JELLYFIN_URL = process.env.JELLYFIN_URL || "";
 const JELLYFIN_TOKEN = process.env.JELLYFIN_TOKEN || "";
 
-interface JellyfinItem {
+export interface JellyfinItem {
     Id: string;
     Name: string;
     Year?: number;

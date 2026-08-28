@@ -44,6 +44,15 @@ export const downloads = pgTable("downloads", {
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Agent memory
+export const agentMemory = pgTable("agent_memory", {
+    id: serial("id").primaryKey(),
+    sessionId: varchar("session_id", { length: 100 }).notNull(),
+    role: varchar("role", { length: 20 }).notNull(), // "user" | "ai" | "tool" | "web"
+    content: text("content").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // Activity logs
 export const activityLogs = pgTable("activity_logs", {
     id: serial("id").primaryKey(),
