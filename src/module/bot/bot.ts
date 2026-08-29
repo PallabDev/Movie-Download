@@ -13,21 +13,6 @@ const session = new StoreSession("bot-session");
 const client = new TelegramClient(session, apiId, apiHash, {
     connectionRetries: 10,
     autoReconnect: true,
-    downloadPool: {
-        partSize: 1024 * 1024,
-        requestDeadlineMs: 20000,
-        requestRetries: 8,
-        download: {
-            partSize: 1024 * 1024,
-            startWindow: 8 * 1024 * 1024,
-            maxWindow: 16 * 1024 * 1024,
-            startSessions: 4,
-            maxSessions: 8,
-            slowRequestMs: 6000,
-            removeAfterTimeouts: 5,
-            addSessionGateMs: 500,
-        }
-    }
 });
 
 let _connected = false;

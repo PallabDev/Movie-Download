@@ -428,11 +428,60 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
         `;
     }
 
+    let searchResultsHtml = '';
+    if (meta.searchResults && Array.isArray(meta.searchResults.results) && meta.searchResults.results.length > 0) {
+        const results = meta.searchResults.results;
+        const total = meta.searchResults.totalResults || results.length;
+        const movieTitle = meta.searchResults.title || '';
+        const movieYear = meta.searchResults.year || '';
+        const bestIdx = meta.searchResults.bestIdx;
+
+        searchResultsHtml = `
+            <div class="chat-search-results-panel">
+                <div class="chat-search-header">
+                    <span>🎬 <strong>${escapeHtml(movieTitle)}</strong> ${movieYear ? `(${escapeHtml(movieYear)})` : ''} · <strong>${total} Available Releases</strong></span>
+                    <span class="chat-search-hint">Click any release below to download:</span>
+                </div>
+                <div class="chat-search-list">
+                    ${results.map(r => {
+                        const isRecommended = r.isBest || r.index === bestIdx;
+                        const sizeStr = r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${r.sizeMB} MB`;
+                        const res = (r.text.match(/\\b(480p|720p|1080p|2160p|4k|400p)\\b/i) || [])[1] || 'HD';
+                        const codec = (r.text.match(/\\b(hevc|x265|h265|x264|h264|avc)\\b/i) || [])[1] || '';
+
+                        return `
+                            <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="handleQuickPrompt('download ${r.index}')">
+                                <div class="chat-release-left">
+                                    <span class="chat-release-index">#${r.index}</span>
+                                    <div class="chat-release-meta">
+                                        <div class="chat-release-title" title="${escapeHtml(r.text)}">${escapeHtml(r.text)}</div>
+                                        <div class="chat-release-tags">
+                                            <span class="badge res">${escapeHtml(res.toUpperCase())}</span>
+                                            <span class="badge size">${sizeStr}</span>
+                                            ${codec ? `<span class="badge codec">${escapeHtml(codec.toUpperCase())}</span>` : ''}
+                                            ${isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                            <span class="badge page">Page ${r.page || 1}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <button class="btn-download-release ${isRecommended ? 'primary' : ''}">
+                                    <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                    Download #${r.index}
+                                </button>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+    }
+
     row.innerHTML = `
         <div class="msg-avatar">${avatarHtml}</div>
         <div class="msg-bubble">
             ${meta.workflowChip ? `<div class="workflow-chip ${meta.workflowChip.type}">${meta.workflowChip.label}</div>` : ''}
             ${formattedHtml}
+            ${searchResultsHtml}
             ${actionButtonsHtml}
         </div>
     `;
@@ -555,7 +604,15 @@ async function sendChatMessage() {
             addChatMessage(`⚠️ ${errText}`, 'assistant');
         } else {
             const replyText = data.reply || 'Done processing your request!';
-            addChatMessage(replyText, 'assistant');
+            let searchResults = null;
+            if (data.toolCalls && Array.isArray(data.toolCalls)) {
+                const sCall = data.toolCalls.find(tc => tc.tool === 'search_movie' && tc.result?.data?.results?.length > 0);
+                if (sCall) {
+                    searchResults = sCall.result.data;
+                }
+            }
+
+            addChatMessage(replyText, 'assistant', { searchResults });
             state.chatHistory.push({ role: 'assistant', content: replyText });
             saveChatSession(text, replyText);
         }

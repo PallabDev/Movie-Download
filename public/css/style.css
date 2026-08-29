@@ -732,6 +732,177 @@ h1, h2, h3, h4, h5, h6 {
     font-weight: 600;
 }
 
+/* Interactive Chat Search Results List */
+.chat-search-results-panel {
+    margin-top: 12px;
+    background: rgba(15, 20, 32, 0.85);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-md);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    backdrop-filter: blur(8px);
+}
+
+.chat-search-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: var(--text-primary);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-subtle);
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.chat-search-hint {
+    font-size: 11.5px;
+    color: var(--text-secondary);
+}
+
+.chat-search-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 420px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.chat-release-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    gap: 10px;
+}
+
+.chat-release-card:hover {
+    border-color: var(--accent-blue);
+    background: var(--bg-surface-elevated);
+    transform: translateY(-1px);
+}
+
+.chat-release-card.recommended {
+    border-color: rgba(59, 130, 246, 0.6);
+    background: rgba(59, 130, 246, 0.08);
+}
+
+.chat-release-card.recommended:hover {
+    border-color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.15);
+}
+
+.chat-release-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 0;
+}
+
+.chat-release-index {
+    font-weight: 700;
+    font-size: 12px;
+    color: var(--accent-blue);
+    min-width: 28px;
+}
+
+.chat-release-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    flex: 1;
+}
+
+.chat-release-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chat-release-tags {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.chat-release-tags .badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.chat-release-tags .badge.res {
+    background: rgba(14, 165, 233, 0.15);
+    color: #38bdf8;
+}
+
+.chat-release-tags .badge.size {
+    background: rgba(168, 85, 247, 0.15);
+    color: #c084fc;
+}
+
+.chat-release-tags .badge.codec {
+    background: rgba(234, 179, 8, 0.15);
+    color: #facc15;
+}
+
+.chat-release-tags .badge.rec {
+    background: rgba(34, 197, 94, 0.2);
+    color: #4ade80;
+}
+
+.chat-release-tags .badge.page {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-muted);
+}
+
+.btn-download-release {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 11.5px;
+    font-weight: 600;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-medium);
+    color: var(--text-primary);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all var(--transition-fast);
+}
+
+.btn-download-release:hover {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: #fff;
+}
+
+.btn-download-release.primary {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: #fff;
+}
+
+.btn-download-release.primary:hover {
+    opacity: 0.9;
+}
+
 /* Workflow Step Chips */
 .workflow-chip {
     display: inline-flex;

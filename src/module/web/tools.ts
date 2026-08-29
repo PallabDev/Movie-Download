@@ -55,6 +55,7 @@ export const searchSessions = new Map<string, {
     btnMsg: any;
     buttonMap?: Map<string, { bot: string; btnMsg: any; btnMsgId: number; text: string }>;
     results: { text: string; sizeMB: number }[];
+    pagedResults?: { globalIndex: number; text: string; sizeMB: number; page: number; row: number; col: number }[];
     grouped: any[];
     title: string;
     type: string;
@@ -108,23 +109,25 @@ export const SYSTEM_PROMPT = `You are an expert movie download copilot connected
 1. ONLY MOVIES ARE SUPPORTED. TV Series, TV shows, and web series downloading is currently disabled.
 2. If the user searches for or asks to download a TV series, TV show, or web series, immediately inform them politely:
    "⚠️ **TV Shows & Series are currently not supported.** Only **Movies** are available for download. Please tell me which movie you would like to search or download! 🎬"
-3. When searching movies, ALWAYS prioritize the **720p** release (recommend Option 2 / 720p for best balance of video quality and file size). If 720p is not available, only then recommend the best available higher quality (1080p).
-4. When the user confirms with "yes", "download", "download recommend", or chooses an option number (e.g. "1", "2", "download 2"), call 'download_movie' with the corresponding optionIndex.
+3. When searching movies, ALWAYS prioritize and recommend the **720p** release (for optimal balance of video quality and file size). If 720p is not available, recommend the best 1080p release.
+4. When the user confirms with "yes", "download", "download recommend", or chooses an option number (e.g. "1", "2", "5", "15", "download 5"), call 'download_movie' with the corresponding optionIndex.
 
 ## 2-STEP WORKFLOW:
 
 ### STEP 1: MOVIE SEARCH & PRESENTATION
-- When the user asks about a movie (e.g., "Grihapravesh", "Bajrangi Bhaijaan 2015", "Inception"):
+- When the user asks about a movie (e.g., "Miss You 2024", "Inception", "Interstellar"):
   - Call 'search_movie' with title and optional year.
-  - Presents available releases (720p, 1080p) from Telegram @ProSearchM11Bot with clear option numbers (#1, #2, #3...).
-  - Highlights the recommended 720p option.
+  - In your response:
+    - State how many total releases were found across all pages.
+    - Highlight your recommended 720p release (Option #X) and explain why it's optimal (quality/size balance).
+    - Inform the user that all available files are listed below with instant download buttons, and they can either click any button or type the option number (e.g. "5", "download 12", "yes").
 
 ### STEP 2: DOWNLOAD EXECUTION
-- When the user selects or confirms an option (e.g. "2", "download 2", "yes", "download recommend"):
-  - Call 'download_movie' passing title, year, and optionIndex (e.g. {"tool": "download_movie", "args": {"title": "Grihapravesh", "year": "2025", "optionIndex": 2}}).
+- When the user selects or confirms an option (e.g. "5", "download 5", "yes", "download recommend", "15"):
+  - Call 'download_movie' passing title, year, and optionIndex (e.g. {"tool": "download_movie", "args": {"title": "Miss You", "year": "2024", "optionIndex": 5}}).
 
 ## RULES:
-1. NEVER display raw JSON in your final conversational response. Use clean, beautiful Markdown tables, bullet points, and emojis.
+1. NEVER display raw JSON in your final conversational response. Use clean, beautiful Markdown.
 2. If you need to perform an action, output ONLY ONE JSON tool call in format: {"tool": "tool_name", "args": {"key": "value"}}.
 
 ## AVAILABLE TOOLS:
@@ -258,27 +261,106 @@ export async function toolSearchMovie(args: Record<string, any>, sessionId: stri
         return { success: true, message: `NO_RESULTS:${cleanTitle}`, data: { results: [] } };
     }
 
-    const buttons = (await btnMsg.getButtons())!;
-    const results: { text: string; sizeMB: number }[] = [];
-    for (const row of buttons) {
-        for (const btn of row) {
-            const text = (btn as any).text || "";
-            if (!text) continue;
-            const lower = text.toLowerCase();
-            if (lower.includes("srt") || lower.includes("sub")) continue;
-            const sizeMB = extractSizeMB(text);
-            if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
-            results.push({ text, sizeMB });
+    // Crawl all available result pages using the NEXT button (up to 10 pages)
+    const allResults: { globalIndex: number; text: string; sizeMB: number; page: number; row: number; col: number }[] = [];
+    const seenTexts = new Set<string>();
+    let currentMsg = btnMsg;
+    const MAX_PAGES = 10;
+
+    for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
+        let buttons: any[][] = [];
+        try {
+            buttons = (await currentMsg.getButtons()) || [];
+        } catch {
+            break;
+        }
+
+        let nextBtn: any = null;
+
+        for (let r = 0; r < buttons.length; r++) {
+            for (let c = 0; c < buttons[r].length; c++) {
+                const btn = buttons[r][c] as any;
+                const text = (btn?.text || "").trim();
+                if (!text) continue;
+
+                const lower = text.toLowerCase();
+                const isNav =
+                    lower.includes("next") ||
+                    lower.includes("prev") ||
+                    lower.includes("page") ||
+                    lower.includes("back") ||
+                    lower.includes("close") ||
+                    lower.includes("update") ||
+                    lower.includes("channel") ||
+                    /^\s*(⬅️|➡️|◀️|▶️|<<|>>|\d+\/\d+)/i.test(lower) ||
+                    /\[\d+\/\d+\]/.test(lower);
+
+                if (isNav) {
+                    if (
+                        lower.includes("next") ||
+                        lower.includes("➡️") ||
+                        lower.includes("▶️") ||
+                        lower.includes(">>") ||
+                        (/\[\d+\/\d+\]/.test(lower) && !lower.includes("prev") && !lower.includes("⬅️"))
+                    ) {
+                        const pageMatch = lower.match(/\[(\d+)\/(\d+)\]/);
+                        if (pageMatch && parseInt(pageMatch[1], 10) >= parseInt(pageMatch[2], 10)) {
+                            // Last page reached
+                        } else {
+                            nextBtn = btn;
+                        }
+                    }
+                    continue;
+                }
+
+                if (lower.includes("srt") || lower.includes("sub") || lower.includes(".txt") || lower.includes(".zip")) continue;
+
+                const sizeMB = extractSizeMB(text);
+                if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
+
+                if (!seenTexts.has(text)) {
+                    seenTexts.add(text);
+                    allResults.push({
+                        globalIndex: allResults.length + 1,
+                        text,
+                        sizeMB,
+                        page: pageNum,
+                        row: r,
+                        col: c,
+                    });
+                }
+            }
+        }
+
+        // If there's a NEXT button and we haven't reached page limit, click it
+        if (nextBtn && pageNum < MAX_PAGES) {
+            try {
+                harness.logActivity(`[TOOL search_movie] Clicking NEXT button (Page ${pageNum} -> ${pageNum + 1})...`);
+                await nextBtn.click({});
+                await new Promise(r => setTimeout(r, 1600));
+
+                const messages = await botClient.getMessages("ProSearchM11Bot", { ids: [btnMsg.id] });
+                if (messages && messages[0]) {
+                    currentMsg = messages[0];
+                } else {
+                    break;
+                }
+            } catch (clickErr: any) {
+                harness.logActivity(`[TOOL search_movie] Failed to click NEXT: ${clickErr?.message}`);
+                break;
+            }
+        } else {
+            break;
         }
     }
 
-    if (results.length === 0) {
+    if (allResults.length === 0) {
         logTelegramAudit({
             action: "NO_RESULTS",
             bot: "ProSearchM11Bot",
             query,
             caller: "search_movie",
-            details: { reason: "No valid video options among buttons" }
+            details: { reason: "No valid video options found across all pages" }
         });
         return { success: true, message: `NO_RESULTS:${cleanTitle}`, data: { results: [] } };
     }
@@ -288,33 +370,48 @@ export async function toolSearchMovie(args: Record<string, any>, sessionId: stri
         bot: "ProSearchM11Bot",
         query,
         responseMsgId: btnMsg.id,
-        resultsCount: results.length,
-        resultsPreview: results.map(r => r.text),
+        resultsCount: allResults.length,
+        resultsPreview: allResults.map(r => `[#${r.globalIndex} P${r.page}] ${r.text}`),
         caller: "search_movie"
     });
 
     const sessionKey = `movie_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const sessionData = {
-        bot: "ProSearchM11Bot", btnMsgId: btnMsg.id, btnMsg, results, grouped: [],
-        title: cleanTitle, type: "movie", year: cleanYear, createdAt: Date.now()
+        bot: "ProSearchM11Bot",
+        btnMsgId: btnMsg.id,
+        btnMsg,
+        results: allResults.map(r => ({ text: r.text, sizeMB: r.sizeMB, globalIndex: r.globalIndex, page: r.page })),
+        pagedResults: allResults,
+        grouped: [],
+        title: cleanTitle,
+        type: "movie",
+        year: cleanYear,
+        createdAt: Date.now()
     };
     searchSessions.set(sessionKey, sessionData);
     if (sessionId) searchSessions.set(`session_${sessionId}`, sessionData);
     searchSessions.set(`title_${cleanTitle.toLowerCase().trim()}`, sessionData);
 
-    const best = await pickBestResult(cleanTitle, "movie", results);
+    const best = await pickBestResult(cleanTitle, "movie", allResults);
     setWorkflow(sessionId, { step: "telegram_searched", type: "movie", title: cleanTitle, year: cleanYear });
 
     return {
         success: true,
-        message: `MOVIE_RESULTS:${results.length} results found for "${cleanTitle}"`,
+        message: `MOVIE_RESULTS:${allResults.length} releases found across all pages for "${cleanTitle}"`,
         data: {
-            results: results.map((r, i) => ({
-                text: r.text, sizeMB: r.sizeMB,
-                isBest: i === best.index, reason: i === best.index ? best.reason : ""
+            results: allResults.map((r, i) => ({
+                index: r.globalIndex,
+                text: r.text,
+                sizeMB: r.sizeMB,
+                page: r.page,
+                isBest: i === best.index,
+                reason: i === best.index ? best.reason : ""
             })),
-            bestIdx: best.index,
-            sessionKey, title: cleanTitle, year: cleanYear
+            bestIdx: best.index + 1,
+            totalResults: allResults.length,
+            sessionKey,
+            title: cleanTitle,
+            year: cleanYear
         }
     };
 }
@@ -348,8 +445,32 @@ export async function toolDownloadMovie(args: Record<string, any>, sessionId: st
     let targetBtnText = buttonText || "";
     let exactFileSize = "";
     let resolvedOptIdx = typeof optionIndex === "number" ? optionIndex : undefined;
+    let targetPage = 1;
+    let targetBtnRow: number | undefined;
+    let targetBtnCol: number | undefined;
 
-    if (session && session.results && session.results.length > 0) {
+    if (session && session.pagedResults && session.pagedResults.length > 0) {
+        let chosenPaged: typeof session.pagedResults[0] | undefined;
+        if (typeof optionIndex === "number" && optionIndex >= 1 && optionIndex <= session.pagedResults.length) {
+            chosenPaged = session.pagedResults[optionIndex - 1];
+        } else if (targetBtnText) {
+            chosenPaged = session.pagedResults.find(p => p.text === targetBtnText || p.text.toLowerCase().includes(targetBtnText.toLowerCase()));
+        } else {
+            const best = await pickBestResult(targetTitle, "movie", session.pagedResults);
+            chosenPaged = session.pagedResults[best.index];
+        }
+
+        if (chosenPaged) {
+            targetBtnText = chosenPaged.text;
+            resolvedOptIdx = chosenPaged.globalIndex;
+            targetPage = chosenPaged.page;
+            targetBtnRow = chosenPaged.row;
+            targetBtnCol = chosenPaged.col;
+            exactFileSize = chosenPaged.sizeMB >= 1024
+                ? `${(chosenPaged.sizeMB / 1024).toFixed(2)} GB`
+                : `${chosenPaged.sizeMB.toFixed(0)} MB`;
+        }
+    } else if (session && session.results && session.results.length > 0) {
         if (typeof optionIndex === "number" && optionIndex >= 1 && optionIndex <= session.results.length) {
             const chosen = session.results[optionIndex - 1];
             targetBtnText = chosen.text;
@@ -396,15 +517,18 @@ export async function toolDownloadMovie(args: Record<string, any>, sessionId: st
             fileSize,
             buttonText: targetBtnText,
             optionIndex: resolvedOptIdx,
+            page: targetPage,
+            buttonRow: targetBtnRow,
+            buttonCol: targetBtnCol,
         });
 
         try { broadcastNewDownload({ jobId: requestId, title: targetTitle, type: "movie", requestedBy: "ai" }); } catch {}
-        harness.logActivity(`[QUEUE] Queued movie "${targetTitle}" (Option #${resolvedOptIdx || "auto"}: ${targetBtnText || fileSize})`);
+        harness.logActivity(`[QUEUE] Queued movie "${targetTitle}" (Option #${resolvedOptIdx || "auto"} P${targetPage}: ${targetBtnText || fileSize})`);
 
         return {
             success: true,
             message: `MOVIE_DOWNLOAD_QUEUED: "${targetTitle}" (${fileSize}) added to download queue`,
-            data: { requestId, title: targetTitle, fileSize, optionIndex: resolvedOptIdx, buttonText: targetBtnText }
+            data: { requestId, title: targetTitle, fileSize, optionIndex: resolvedOptIdx, page: targetPage, buttonText: targetBtnText }
         };
     } catch (err: any) {
         return { success: false, message: `DOWNLOAD_ERROR: ${err.message}` };
