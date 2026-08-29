@@ -1,9 +1,10 @@
 // TOOL CALL PARSER - Robust parser for AI output formats
 
-const KNOWN_TOOLS = [
-    "web_search", "search_movie", "search_series", "download_movie", "download_episode",
+export const KNOWN_TOOLS = [
+    "web_search", "search_movie", "search_series", "download_series", "download_movie", "download_episode",
     "download_season", "check_jellyfin", "list_downloads", "bot_reconnect",
-    "bot_auth_phone", "bot_auth_code", "bot_auth_password", "bot_auth_status"
+    "bot_auth_phone", "bot_auth_code", "bot_auth_password", "bot_auth_status",
+    "tmdb_search", "get_series_seasons", "get_season_episodes"
 ];
 
 export function parseToolCall(text: string): { tool: string; args: Record<string, any> } | null {
@@ -12,7 +13,6 @@ export function parseToolCall(text: string): { tool: string; args: Record<string
     const trimmed = text.trim();
 
     // 1. Check for JSON in codeblocks or raw text
-    // E.g., ```json\n{ "tool": "search_series", "args": { "title": "..." } }\n```
     const cleanedText = trimmed.replace(/^```(?:json|xml)?\s*/i, "").replace(/\s*```$/i, "");
 
     // Try finding JSON objects
@@ -43,6 +43,20 @@ export function parseToolCall(text: string): { tool: string; args: Record<string
                     }
                 }
             }
+        }
+    }
+
+    // 1b. Check if text starts with {"tool": "tool_name" ... even if cut off
+    const toolHeaderMatch = cleanedText.match(/\{\s*["']?tool["']?\s*:\s*["']([a-z_]+)["']/i);
+    if (toolHeaderMatch) {
+        const tool = toolHeaderMatch[1];
+        if (KNOWN_TOOLS.includes(tool)) {
+            const queryArgMatch = cleanedText.match(/["']?(?:query|title)["']?\s*:\s*["']([^"'\n]+)/i);
+            const args: Record<string, any> = {};
+            if (queryArgMatch) {
+                args[tool === "web_search" || tool === "tmdb_search" ? "query" : "title"] = queryArgMatch[1].trim();
+            }
+            return { tool, args };
         }
     }
 

@@ -18,10 +18,10 @@ RUN npx tsc
 RUN npm prune --production
 
 # Create required directories and set permissions
-RUN mkdir -p download/movies download/shows bot-session && \
-    touch /app/logs.md /app/error.md /app/memory.md /app/movie.md && \
-    chmod -R 777 download bot-session && \
-    chmod 666 /app/logs.md /app/error.md /app/memory.md /app/movie.md && \
+RUN mkdir -p download/movies download/shows bot-session logs && \
+    touch /app/logs.md /app/error.md /app/memory.md /app/movie.md /app/logs/telegram_audit.log && \
+    chmod -R 777 download bot-session logs && \
+    chmod 666 /app/logs.md /app/error.md /app/memory.md /app/movie.md /app/logs/telegram_audit.log && \
     true
 
 EXPOSE 3000

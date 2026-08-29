@@ -8,7 +8,15 @@ import { downloadQueue } from "../queue/queue.js";
 import { getHarness } from "../../../command/harness.js";
 import { broadcastNewDownload } from "./ws.js";
 import { isBotConnected, isBotConnecting, setBotConnected, setBotConnecting, getAuthState, submitPhone, submitCode, submitPassword, startWebAuth } from "../bot/bot.js";
-import { getEpisodeDetails, pickBestResult, groupByEpisode } from "../ai/brain.js";
+import { getEpisodeDetails, pickBestResult, groupByEpisode, getSeriesInfo } from "../ai/brain.js";
+import {
+    lookupMedia,
+    getSeriesSeasonsAndEpisodes,
+    getSeasonEpisodesList,
+    searchMulti as tmdbSearchMulti,
+    searchMovie as tmdbSearchMovie,
+    searchTV as tmdbSearchTV
+} from "../../common/tmdb/client.js";
 import { handleChat } from "./chat.js";
 
 const app = express();
@@ -174,10 +182,74 @@ app.get("/api/bot/auth/status", requireAdmin, (_req, res) => {
     return res.json(state);
 });
 
+// ─── TMDB DISCOVERY ENDPOINTS ───
+
+app.get("/api/tmdb/search", requireAuth, async (req: any, res) => {
+    try {
+        const query = (req.query.query as string || "").trim();
+        const type = (req.query.type as string || "").trim();
+        const year = req.query.year as string;
+
+        if (!query) return res.status(400).json({ error: "Query required" });
+
+        if (type === "movie") {
+            const data = await tmdbSearchMovie(query, year);
+            return res.json(data);
+        } else if (type === "tv" || type === "series") {
+            const data = await tmdbSearchTV(query, year);
+            return res.json(data);
+        } else {
+            const data = await tmdbSearchMulti(query);
+            return res.json(data);
+        }
+    } catch (err: any) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.get("/api/tmdb/details", requireAuth, async (req: any, res) => {
+    try {
+        const query = (req.query.query as string || req.query.title as string || "").trim();
+        if (!query) return res.status(400).json({ error: "Query required" });
+
+        const media = await lookupMedia(query);
+        if (!media) return res.status(404).json({ error: "Media not found on TMDB" });
+
+        return res.json(media);
+    } catch (err: any) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.get("/api/tmdb/seasons", requireAuth, async (req: any, res) => {
+    try {
+        const title = (req.query.title as string || "").trim();
+        if (!title) return res.status(400).json({ error: "Title required" });
+
+        const info = await getSeriesSeasonsAndEpisodes(title);
+        return res.json(info);
+    } catch (err: any) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.get("/api/tmdb/episodes", requireAuth, async (req: any, res) => {
+    try {
+        const title = (req.query.title as string || "").trim();
+        const season = parseInt(req.query.season as string || "1", 10);
+        if (!title) return res.status(400).json({ error: "Title required" });
+
+        const eps = await getSeasonEpisodesList(title, season);
+        return res.json(eps);
+    } catch (err: any) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
 // ─── SEARCH (Direct Studio & AI Workflow) ───
 
 app.post("/api/search", requireAuth, async (req: any, res) => {
-    const { title, type, year } = req.body;
+    let { title, type, year } = req.body;
     if (!title || !type) return res.status(400).json({ error: "Title and type required" });
     if (type !== "movie" && type !== "series") return res.status(400).json({ error: "Type must be movie or series" });
 
@@ -186,17 +258,26 @@ app.post("/api/search", requireAuth, async (req: any, res) => {
 
     try {
         console.log(`[SEARCH] Analyzing "${title}" (type: ${type})`);
-        const aiResult = await harness.processRequest(
-            `User wants: "${title}"${year ? ` from year ${year}` : ""}. ` +
-            `Type: ${type}. Clean the name to Title Case. ` +
-            `Reply ONLY JSON: {"title":"...","year":"...","query":"..."}`
-        );
 
-        let parsed: Record<string, any> | null = null;
-        try { const m = aiResult.match(/\{[\s\S]*\}/); if (m) parsed = JSON.parse(m[0]); } catch { }
+        // 1. Resolve canonical details via TMDB
+        let cleanTitle = title;
+        let cleanYear = year || "";
+        let mediaMetadata: any = null;
 
-        const cleanTitle = parsed?.title || title;
-        const cleanYear = parsed?.year || year || "";
+        try {
+            const tmdb = await lookupMedia(title);
+            if (tmdb && tmdb.found) {
+                cleanTitle = tmdb.title;
+                cleanYear = tmdb.year || cleanYear;
+                mediaMetadata = tmdb;
+                if (tmdb.type === "series" && type === "movie") {
+                    type = "series";
+                }
+            }
+        } catch (e: any) {
+            console.warn(`[SEARCH] TMDB resolution fallback: ${e.message}`);
+        }
+
         const query = type === "movie"
             ? `${cleanTitle} ${cleanYear}`.trim()
             : cleanTitle;
@@ -207,63 +288,131 @@ app.post("/api/search", requireAuth, async (req: any, res) => {
         if (type === "movie") {
             const jf = await checkMovieExists(cleanTitle, cleanYear);
             if (jf.exists) {
-                return res.json({ searchId, status: "skipped", message: `"${cleanTitle}" already in Jellyfin`, results: [] });
+                return res.json({ searchId, status: "skipped", message: `"${cleanTitle}" already in Jellyfin`, results: [], mediaMetadata });
             }
         } else {
             const jf = await checkSeriesExists(cleanTitle);
             if (jf.exists) {
-                return res.json({ searchId, status: "skipped", message: `"${cleanTitle}" already in Jellyfin`, results: [] });
+                return res.json({ searchId, status: "skipped", message: `"${cleanTitle}" already in Jellyfin`, results: [], mediaMetadata });
             }
         }
 
         const bot = type === "movie" ? "ProSearchM11Bot" : "ProSearchY11Bot";
         const botClient = (await import("../../module/bot/bot.js")).default;
+        const results: { text: string; sizeMB: number; season?: number; episode?: number }[] = [];
+        let primaryBtnMsg: any = null;
 
-        console.log(`[SEARCH] Sending to @${bot}: ${query}`);
-        const sent = await botClient.sendMessage(bot, { message: query });
-        await new Promise(r => setTimeout(r, 4000));
+        if (type === "movie") {
+            console.log(`[SEARCH] Sending movie query to @${bot}: "${query}"`);
+            const sent = await botClient.sendMessage(bot, { message: query });
+            await new Promise(r => setTimeout(r, 4000));
 
-        let btnMsg: any = null;
-        let messages = await botClient.getMessages(bot, { limit: 10 });
-        for (const msg of messages) {
-            if (msg.id === sent.id) continue;
-            const buttons = await msg.getButtons();
-            if (buttons && buttons.length > 0) { btnMsg = msg; break; }
-        }
-
-        if (!btnMsg) {
-            await new Promise(r => setTimeout(r, 3000));
-            messages = await botClient.getMessages(bot, { limit: 10 });
+            let btnMsg: any = null;
+            let messages = await botClient.getMessages(bot, { limit: 10 });
             for (const msg of messages) {
                 if (msg.id === sent.id) continue;
                 const buttons = await msg.getButtons();
                 if (buttons && buttons.length > 0) { btnMsg = msg; break; }
             }
-        }
 
-        if (!btnMsg) {
-            return res.json({ searchId, status: "no_results", message: "Bot did not respond with results", results: [] });
-        }
-
-        const buttons = (await btnMsg.getButtons())!;
-        const results: { text: string; sizeMB: number }[] = [];
-        for (const row of buttons) {
-            for (const btn of row) {
-                const text = (btn as any).text || "";
-                if (!text) continue;
-                const lower = text.toLowerCase();
-                if (lower.includes("srt") || lower.includes("sub")) continue;
-                const sizeMB = extractSizeMB(text);
-                if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
-                results.push({ text, sizeMB });
+            if (!btnMsg) {
+                await new Promise(r => setTimeout(r, 3000));
+                messages = await botClient.getMessages(bot, { limit: 10 });
+                for (const msg of messages) {
+                    if (msg.id === sent.id) continue;
+                    const buttons = await msg.getButtons();
+                    if (buttons && buttons.length > 0) { btnMsg = msg; break; }
+                }
             }
+
+            if (btnMsg) {
+                primaryBtnMsg = btnMsg;
+                const buttons = (await btnMsg.getButtons())!;
+                for (const row of buttons) {
+                    for (const btn of row) {
+                        const text = (btn as any).text || "";
+                        if (!text) continue;
+                        const lower = text.toLowerCase();
+                        if (lower.includes("srt") || lower.includes("sub")) continue;
+                        const sizeMB = extractSizeMB(text);
+                        if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
+                        results.push({ text, sizeMB });
+                    }
+                }
+            }
+        } else {
+            // TV Series: Strictly query episode-by-episode using TMDB episode counts (format: Name SXXEXX)
+            const targetSeasons: number[] = [];
+            const multiMatch = title.match(/(?:seasons?|s)\s*([\d\s,–\-and]+)/i);
+            if (multiMatch) {
+                const nums = multiMatch[1].match(/\d+/g);
+                if (nums) targetSeasons.push(...nums.map(Number));
+            } else {
+                const sMatch = title.match(/\bS(\d{1,2})\b/i) || title.match(/\bSeason\s*(\d{1,2})\b/i);
+                if (sMatch) targetSeasons.push(parseInt(sMatch[1], 10));
+            }
+
+            if (targetSeasons.length === 0) {
+                const totalS = mediaMetadata?.totalSeasons || 1;
+                for (let i = 1; i <= totalS; i++) targetSeasons.push(i);
+            }
+
+            console.log(`[SEARCH] Series episode-by-episode search for "${cleanTitle}" across seasons [${targetSeasons.join(", ")}]`);
+
+            for (const s of targetSeasons) {
+                const epCount = mediaMetadata?.episodesPerSeason?.[s - 1] || 10;
+                for (let e = 1; e <= epCount; e++) {
+                    const epTag = `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}`;
+                    const queryText = `${cleanTitle} ${epTag}`;
+                    try {
+                        const sent = await botClient.sendMessage(bot, { message: queryText });
+                        let matched = false;
+                        for (let attempt = 0; attempt < 4; attempt++) {
+                            await new Promise(r => setTimeout(r, 1500));
+                            const msgs = await botClient.getMessages(bot, { limit: 10 });
+                            for (const msg of msgs) {
+                                if (msg.id <= sent.id) continue;
+                                const buttons = await msg.getButtons();
+                                if (buttons && buttons.length > 0) {
+                                    if (!primaryBtnMsg) primaryBtnMsg = msg;
+                                    for (const row of buttons) {
+                                        for (const btn of row) {
+                                            const text = (btn as any).text || "";
+                                            if (!text) continue;
+                                            const lower = text.toLowerCase();
+                                            if (lower.includes("srt") || lower.includes("sub")) continue;
+                                            const sizeMB = extractSizeMB(text);
+                                            if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
+                                            results.push({ text, sizeMB, season: s, episode: e });
+                                        }
+                                    }
+                                    matched = true;
+                                    break;
+                                }
+                                const text = msg.message || "";
+                                if (text.toLowerCase().includes("no results found") || text.toLowerCase().includes("not found")) {
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                            if (matched) break;
+                        }
+                    } catch (err: any) {
+                        console.error(`[SEARCH] Error querying "${queryText}":`, err.message);
+                    }
+                }
+            }
+        }
+
+        if (results.length === 0 || !primaryBtnMsg) {
+            return res.json({ searchId, status: "no_results", message: "Bot did not respond with results", results: [], mediaMetadata });
         }
 
         searchSessions.set(searchId, {
             bot,
-            sentId: sent.id,
-            btnMsgId: btnMsg.id,
-            btnMsg,
+            sentId: 0,
+            btnMsgId: primaryBtnMsg.id,
+            btnMsg: primaryBtnMsg,
             type,
             title: cleanTitle,
             year: cleanYear,
@@ -277,7 +426,7 @@ app.post("/api/search", requireAuth, async (req: any, res) => {
         let bestIdx = -1;
         let bestReason = "";
         if (results.length > 0) {
-            const best = await pickBestResult(cleanTitle, type, results);
+            const best = await pickBestResult(cleanTitle, type, results as any);
             bestIdx = best.index;
             bestReason = best.reason;
         }
@@ -292,7 +441,7 @@ app.post("/api/search", requireAuth, async (req: any, res) => {
         console.log(`[SEARCH] Found ${results.length} results, best: #${bestIdx + 1} (${bestReason}), episodes: ${seriesEpisodes.length}`);
         return res.json({
             searchId, status: "results", title: cleanTitle, year: cleanYear,
-            results, bestIdx, bestReason, seriesEpisodes, uniqueSeasons,
+            results, bestIdx, bestReason, seriesEpisodes, uniqueSeasons, mediaMetadata
         });
 
     } catch (err: any) {
@@ -502,6 +651,20 @@ app.get("/api/queue", requireAuth, (_req, res) => {
     res.json({ stats: downloadQueue.getStats() });
 });
 
+// ─── TELEGRAM AUDIT LOGS ───
+
+import { getRecentTelegramAuditLogs, getTelegramAuditLogFilePath } from "../../common/logger/telegram-audit.js";
+
+app.get("/api/telegram-logs", requireAuth, (req: any, res) => {
+    const limit = Number(req.query.limit) || 50;
+    const logs = getRecentTelegramAuditLogs(limit);
+    res.json({
+        logFile: getTelegramAuditLogFilePath(),
+        count: logs.length,
+        logs
+    });
+});
+
 // ─── CHAT AGENT ───
 
 app.post("/api/chat", requireAuth, async (req: any, res) => {
@@ -524,11 +687,11 @@ app.post("/api/chat", requireAuth, async (req: any, res) => {
 
 import { serve } from "inngest/express";
 import { inngest } from "../inngest/client.js";
-import { movieSearchWorkflow, seriesSearchWorkflow, downloadWorkflow } from "../inngest/functions.js";
+import { mediaRequestWorkflow, movieSearchWorkflow, seriesSearchWorkflow, downloadWorkflow } from "../inngest/functions.js";
 
 const inngestApp = serve({
     client: inngest,
-    functions: [movieSearchWorkflow, seriesSearchWorkflow, downloadWorkflow],
+    functions: [mediaRequestWorkflow, movieSearchWorkflow, seriesSearchWorkflow, downloadWorkflow],
 });
 app.use("/api/inngest", inngestApp);
 

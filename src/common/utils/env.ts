@@ -34,6 +34,8 @@ const envSchema = z.object({
     JELLYFIN_URL: z.string().default(""),
     JELLYFIN_TOKEN: z.string().default(""),
     JWT_SECRET: z.string().min(8).default("dev-secret-change-me"),
+    TMDB_API_KEY: z.string().optional().default(""),
+    TMDB_API_READ_ACCESS_TOKEN: z.string().optional().default(""),
 });
 
 export const env = envSchema.parse(process.env);

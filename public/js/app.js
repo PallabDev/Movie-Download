@@ -278,14 +278,17 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
         : ICONS.ai;
 
     let formattedHtml = '';
+    const safeContent = (content || '').trim();
 
-    if (sender === 'user') {
-        formattedHtml = `<p>${escapeHtml(content).replace(/\n/g, '<br>')}</p>`;
+    if (!safeContent) {
+        formattedHtml = `<p style="color: var(--text-muted); font-style: italic;">⚠️ No response received. Please try again or check your bot connection.</p>`;
+    } else if (sender === 'user') {
+        formattedHtml = `<p>${escapeHtml(safeContent).replace(/\n/g, '<br>')}</p>`;
     } else {
         try {
-            formattedHtml = typeof marked !== 'undefined' ? marked.parse(content) : `<p>${escapeHtml(content).replace(/\n/g, '<br>')}</p>`;
+            formattedHtml = typeof marked !== 'undefined' ? marked.parse(safeContent) : `<p>${escapeHtml(safeContent).replace(/\n/g, '<br>')}</p>`;
         } catch {
-            formattedHtml = `<p>${escapeHtml(content).replace(/\n/g, '<br>')}</p>`;
+            formattedHtml = `<p>${escapeHtml(safeContent).replace(/\n/g, '<br>')}</p>`;
         }
     }
 
@@ -424,16 +427,18 @@ async function sendChatMessage() {
 
         if (data.sessionId) state.sessionId = data.sessionId;
 
-        if (data.error) {
-            addChatMessage(data.error, 'assistant');
+        if (!response.ok || data.error) {
+            const errText = data.error || `Server error (${response.status})`;
+            addChatMessage(`⚠️ ${errText}`, 'assistant');
         } else {
-            addChatMessage(data.reply, 'assistant');
-            state.chatHistory.push({ role: 'assistant', content: data.reply });
-            saveChatSession(text, data.reply);
+            const replyText = data.reply || 'Done processing your request!';
+            addChatMessage(replyText, 'assistant');
+            state.chatHistory.push({ role: 'assistant', content: replyText });
+            saveChatSession(text, replyText);
         }
     } catch (err) {
         removeTypingIndicator();
-        addChatMessage(`Connection error: ${err.message}`, 'assistant');
+        addChatMessage(`⚠️ Connection error: ${err.message}. Please check your bot connection and try again.`, 'assistant');
     } finally {
         state.sendingChat = false;
         document.getElementById('btnSendChat').disabled = false;

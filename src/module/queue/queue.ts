@@ -13,6 +13,8 @@ export interface DownloadJobData {
     type: "movie" | "series";
     title: string;
     year?: string;
+    season?: number;
+    episode?: number;
     fileSize?: string;
     buttonText?: string;
 }
@@ -230,15 +232,32 @@ export function createDownloadWorker() {
 
             // Step 2: Self-healing bot search if button message not found
             if (!btnMsg) {
-                const searchQuery = data.title.replace(/\s*\(\d{4}\).*$/, "").trim();
+                let searchQuery = data.title.trim();
+                if (data.type === "series" || targetBot === "ProSearchY11Bot") {
+                    const epMatch = data.title.match(/S(\d+)E(\d+)/i);
+                    if (epMatch) {
+                        const cleanT = data.title.replace(/\s*S\d+E\d+.*$/i, "").trim();
+                        const sTag = `S${epMatch[1].padStart(2, "0")}E${epMatch[2].padStart(2, "0")}`;
+                        searchQuery = `${cleanT} ${sTag}`;
+                    } else if (data.season && data.episode) {
+                        const cleanT = data.title.replace(/\s*S\d+.*$/i, "").trim();
+                        const sTag = `S${String(data.season).padStart(2, "0")}E${String(data.episode).padStart(2, "0")}`;
+                        searchQuery = `${cleanT} ${sTag}`;
+                    }
+                } else {
+                    searchQuery = data.title.replace(/\s*\(\d{4}\).*$/, "").trim();
+                    if (data.year) searchQuery = `${searchQuery} ${data.year}`.trim();
+                }
+
                 console.log(`[WORKER] Querying @${targetBot} directly for: "${searchQuery}"`);
                 const sent = await client.sendMessage(targetBot, { message: searchQuery });
-                await sleep(3500);
+                await sleep(2000);
 
-                for (let attempt = 0; attempt < 3; attempt++) {
+                for (let attempt = 0; attempt < 4; attempt++) {
+                    await sleep(1500);
                     const messages = await client.getMessages(targetBot, { limit: 10 });
                     for (const msg of messages) {
-                        if (msg.id === sent.id) continue;
+                        if (msg.id <= sent.id) continue;
                         const buttons = await msg.getButtons();
                         if (buttons && buttons.length > 0) {
                             btnMsg = msg;
@@ -246,7 +265,6 @@ export function createDownloadWorker() {
                         }
                     }
                     if (btnMsg) break;
-                    await sleep(2000);
                 }
             }
 
