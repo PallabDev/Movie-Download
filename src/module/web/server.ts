@@ -14,6 +14,7 @@ import { handleChat } from "./chat.js";
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
+app.use(express.static("public"));
 
 // In-memory search sessions: searchId -> { botUsername, sentId, btnMsgId, buttons, title, type, year }
 const searchSessions = new Map<string, any>();
@@ -23,7 +24,6 @@ const searchSessions = new Map<string, any>();
 function requireAuth(req: any, res: any, next: any) {
     const user = extractUser(req);
     if (!user) {
-        console.log(`[AUTH] requireAuth FAILED - url: ${req.url}, method: ${req.method}`);
         return res.status(401).json({ error: "Not authenticated" });
     }
     req.user = user;
@@ -33,11 +33,9 @@ function requireAuth(req: any, res: any, next: any) {
 function requireAdmin(req: any, res: any, next: any) {
     const user = extractUser(req);
     if (!user) {
-        console.log(`[AUTH] requireAdmin FAILED (no auth) - url: ${req.url}`);
         return res.status(401).json({ error: "Not authenticated" });
     }
     if (user.role !== "admin") {
-        console.log(`[AUTH] requireAdmin FAILED (role=${user.role}) - url: ${req.url}`);
         return res.status(403).json({ error: "Admin access required" });
     }
     req.user = user;
@@ -63,7 +61,6 @@ app.post("/api/auth/register", async (req, res) => {
 
 app.post("/api/auth/login", async (req, res) => {
     try {
-        console.log(`[AUTH] Login attempt, body type: ${typeof req.body}, body: ${JSON.stringify(req.body)?.substring(0, 200)}`);
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: "Email and password required" });
         const result = await login(email, password);
@@ -109,7 +106,7 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
 
 // ─── BOT STATUS & WEB AUTH ───
 
-app.get("/api/bot/status", requireAdmin, (_req, res) => {
+app.get("/api/bot/status", requireAuth, (_req, res) => {
     const auth = getAuthState();
     res.json({ connected: isBotConnected(), connecting: isBotConnecting(), auth });
 });
@@ -118,9 +115,7 @@ app.post("/api/bot/reconnect", requireAdmin, async (_req, res) => {
     if (isBotConnecting()) return res.status(400).json({ error: "Already connecting" });
     if (isBotConnected()) return res.json({ success: true, message: "Already connected" });
 
-    // Fire-and-forget — startWebAuth blocks until auth completes
     startWebAuth().catch(() => {});
-    // Wait briefly for state to change
     await new Promise(r => setTimeout(r, 1500));
     const state = getAuthState();
     return res.json({ success: false, step: state.step });
@@ -131,7 +126,6 @@ app.post("/api/bot/auth/phone", requireAdmin, async (req, res) => {
     if (!phone) return res.status(400).json({ error: "Phone number required" });
     const result = submitPhone(phone);
     if (!result.ok) return res.status(400).json({ error: result.error });
-    // Poll for state change (Telegram may take a moment to respond)
     for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 1000));
         const state = getAuthState();
@@ -148,7 +142,6 @@ app.post("/api/bot/auth/code", requireAdmin, async (req, res) => {
     if (!code) return res.status(400).json({ error: "Code required" });
     const result = submitCode(code);
     if (!result.ok) return res.status(400).json({ error: result.error });
-    // Poll for state change (Telegram may ask for password or complete)
     for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 1000));
         const state = getAuthState();
@@ -165,7 +158,6 @@ app.post("/api/bot/auth/password", requireAdmin, async (req, res) => {
     if (!password) return res.status(400).json({ error: "Password required" });
     const result = submitPassword(password);
     if (!result.ok) return res.status(400).json({ error: result.error });
-    // Poll for completion
     for (let i = 0; i < 15; i++) {
         await new Promise(r => setTimeout(r, 1000));
         const state = getAuthState();
@@ -182,9 +174,9 @@ app.get("/api/bot/auth/status", requireAdmin, (_req, res) => {
     return res.json(state);
 });
 
-// ─── SEARCH (Step 1: AI + Bot search, return results) ───
+// ─── SEARCH (Direct Studio & AI Workflow) ───
 
-app.post("/api/search", requireAdmin, async (req: any, res) => {
+app.post("/api/search", requireAuth, async (req: any, res) => {
     const { title, type, year } = req.body;
     if (!title || !type) return res.status(400).json({ error: "Title and type required" });
     if (type !== "movie" && type !== "series") return res.status(400).json({ error: "Type must be movie or series" });
@@ -193,7 +185,6 @@ app.post("/api/search", requireAdmin, async (req: any, res) => {
     const searchId = `srch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     try {
-        // Step 1: AI analysis
         console.log(`[SEARCH] Analyzing "${title}" (type: ${type})`);
         const aiResult = await harness.processRequest(
             `User wants: "${title}"${year ? ` from year ${year}` : ""}. ` +
@@ -212,7 +203,7 @@ app.post("/api/search", requireAdmin, async (req: any, res) => {
 
         console.log(`[SEARCH] Query: "${query}"`);
 
-        // Step 2: Check Jellyfin
+        // Jellyfin check
         if (type === "movie") {
             const jf = await checkMovieExists(cleanTitle, cleanYear);
             if (jf.exists) {
@@ -225,7 +216,6 @@ app.post("/api/search", requireAdmin, async (req: any, res) => {
             }
         }
 
-        // Step 3: Search Telegram bot
         const bot = type === "movie" ? "ProSearchM11Bot" : "ProSearchY11Bot";
         const botClient = (await import("../../module/bot/bot.js")).default;
 
@@ -233,7 +223,6 @@ app.post("/api/search", requireAdmin, async (req: any, res) => {
         const sent = await botClient.sendMessage(bot, { message: query });
         await new Promise(r => setTimeout(r, 4000));
 
-        // Find button message
         let btnMsg: any = null;
         let messages = await botClient.getMessages(bot, { limit: 10 });
         for (const msg of messages) {
@@ -256,7 +245,6 @@ app.post("/api/search", requireAdmin, async (req: any, res) => {
             return res.json({ searchId, status: "no_results", message: "Bot did not respond with results", results: [] });
         }
 
-        // Extract buttons
         const buttons = (await btnMsg.getButtons())!;
         const results: { text: string; sizeMB: number }[] = [];
         for (const row of buttons) {
@@ -271,7 +259,6 @@ app.post("/api/search", requireAdmin, async (req: any, res) => {
             }
         }
 
-        // Store session for later selection
         searchSessions.set(searchId, {
             bot,
             sentId: sent.id,
@@ -283,12 +270,10 @@ app.post("/api/search", requireAdmin, async (req: any, res) => {
             createdAt: Date.now(),
         });
 
-        // Clean old sessions (>30min)
         for (const [k, v] of searchSessions) {
             if (Date.now() - v.createdAt > 30 * 60 * 1000) searchSessions.delete(k);
         }
 
-        // AI: pick best result
         let bestIdx = -1;
         let bestReason = "";
         if (results.length > 0) {
@@ -297,7 +282,6 @@ app.post("/api/search", requireAdmin, async (req: any, res) => {
             bestReason = best.reason;
         }
 
-        // For series: group results by episode
         let seriesEpisodes: any[] = [];
         let uniqueSeasons: number[] = [];
         if (type === "series" && results.length > 0) {
@@ -317,9 +301,9 @@ app.post("/api/search", requireAdmin, async (req: any, res) => {
     }
 });
 
-// ─── SELECT & DOWNLOAD (Step 2: User picks a result) ───
+// ─── SELECT & DOWNLOAD ───
 
-app.post("/api/select", requireAdmin, async (req: any, res) => {
+app.post("/api/select", requireAuth, async (req: any, res) => {
     const { searchId, buttonText } = req.body;
     if (!searchId || !buttonText) return res.status(400).json({ error: "searchId and buttonText required" });
 
@@ -327,10 +311,8 @@ app.post("/api/select", requireAdmin, async (req: any, res) => {
     if (!session) return res.status(400).json({ error: "Search session expired or not found" });
 
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const harness = getHarness();
 
     try {
-        // Insert download record
         const typeLabel = session.type === "movie" ? "movie" : "series";
         await db.insert(schema.downloads).values({
             requestId,
@@ -348,20 +330,17 @@ app.post("/api/select", requireAdmin, async (req: any, res) => {
             requestedBy: req.user.email,
         });
 
-        // Click the button on the bot
         const botClient = (await import("../../module/bot/bot.js")).default;
         const btnMsg = session.btnMsg;
 
         console.log(`[SELECT] Clicking "${buttonText}" on @${session.bot}`);
         await btnMsg.click({ text: buttonText });
 
-        // Extract file size
         const sizeMatch = buttonText.match(/\[([\d.]+)\s*(GB|MB)\]/i);
         const fileSize = sizeMatch ? sizeMatch[1] + " " + sizeMatch[2].toUpperCase() : null;
 
         await updateDB(requestId, { status: "downloading", fileSize });
 
-        // Add download job to queue
         downloadQueue.addJob({
             requestId,
             bot: session.bot,
@@ -372,7 +351,6 @@ app.post("/api/select", requireAdmin, async (req: any, res) => {
             fileSize: fileSize || undefined,
         });
 
-        // Clean up session
         searchSessions.delete(searchId);
 
         return res.json({
@@ -389,7 +367,7 @@ app.post("/api/select", requireAdmin, async (req: any, res) => {
 
 // ─── SERIES BULK DOWNLOAD ───
 
-app.post("/api/select-all-episodes", requireAdmin, async (req: any, res) => {
+app.post("/api/select-all-episodes", requireAuth, async (req: any, res) => {
     const { searchId, season } = req.body;
     if (!searchId) return res.status(400).json({ error: "searchId required" });
 
@@ -397,11 +375,9 @@ app.post("/api/select-all-episodes", requireAdmin, async (req: any, res) => {
     if (!session) return res.status(400).json({ error: "Search session expired" });
     if (session.type !== "series") return res.status(400).json({ error: "Not a series" });
 
-    const harness = getHarness();
     const seasonNum = season || 1;
 
     try {
-        // Get all results from the stored session
         const btnMsg = session.btnMsg;
         const buttons = (await btnMsg.getButtons())!;
         const allResults: { text: string; sizeMB: number }[] = [];
@@ -417,7 +393,6 @@ app.post("/api/select-all-episodes", requireAdmin, async (req: any, res) => {
             }
         }
 
-        // Group by episode
         const grouped = groupByEpisode(allResults);
         const seasonEps = grouped.filter(e => e.season === seasonNum);
 
@@ -453,8 +428,6 @@ app.post("/api/select-all-episodes", requireAdmin, async (req: any, res) => {
                 });
 
                 queued.push({ episode: ep.episode, title: ep.label, status: "queued", sizeMB: ep.sizeMB });
-                console.log(`[BULK] Queued: ${ep.label} (${ep.sizeMB.toFixed(0)} MB)`);
-
             } catch (epErr: any) {
                 console.error(`[BULK] Error on ${ep.label}:`, epErr.message);
                 queued.push({ episode: ep.episode, title: ep.label, status: "error", sizeMB: 0 });
@@ -531,17 +504,14 @@ app.get("/api/queue", requireAuth, (_req, res) => {
 
 // ─── CHAT AGENT ───
 
-app.post("/api/chat", requireAdmin, async (req: any, res) => {
+app.post("/api/chat", requireAuth, async (req: any, res) => {
     try {
         const { message, history, sessionId } = req.body;
         if (!message) return res.status(400).json({ error: "Message required" });
 
-        // Use provided sessionId or generate one per user
         const sid = sessionId || `chat_${req.user.userId}_${Date.now()}`;
-
         console.log(`[CHAT] User: ${message} (session: ${sid})`);
         const result = await handleChat(message, history || [], sid);
-        console.log(`[CHAT] Reply: ${result.reply.substring(0, 100)}`);
 
         res.json({ ...result, sessionId: sid });
     } catch (err: any) {
@@ -561,13 +531,13 @@ const inngestApp = serve({
     functions: [movieSearchWorkflow, seriesSearchWorkflow, downloadWorkflow],
 });
 app.use("/api/inngest", inngestApp);
-console.log("[INNGEST] Serve handler mounted at /api/inngest");
 
 // ─── PAGES ───
 
 app.get("/", (req, res) => {
     const user = extractUser(req);
-    res.send(user ? getDashboardPage(user) : getLoginPage());
+    if (!user) return res.redirect("/login");
+    res.send(getDashboardPage(user));
 });
 
 app.get("/login", (req, res) => {
@@ -581,7 +551,7 @@ app.get("/register", (req, res) => {
 });
 
 app.get("/admin", requireAdmin, (req: any, res) => {
-    res.send(getAdminPage(req.user));
+    res.redirect("/?view=admin");
 });
 
 // ─── HELPERS ───
@@ -604,7 +574,7 @@ function extractSizeMB(text: string): number {
     return val / 1024;
 }
 
-// ─── UI HTML ───
+// ─── UI TEMPLATES ───
 
 function getLoginPage(): string {
     return `<!DOCTYPE html>
@@ -612,43 +582,44 @@ function getLoginPage(): string {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Movie Downloader</title>
-    <style>
-        *{margin:0;padding:0;box-sizing:border-box}
-        body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a0f;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px}
-        .auth-card{background:#12121a;border:1px solid #1e1e2e;border-radius:16px;padding:40px;width:100%;max-width:400px}
-        .auth-card h1{text-align:center;margin-bottom:8px;color:#00d4ff;font-size:24px}
-        .auth-card .subtitle{text-align:center;color:#666;margin-bottom:32px;font-size:14px}
-        .form-group{margin-bottom:20px}
-        .form-group label{display:block;margin-bottom:6px;font-size:12px;color:#888;text-transform:uppercase;letter-spacing:1px}
-        input{width:100%;padding:12px 16px;background:#1a1a2e;border:1px solid #2a2a3e;border-radius:8px;color:#fff;font-size:15px;transition:border-color .2s}
-        input:focus{outline:none;border-color:#00d4ff}
-        button{width:100%;padding:14px;background:linear-gradient(135deg,#00d4ff,#0088cc);border:none;border-radius:8px;color:#fff;font-size:15px;font-weight:600;cursor:pointer;transition:opacity .2s}
-        button:hover{opacity:.9}
-        .error{background:#ff000022;border:1px solid #ff000044;color:#ff6666;padding:10px;border-radius:8px;margin-bottom:16px;font-size:13px;display:none}
-        .links{text-align:center;margin-top:20px;font-size:13px;color:#666}
-        .links a{color:#00d4ff;text-decoration:none}
-    </style>
+    <title>Sign In - CineGrab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-    <div class="auth-card">
-        <h1>Movie Downloader</h1>
-        <p class="subtitle">Sign in to your account</p>
-        <div class="error" id="error"></div>
-        <form onsubmit="handleLogin(event)">
-            <div class="form-group"><label>Email</label><input type="email" id="email" required placeholder="you@example.com"></div>
-            <div class="form-group"><label>Password</label><input type="password" id="password" required placeholder="Your password"></div>
-            <button type="submit">Sign In</button>
-        </form>
-        <div class="links">Don't have an account? <a href="/register">Register</a></div>
+    <div class="auth-page-container">
+        <div class="auth-glass-box">
+            <div class="auth-header">
+                <div class="brand-icon-box" style="width: 36px; height: 36px;">
+                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
+                </div>
+                <div>
+                    <h1 style="font-size: 20px; font-weight: 700;">Sign in to CineGrab</h1>
+                    <p style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">Enter your credentials to access the hub</p>
+                </div>
+            </div>
+            <div class="auth-error-alert" id="authError"></div>
+            <form class="auth-form" onsubmit="handleAuthLogin(event)">
+                <div class="form-group">
+                    <label class="form-label">Email</label>
+                    <input type="email" id="email" class="form-input" required placeholder="admin@admin.com" autocomplete="email">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Password</label>
+                    <input type="password" id="password" class="form-input" required placeholder="••••••••" autocomplete="current-password">
+                </div>
+                <button type="submit" id="btnAuthSubmit" class="btn-primary-action" style="width: 100%; padding: 10px; margin-top: 4px;">
+                    Sign In
+                </button>
+            </form>
+            <div class="auth-links">
+                Don't have an account? <a href="/register">Create one</a>
+            </div>
+        </div>
     </div>
-    <script>
-        async function handleLogin(e){
-            e.preventDefault();
-            const errEl=document.getElementById('error');errEl.style.display='none';
-            try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:document.getElementById('email').value,password:document.getElementById('password').value})});const d=await r.json();if(d.success)window.location.href='/';else{errEl.textContent=d.error||'Login failed';errEl.style.display='block'}}catch(err){errEl.textContent='Connection error';errEl.style.display='block'}
-        }
-    </script>
+    <script src="/js/auth.js"></script>
 </body>
 </html>`;
 }
@@ -659,447 +630,474 @@ function getRegisterPage(): string {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Register - Movie Downloader</title>
-    <style>
-        *{margin:0;padding:0;box-sizing:border-box}
-        body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a0f;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px}
-        .auth-card{background:#12121a;border:1px solid #1e1e2e;border-radius:16px;padding:40px;width:100%;max-width:400px}
-        .auth-card h1{text-align:center;margin-bottom:8px;color:#00d4ff;font-size:24px}
-        .auth-card .subtitle{text-align:center;color:#666;margin-bottom:32px;font-size:14px}
-        .form-group{margin-bottom:20px}
-        .form-group label{display:block;margin-bottom:6px;font-size:12px;color:#888;text-transform:uppercase;letter-spacing:1px}
-        input{width:100%;padding:12px 16px;background:#1a1a2e;border:1px solid #2a2a3e;border-radius:8px;color:#fff;font-size:15px;transition:border-color .2s}
-        input:focus{outline:none;border-color:#00d4ff}
-        button{width:100%;padding:14px;background:linear-gradient(135deg,#00d4ff,#0088cc);border:none;border-radius:8px;color:#fff;font-size:15px;font-weight:600;cursor:pointer;transition:opacity .2s}
-        button:hover{opacity:.9}
-        .error{background:#ff000022;border:1px solid #ff000044;color:#ff6666;padding:10px;border-radius:8px;margin-bottom:16px;font-size:13px;display:none}
-        .links{text-align:center;margin-top:20px;font-size:13px;color:#666}
-        .links a{color:#00d4ff;text-decoration:none}
-    </style>
+    <title>Create Account - CineGrab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-    <div class="auth-card">
-        <h1>Movie Downloader</h1>
-        <p class="subtitle">Create your account</p>
-        <div class="error" id="error"></div>
-        <form onsubmit="handleRegister(event)">
-            <div class="form-group"><label>Name</label><input type="text" id="name" required placeholder="Your name"></div>
-            <div class="form-group"><label>Email</label><input type="email" id="email" required placeholder="you@example.com"></div>
-            <div class="form-group"><label>Password</label><input type="password" id="password" required minlength="6" placeholder="Min 6 characters"></div>
-            <button type="submit">Create Account</button>
-        </form>
-        <div class="links">Already have an account? <a href="/login">Sign in</a></div>
+    <div class="auth-page-container">
+        <div class="auth-glass-box">
+            <div class="auth-header">
+                <div class="brand-icon-box" style="width: 36px; height: 36px;">
+                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
+                </div>
+                <div>
+                    <h1 style="font-size: 20px; font-weight: 700;">Create an Account</h1>
+                    <p style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">Join CineGrab Media Manager</p>
+                </div>
+            </div>
+            <div class="auth-error-alert" id="authError"></div>
+            <form class="auth-form" onsubmit="handleAuthRegister(event)">
+                <div class="form-group">
+                    <label class="form-label">Full Name</label>
+                    <input type="text" id="name" class="form-input" required placeholder="John Doe" autocomplete="name">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Email</label>
+                    <input type="email" id="email" class="form-input" required placeholder="you@example.com" autocomplete="email">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Password</label>
+                    <input type="password" id="password" class="form-input" required minlength="6" placeholder="Min 6 characters" autocomplete="new-password">
+                </div>
+                <button type="submit" id="btnAuthSubmit" class="btn-primary-action" style="width: 100%; padding: 10px; margin-top: 4px;">
+                    Create Account
+                </button>
+            </form>
+            <div class="auth-links">
+                Already have an account? <a href="/login">Sign in</a>
+            </div>
+        </div>
     </div>
-    <script>
-        async function handleRegister(e){
-            e.preventDefault();
-            const errEl=document.getElementById('error');errEl.style.display='none';
-            try{const r=await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:document.getElementById('name').value,email:document.getElementById('email').value,password:document.getElementById('password').value})});const d=await r.json();if(d.success)window.location.href='/';else{errEl.textContent=d.error||'Registration failed';errEl.style.display='block'}}catch(err){errEl.textContent='Connection error';errEl.style.display='block'}
-        }
-    </script>
+    <script src="/js/auth.js"></script>
 </body>
 </html>`;
 }
 
 function getDashboardPage(user: any): string {
     const isAdmin = user.role === "admin";
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Movie Downloader</title>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <style>
-        *{margin:0;padding:0;box-sizing:border-box}
-        body{font-family:'Segoe UI',system-ui,sans-serif;background:#111118;color:#d4d4d8;height:100vh;display:flex;flex-direction:column}
-
-        /* Topbar */
-        .topbar{display:flex;justify-content:space-between;align-items:center;padding:8px 24px;background:#16161e;border-bottom:1px solid #27272a;flex-shrink:0}
-        .topbar h1{font-size:14px;color:#a1a1aa;font-weight:500}
-        .topbar h1 b{color:#60a5fa;font-weight:600}
-        .topbar .user-info{display:flex;align-items:center;gap:12px;font-size:11px;color:#71717a}
-        .topbar .role{background:#1e3a5f;color:#60a5fa;padding:2px 8px;border-radius:4px;font-size:9px;text-transform:uppercase;font-weight:600;letter-spacing:0.5px}
-        .topbar a{color:#f87171;text-decoration:none;font-size:11px;transition:color .2s}
-        .topbar a:hover{color:#ef4444}
-
-
-        /* Main Layout */
-        .main-wrap{flex:1;display:flex;justify-content:center;overflow:hidden}
-        .chat-container{width:100%;max-width:1100px;display:flex;flex-direction:column;border-left:1px solid #27272a;border-right:1px solid #27272a;background:#18181f}
-
-        /* Bot bar */
-        .bot-bar{display:flex;align-items:center;justify-content:space-between;padding:10px 20px;background:#1a1a22;border-bottom:1px solid #27272a;flex-shrink:0}
-        .bot-bar .bot-left{display:flex;align-items:center;gap:10px}
-        .bot-bar .bot-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
-        .bot-bar .bot-label{font-size:12px;color:#a1a1aa}
-        .bot-bar .bot-dot.on{background:#4ade80;box-shadow:0 0 6px #4ade8066}
-        .bot-bar .bot-dot.off{background:#f87171;box-shadow:0 0 6px #f8717166}
-        .bot-bar .bot-dot.wait{background:#fbbf24;box-shadow:0 0 6px #fbbf2466}
-        .top-actions{display:flex;gap:8px}
-        .top-actions button{padding:5px 12px;border-radius:6px;border:1px solid #3f3f46;background:#27272a;color:#a1a1aa;font-size:11px;cursor:pointer;transition:all .2s}
-        .top-actions button:hover{border-color:#60a5fa;color:#60a5fa}
-        .top-actions button.new-chat{border-color:#60a5fa44;color:#60a5fa}
-
-        /* Chat area */
-        .chat-messages{flex:1;overflow-y:auto;padding:24px 20px;display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth}
-        .chat-messages::-webkit-scrollbar{width:6px}
-        .chat-messages::-webkit-scrollbar-track{background:transparent}
-        .chat-messages::-webkit-scrollbar-thumb{background:#3f3f46;border-radius:3px}
-        .chat-messages::-webkit-scrollbar-thumb:hover{background:#52525b}
-
-        .msg-bubble{max-width:80%;padding:12px 16px;border-radius:12px;font-size:13px;line-height:1.6;animation:fadeIn .15s ease-out;word-wrap:break-word}
-        @keyframes fadeIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
-        .msg-user{align-self:flex-end;background:#2563eb;color:#fff;border-bottom-right-radius:4px}
-        .msg-ai{align-self:flex-start;background:#27272a;border:1px solid #3f3f46;color:#d4d4d8;border-bottom-left-radius:4px}
-        .msg-ai.tool-call{border-color:#8b5cf644;background:#8b5cf60a}
-        .msg-ai.tool-result{border-color:#4ade8044;background:#4ade800a}
-        .tool-label{font-size:9px;color:#a78bfa;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px;font-weight:600}
-        .result-label{font-size:9px;color:#4ade80;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px;font-weight:600}
-        .msg-system{align-self:center;font-size:11px;color:#52525b;padding:4px 14px;background:#1e1e26;border-radius:20px;border:1px solid #27272a}
-        .msg-error{align-self:center;font-size:12px;color:#f87171;background:#f8717112;padding:8px 16px;border-radius:8px;border:1px solid #f8717133}
-        .msg-ai table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}
-        .msg-ai th,.msg-ai td{border:1px solid #3f3f46;padding:6px 8px;text-align:left}
-        .msg-ai th{background:#1e1e26;color:#e4e4e7}
-        .msg-ai h1,.msg-ai h2,.msg-ai h3{margin:6px 0;font-size:14px;color:#e4e4e7}
-        .msg-ai code{background:#1e1e26;padding:1px 4px;border-radius:3px;font-size:11px}
-        .msg-ai pre{background:#1e1e26;padding:8px;border-radius:6px;overflow:auto;margin:6px 0}
-        .msg-ai ul,.msg-ai ol{margin:6px 0 6px 18px}
-
-        /* Quick actions */
-        .quick-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:8px}
-        .quick-btn{padding:8px 16px;background:#27272a;border:1px solid #3f3f46;border-radius:20px;color:#a1a1aa;font-size:12px;cursor:pointer;transition:all .2s}
-        .quick-btn:hover{border-color:#60a5fa;color:#60a5fa;background:#27272a}
-
-        /* Progress cards in chat - circular */
-        .progress-card{align-self:flex-start;background:#27272a;border:1px solid #3f3f46;border-radius:12px;padding:14px 18px;max-width:70%;animation:fadeIn .15s ease-out;display:flex;align-items:center;gap:14px}
-        .progress-card .pc-circle-wrap{position:relative;width:48px;height:48px;flex-shrink:0}
-        .progress-card .pc-circle-wrap svg{transform:rotate(-90deg);width:48px;height:48px}
-        .progress-card .pc-circle-bg{fill:none;stroke:#3f3f46;stroke-width:4}
-        .progress-card .pc-circle-fill{fill:none;stroke:#3b82f6;stroke-width:4;stroke-linecap:round;stroke-dasharray:113.1;stroke-dashoffset:113.1;transition:stroke-dashoffset .4s ease, stroke .3s ease}
-        .progress-card .pc-circle-fill.pc-downloading{stroke:#60a5fa;animation:pulseRing 1.5s infinite}
-        .progress-card .pc-circle-fill.pc-completed{stroke:#4ade80}
-        .progress-card .pc-circle-fill.pc-failed{stroke:#f87171}
-        .progress-card .pc-percent{font-size:9px;fill:#e4e4e7;font-weight:600;transform:rotate(90deg);transform-origin:24px 24px}
-        .progress-card .pc-details{flex:1;min-width:0}
-        .progress-card .pc-title{font-size:13px;color:#e4e4e7;margin-bottom:4px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .progress-card .pc-status{font-size:11px;font-weight:600}
-        .progress-card .pc-speed{font-size:10px;color:#71717a;margin-top:2px}
-        .pc-status.pc-downloading{color:#60a5fa}
-        .pc-status.pc-completed{color:#4ade80}
-        .pc-status.pc-failed{color:#f87171}
-        .pc-status.pc-queued{color:#fbbf24}
-        @keyframes pulseRing{0%,100%{opacity:1}50%{opacity:.6}}
-
-        /* Typing indicator */
-        .typing-dots{display:flex;gap:4px;padding:4px 0}
-        .typing-dots span{width:5px;height:5px;border-radius:50%;background:#60a5fa;animation:typing 1.4s infinite}
-        .typing-dots span:nth-child(2){animation-delay:.2s}
-        .typing-dots span:nth-child(3){animation-delay:.4s}
-        @keyframes typing{0%,60%,100%{transform:translateY(0);opacity:.3}30%{transform:translateY(-3px);opacity:1}}
-
-        /* Scroll to bottom button */
-        .scroll-btn{position:absolute;bottom:100px;right:calc(50% - 530px);width:36px;height:36px;border-radius:50%;background:#27272a;border:1px solid #3f3f46;color:#a1a1aa;font-size:16px;cursor:pointer;display:none;align-items:center;justify-content:center;z-index:10;transition:all .2s;box-shadow:0 2px 8px rgba(0,0,0,.4)}
-        .scroll-btn:hover{border-color:#60a5fa;color:#60a5fa}
-        .scroll-btn.show{display:flex}
-        @media(max-width:1140px){.scroll-btn{right:20px}}
-
-        /* Chat input */
-        .chat-input-wrap{flex-shrink:0;padding:14px 20px;background:#1a1a22;border-top:1px solid #27272a}
-        .chat-input{display:flex;gap:10px;align-items:flex-end;max-width:1100px;margin:0 auto}
-        .chat-input textarea{flex:1;padding:12px 16px;background:#27272a;border:1px solid #3f3f46;border-radius:10px;color:#e4e4e7;font-size:13px;resize:none;max-height:140px;min-height:44px;line-height:1.5;font-family:inherit;transition:border-color .2s}
-        .chat-input textarea:focus{outline:none;border-color:#60a5fa}
-        .chat-input textarea::placeholder{color:#52525b}
-        .btn-send{width:44px;height:44px;border-radius:10px;border:none;background:#2563eb;color:#fff;font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:background .2s}
-        .btn-send:hover{background:#1d4ed8}
-        .btn-send:disabled{opacity:.3;cursor:not-allowed}
-
-        @media(max-width:600px){
-            .topbar{padding:6px 12px}
-            .chat-messages{padding:16px 12px}
-            .chat-input-wrap{padding:10px 12px}
-            .msg-bubble{max-width:92%}
-            .progress-card{max-width:92%}
-        }
-    </style>
-</head>
-<body>
-    <div class="topbar">
-        <h1><b>Downloader</b> AI</h1>
-        <div class="user-info">
-            <span class="role">${user.role}</span>
-            <span>${user.email}</span>
-            ${isAdmin ? '<a href="/admin">Admin</a>' : ""}
-            <a href="#" onclick="logout()">Logout</a>
-        </div>
-    </div>
-
-    <div class="main-wrap" style="position:relative">
-        <div class="chat-container">
-            <div class="bot-bar">
-                <div class="bot-left">
-                    <span class="bot-dot off" id="botDot"></span>
-                    <span class="bot-label" id="botStatus">Checking...</span>
-                </div>
-                <div class="top-actions">
-                    <button class="new-chat" onclick="newChat()">+ New Chat</button>
-                </div>
-            </div>
-
-            <div class="chat-messages" id="chatMessages">
-                <div class="msg-system">Ask me to search, download, or check your library</div>
-                <div class="quick-actions" id="quickActions">
-                    <button class="quick-btn" onclick="quickAction('connect bot')">Connect Bot</button>
-                    <button class="quick-btn" onclick="quickAction('search Bahubali 2 movie')">Search Bahubali 2</button>
-                    <button class="quick-btn" onclick="quickAction('check if Breaking Bad is in Jellyfin')">Check Jellyfin</button>
-                    <button class="quick-btn" onclick="quickAction('show my recent downloads')">Recent Downloads</button>
-                </div>
-            </div>
-
-            <button class="scroll-btn" id="scrollBtn" onclick="scrollToBottom()">&#8595;</button>
-
-            <div class="chat-input-wrap">
-                <div class="chat-input">
-                    <textarea id="chatInput" placeholder="Search movie, download series, check Jellyfin..." rows="1"></textarea>
-                    <button class="btn-send" id="btnSend" onclick="sendMessage()">&#9654;</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-    let ws, chatHistory=[], sending=false, sessionId=null;
-    const chatEl=document.getElementById('chatMessages');
-    const inputEl=document.getElementById('chatInput');
-    const sendBtn=document.getElementById('btnSend');
-    const scrollBtnEl=document.getElementById('scrollBtn');
-
-    function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
-
-    function scrollToBottom(){chatEl.scrollTop=chatEl.scrollHeight}
-
-    chatEl.addEventListener('scroll',()=>{
-        const atBottom=chatEl.scrollHeight-chatEl.scrollTop-chatEl.clientHeight<80;
-        scrollBtnEl.classList.toggle('show',!atBottom);
+    const userJson = JSON.stringify({
+        id: user.userId || user.id,
+        name: user.name || (user.email ? user.email.split("@")[0] : "User"),
+        email: user.email || "user@example.com",
+        role: user.role || "user"
     });
 
-    function addMsg(html,type){
-        const d=document.createElement('div');
-        d.className='msg-bubble msg-'+type;
-        d.innerHTML=html;
-        chatEl.appendChild(d);
-        const atBottom=chatEl.scrollHeight-chatEl.scrollTop-chatEl.clientHeight<200;
-        if(atBottom)scrollToBottom();
-        return d;
-    }
-    function addSystem(text){
-        const d=document.createElement('div');
-        d.className='msg-system';
-        d.textContent=text;
-        chatEl.appendChild(d);
-        scrollToBottom();
-    }
-    function addError(text){
-        const d=document.createElement('div');
-        d.className='msg-error';
-        d.textContent=text;
-        chatEl.appendChild(d);
-        scrollToBottom();
-    }
-    function showTyping(){
-        const d=document.createElement('div');
-        d.className='msg-bubble msg-ai';
-        d.id='typingBubble';
-        d.innerHTML='<div class="typing-dots"><span></span><span></span><span></span></div>';
-        chatEl.appendChild(d);
-        scrollToBottom();
-    }
-    function removeTyping(){const el=document.getElementById('typingBubble');if(el)el.remove()}
-
-    function addProgressCard(jobId,title){
-        const d=document.createElement('div');
-        d.className='progress-card';
-        d.id='pc-'+jobId;
-        d.innerHTML='<div class="pc-circle-wrap"><svg viewBox="0 0 48 48"><circle class="pc-circle-bg" cx="24" cy="24" r="18"/><circle class="pc-circle-fill pc-queued" cx="24" cy="24" r="18" style="stroke-dashoffset:113.1"/><text x="24" y="28" text-anchor="middle" class="pc-percent">0%</text></svg></div><div class="pc-details"><div class="pc-title">'+escHtml(title)+'</div><div class="pc-status pc-queued">Queued</div><div class="pc-speed"></div></div>';
-        chatEl.appendChild(d);
-        scrollToBottom();
-        return d;
-    }
-    function updateProgressCard(jobId,data){
-        const el=document.getElementById('pc-'+jobId);
-        if(!el)return;
-        const fill=el.querySelector('.pc-circle-fill');
-        const pctEl=el.querySelector('.pc-percent');
-        const status=el.querySelector('.pc-status');
-        const speedEl=el.querySelector('.pc-speed');
-        const circ=113.1;
-        const offset=circ*(1-(data.percent||0)/100);
-        if(fill){ fill.style.strokeDashoffset=offset; fill.className='pc-circle-fill pc-'+data.status.toLowerCase().replace(/[^a-z]/g,''); }
-        if(pctEl) pctEl.textContent=(data.percent||0)+'%';
-        if(status){ status.textContent=data.status; status.className='pc-status pc-'+data.status.toLowerCase().replace(/[^a-z]/g,''); }
-        if(speedEl) speedEl.textContent=data.speed?(data.speed+' \u00b7 ETA '+data.eta):'';
-        scrollToBottom();
-    }
-    function completeProgressCard(jobId,success,error){
-        const el=document.getElementById('pc-'+jobId);
-        if(!el)return;
-        const fill=el.querySelector('.pc-circle-fill');
-        const pctEl=el.querySelector('.pc-percent');
-        const status=el.querySelector('.pc-status');
-        if(fill){ fill.style.strokeDashoffset=success?'0':'113.1'; fill.className='pc-circle-fill pc-'+(success?'completed':'failed'); }
-        if(pctEl) pctEl.textContent=success?'✓':'✕';
-        if(status){ status.textContent=success?'Completed':'Failed'; status.className='pc-status pc-'+(success?'completed':'failed'); }
-        if(!success&&error){ const sEl=el.querySelector('.pc-speed'); if(sEl) sEl.textContent=error; sEl.style.color='#f87171'; }
-        scrollToBottom();
-    }
-
-    function newChat(){
-        chatHistory=[];sessionId=null;
-        chatEl.innerHTML='<div class="msg-system">New chat started</div>';
-        inputEl.focus();
-    }
-
-    function quickAction(text){
-        inputEl.value=text;
-        inputEl.focus();
-        sendMessage();
-    }
-
-    async function sendMessage(){
-        const text=inputEl.value.trim();
-        if(!text||sending)return;
-        sending=true;sendBtn.disabled=true;
-        inputEl.value='';inputEl.style.height='auto';
-        addMsg(escHtml(text),'user');
-        chatHistory.push({role:'user',content:text});
-        showTyping();
-        try{
-            const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({message:text,history:chatHistory.slice(-20),sessionId})});
-            const d=await r.json();
-            removeTyping();
-            if(d.sessionId)sessionId=d.sessionId;
-            if(d.error){addError(d.error)}
-            else{
-                if(d.toolCalls&&d.toolCalls.length>0){
-                    for(const tc of d.toolCalls){
-                        const argsStr=Object.entries(tc.args||{}).map(([k,v])=>k+': '+v).join(', ');
-                        addMsg('<div class="tool-label">Tool</div>'+escHtml(tc.tool)+'('+escHtml(argsStr)+')','ai tool-call');
-                        addMsg('<div class="result-label">Result</div>'+escHtml(tc.result?.message||''),'ai tool-result');
-                    }
-                }
-                try{ addMsg(marked.parse(d.reply),'ai'); } catch{ addMsg(escHtml(d.reply).replace(/\\n/g,'<br>'),'ai'); }
-                chatHistory.push({role:'assistant',content:d.reply});
-            }
-        }catch(e){removeTyping();addError('Connection error: '+e.message)}
-        sending=false;sendBtn.disabled=false;inputEl.focus();
-    }
-
-    inputEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}});
-    inputEl.addEventListener('input',()=>{inputEl.style.height='auto';inputEl.style.height=Math.min(inputEl.scrollHeight,140)+'px'});
-
-    // WebSocket - progress in chat
-    function connectWS(){
-        ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws');
-        ws.onopen=()=>{ws.send(JSON.stringify({type:'auth',userId:${user.id},role:'${user.role}'}))};
-        ws.onmessage=e=>{
-            const m=JSON.parse(e.data);
-            if(m.type==='new_download'){addProgressCard(m.jobId,m.title)}
-            else if(m.type==='download_progress'){updateProgressCard(m.jobId,{status:'Downloading',percent:m.percent,speed:m.speed,eta:m.eta})}
-            else if(m.type==='download_complete'){completeProgressCard(m.jobId,m.success,m.error)}
-        };
-        ws.onclose=()=>setTimeout(connectWS,3000);
-    }
-
-    // Bot status - just shows dot, no modal
-    async function checkBotStatus(){
-        try{
-            const r=await fetch('/api/bot/status',{credentials:'include'});
-            const d=await r.json();
-            const dot=document.getElementById('botDot');
-            const el=document.getElementById('botStatus');
-            const btn=document.getElementById('btnReconnect');
-            if(!el)return;
-            if(d.connected){
-                dot.className='bot-dot on';el.textContent='Bot Connected';el.style.color='#4ade80';
-                btn.style.display='none';
-            }else if(d.auth&&d.auth.step!=='idle'&&d.auth.step!=='done'&&d.auth.step!=='error'){
-                dot.className='bot-dot wait';el.textContent='Auth: '+d.auth.step;el.style.color='#fbbf24';
-                btn.style.display='none';
-            }else if(d.connecting){
-                dot.className='bot-dot wait';el.textContent='Connecting...';el.style.color='#fbbf24';btn.style.display='none';
-            }else{
-                dot.className='bot-dot off';el.textContent='Bot Disconnected - type "connect bot" to start';el.style.color='#f87171';
-                btn.style.display='none';
-            }
-        }catch(e){}
-    }
-    async function logout(){await fetch('/api/auth/logout',{method:'POST',credentials:'include'});location.href='/login'}
-
-    checkBotStatus();setInterval(checkBotStatus,15000);
-    connectWS();
-    </script>
-</body>
-</html>`;
-}
-
-function getAdminPage(user: any): string {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin - Movie Downloader</title>
-    <style>
-        *{margin:0;padding:0;box-sizing:border-box}
-        body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a0f;color:#e0e0e0}
-        .topbar{display:flex;justify-content:space-between;align-items:center;padding:16px 32px;background:#0d0d14;border-bottom:1px solid #1e1e2e}
-        .topbar h1{font-size:18px;color:#00d4ff}
-        .topbar a{color:#888;text-decoration:none;font-size:13px;margin-left:16px}
-        .container{max-width:900px;margin:0 auto;padding:24px}
-        .card{background:#12121a;border:1px solid #1e1e2e;border-radius:12px;padding:24px;margin-bottom:20px}
-        .card h2{font-size:16px;margin-bottom:16px;color:#00d4ff}
-        table{width:100%;border-collapse:collapse}
-        th,td{text-align:left;padding:10px 12px;border-bottom:1px solid #1e1e2e;font-size:13px}
-        th{color:#666;text-transform:uppercase;font-size:11px}
-        button{padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:13px}
-        .btn-primary{background:linear-gradient(135deg,#00d4ff,#0088cc);color:#fff}
-        .btn-danger{background:#ff444422;color:#ff4444}
-        .form-row{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-        .form-row input,.form-row select{padding:10px 14px;background:#1a1a2e;border:1px solid #2a2a3e;border-radius:8px;color:#fff;font-size:14px}
-    </style>
+    <title>CineGrab - Media Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
-    <div class="topbar">
-        <h1>Admin Panel</h1>
-        <div><a href="/">Dashboard</a><a href="#" onclick="logout()">Logout</a></div>
-    </div>
-    <div class="container">
-        <div class="card">
-            <h2>Add User</h2>
-            <div class="form-row">
-                <input type="text" id="newName" placeholder="Name">
-                <input type="email" id="newEmail" placeholder="Email">
-                <input type="password" id="newPass" placeholder="Password">
-                <select id="newRole"><option value="user">User</option><option value="admin">Admin</option></select>
-                <button class="btn-primary" onclick="addUser()">Add</button>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="app-sidebar" id="appSidebar">
+            <div class="sidebar-header">
+                <a href="#" class="brand-logo" onclick="switchView('chat')">
+                    <div class="brand-icon-box">
+                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
+                    </div>
+                    <span class="brand-name">CineGrab</span>
+                    <span class="brand-tag">Studio</span>
+                </a>
+                <button class="sidebar-toggle-btn" onclick="toggleSidebar()">
+                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>
+                </button>
             </div>
-            <div id="addResult" style="font-size:13px;margin-top:8px"></div>
-        </div>
-        <div class="card">
-            <h2>Users</h2>
-            <table>
-                <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
-                <tbody id="usersTable"><tr><td colspan="5">Loading...</td></tr></tbody>
-            </table>
-        </div>
+
+            <div class="sidebar-content">
+                <div>
+                    <div class="nav-group-title">Navigation</div>
+                    <nav class="sidebar-nav">
+                        <a class="nav-link active" data-view="chat" onclick="switchView('chat')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
+                            <span>AI Copilot</span>
+                        </a>
+                        <a class="nav-link" data-view="studio" onclick="switchView('studio')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
+                            <span>Search & Discover</span>
+                        </a>
+                        <a class="nav-link" data-view="downloads" onclick="switchView('downloads')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                            <span>Download Station</span>
+                            <span class="nav-badge" id="activeDownloadsBadge" style="display:none">0</span>
+                        </a>
+                        <a class="nav-link" data-view="jellyfin" onclick="switchView('jellyfin')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                            <span>Jellyfin Library</span>
+                        </a>
+                        <a class="nav-link" data-view="bot" onclick="switchView('bot')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M15 10l-4 4l6 6l4 -16l-18 7l4 2l2 6l3 -4"/></svg>
+                            <span>Telegram Bot</span>
+                        </a>
+                        ${isAdmin ? `
+                        <a class="nav-link" data-view="admin" onclick="switchView('admin')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
+                            <span>User Management</span>
+                        </a>` : ""}
+                    </nav>
+                </div>
+
+                <div>
+                    <div class="nav-group-title" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>Recent Chats</span>
+                        <button style="background:none; border:none; color:var(--accent-blue); cursor:pointer; font-size:11px; font-weight:600;" onclick="startNewChat()">+ New</button>
+                    </div>
+                    <div class="chat-sessions-list" id="chatSessionsList">
+                        <div style="font-size:11.5px; color:var(--text-muted); padding:4px 8px;">No chats yet</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <div class="user-card" id="userCardTrigger" onclick="toggleUserMenu()">
+                    <div class="user-avatar">${(user.name || user.email || "U").charAt(0).toUpperCase()}</div>
+                    <div class="user-info">
+                        <div class="user-name">${user.name || (user.email ? user.email.split("@")[0] : "User")}</div>
+                        <div class="user-role-badge">${user.role || "user"}</div>
+                    </div>
+                </div>
+
+                <div class="user-popover hidden" id="userPopover">
+                    <button class="popover-item" onclick="startNewChat()">
+                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
+                        New Chat Session
+                    </button>
+                    ${isAdmin ? `
+                    <button class="popover-item" onclick="switchView('admin')">
+                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z"/><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/></svg>
+                        Admin Panel
+                    </button>` : ""}
+                    <button class="popover-item danger" onclick="logoutUser()">
+                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M14 8v-2a2 2 0 0 0 -2 -2h-7a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2 -2v-2"/><path d="M9 12h12l-3 -3"/><path d="M18 15l3 -3"/></svg>
+                        Log Out
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="app-main">
+            <!-- Header Bar -->
+            <header class="main-header">
+                <div class="header-left">
+                    <button class="sidebar-toggle-btn" onclick="toggleSidebar()">
+                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 6l16 0"/><path d="M4 12l16 0"/><path d="M4 18l16 0"/></svg>
+                    </button>
+                    <div class="header-title-wrap">
+                        <h2 class="header-view-title" id="headerViewTitle">AI Copilot Assistant</h2>
+                        <div class="bot-status-pill" onclick="switchView('bot')">
+                            <span class="status-dot connecting" id="headerBotDot"></span>
+                            <span id="headerBotStatusText" style="font-size:11.5px;">Checking bot...</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="header-right">
+                    <button class="btn-header" onclick="switchView('studio')">
+                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
+                        Search
+                    </button>
+                    <button class="btn-header primary" onclick="startNewChat()">
+                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
+                        New Chat
+                    </button>
+                </div>
+            </header>
+
+            <!-- VIEW 1: AI COPILOT CHAT -->
+            <section class="view-container active" id="view-chat">
+                <div class="chat-scroll-area" id="chatMessagesBox">
+                    <div class="chat-welcome-card">
+                        <div class="welcome-icon-box">
+                            <svg class="tabler-icon" style="width:24px;height:24px;" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
+                        </div>
+                        <h2>Media Search & Downloader</h2>
+                        <p>Find movies, full TV series seasons, episodes, or inspect Jellyfin libraries.</p>
+                        <div class="quick-prompts-grid">
+                            <button class="quick-prompt-btn" onclick="handleQuickPrompt('Search Inception 2010 movie')">
+                                <svg class="tabler-icon text-blue" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
+                                <div>
+                                    <strong>Inception (2010)</strong>
+                                    <div class="text-muted" style="font-size: 11px;">Search movie releases</div>
+                                </div>
+                            </button>
+                            <button class="quick-prompt-btn" onclick="handleQuickPrompt('Check bot connection status')">
+                                <svg class="tabler-icon text-blue" viewBox="0 0 24 24"><path d="M15 10l-4 4l6 6l4 -16l-18 7l4 2l2 6l3 -4"/></svg>
+                                <div>
+                                    <strong>Telegram Bot Status</strong>
+                                    <div class="text-muted" style="font-size: 11px;">View link & 2FA state</div>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="chat-input-container">
+                    <div class="chat-input-bar">
+                        <textarea id="chatInput" class="chat-textarea" placeholder="Search movie, full season, single episode, or query status..." rows="1"></textarea>
+                        <button class="btn-chat-send" id="btnSendChat" onclick="sendChatMessage()" title="Send">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 14l11 -11"/><path d="M21 3l-6.5 18a.55 .55 0 0 1 -1 0l-3.5 -7l-7 -3.5a.55 .55 0 0 1 0 -1l18 -6.5"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW 2: SEARCH & DISCOVER STUDIO -->
+            <section class="view-container" id="view-studio">
+                <div class="studio-wrap">
+                    <div class="studio-header">
+                        <h1>Search & Discover Studio</h1>
+                        <p>Direct search Telegram ProSearch Bots with instant quality matrix recommendations.</p>
+                    </div>
+
+                    <div class="studio-search-card">
+                        <div class="search-type-tabs">
+                            <button class="type-tab-btn active" id="studioTypeMovie" onclick="setStudioType('movie')">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
+                                Movie
+                            </button>
+                            <button class="type-tab-btn" id="studioTypeSeries" onclick="setStudioType('series')">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M3 7m0 2a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z"/><path d="M16 3l-4 4l-4 -4"/></svg>
+                                TV Series
+                            </button>
+                        </div>
+                        <div class="search-input-group">
+                            <input type="text" id="studioSearchInput" class="form-input" placeholder="Title (e.g. Interstellar, Severance, Arcane)...">
+                            <input type="text" id="studioYearInput" class="form-input" placeholder="Year (e.g. 2024)">
+                            <button class="btn-primary-action" id="btnStudioSearch" onclick="performStudioSearch()">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
+                                Search Releases
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="studio-results-area" id="studioResultsArea">
+                        <div style="text-align:center; padding: 40px; color: var(--text-muted);">
+                            <div style="font-weight: 600; color: #fff; font-size: 14px;">Ready to Search</div>
+                            <div style="font-size: 12.5px; margin-top: 4px;">Enter a title above to discover release qualities, file sizes, and season packs.</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW 3: LIVE DOWNLOAD STATION -->
+            <section class="view-container" id="view-downloads">
+                <div class="download-station-wrap">
+                    <div class="metrics-row">
+                        <div class="metric-card">
+                            <div class="metric-icon-box active">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricActiveCount">0</div>
+                                <div class="metric-label">Active Downloads</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box waiting">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 6 12 12 16 14"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricWaitingCount">0</div>
+                                <div class="metric-label">Queued Jobs</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box completed">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricCompletedCount">0</div>
+                                <div class="metric-label">Completed Files</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box failed">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricFailedCount">0</div>
+                                <div class="metric-label">Failed / Retries</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="active-downloads-section">
+                        <div class="section-title-wrap">
+                            <h2 style="font-size: 15px;">Active Live Streams</h2>
+                        </div>
+                        <div class="live-downloads-grid" id="liveDownloadsGrid"></div>
+                        <div id="noActiveDownloadsMsg" style="text-align:center; padding: 24px; color: var(--text-muted); background: var(--bg-surface); border-radius: var(--radius-sm); border: 1px dashed var(--border-subtle);">
+                            No active downloads in progress. Start one from AI Copilot or Search Studio.
+                        </div>
+                    </div>
+
+                    <div class="history-card">
+                        <div class="history-toolbar">
+                            <h2 style="font-size: 15px;">Download History</h2>
+                            <input type="text" id="historySearchFilter" class="search-filter-input" placeholder="Filter downloads..." oninput="loadDownloadHistory(1)">
+                        </div>
+                        <div class="data-table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Title</th>
+                                        <th>Type</th>
+                                        <th>Size</th>
+                                        <th>Status</th>
+                                        <th>Date</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="downloadHistoryTableBody">
+                                    <tr><td colspan="5" style="text-align:center; padding: 20px;">Loading records...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW 4: JELLYFIN MEDIA HUB -->
+            <section class="view-container" id="view-jellyfin">
+                <div class="jellyfin-wrap">
+                    <div class="jf-hero-card">
+                        <div>
+                            <span class="chip jellyfin">Media Server</span>
+                            <h1 style="font-size: 20px; margin: 6px 0 2px;">Jellyfin Integration</h1>
+                            <p style="color: var(--text-secondary); font-size: 12.5px;">Direct library inspection prevents duplicate downloads.</p>
+                        </div>
+                        <div class="metric-icon-box completed" style="width: 44px; height: 44px;">
+                            <svg class="tabler-icon" style="width:24px;height:24px;" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                        </div>
+                    </div>
+
+                    <div class="jf-stats-grid">
+                        <div class="metric-card">
+                            <div class="metric-icon-box active">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="jfMoviesCount">--</div>
+                                <div class="metric-label">Movies in Library</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box waiting">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M3 7m0 2a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="jfSeriesCount">--</div>
+                                <div class="metric-label">TV Series in Library</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box completed">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="jfTotalCount">--</div>
+                                <div class="metric-label">Total Library Items</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="studio-search-card">
+                        <h3 style="font-size: 14px;">Library Duplicate Checker</h3>
+                        <p style="font-size: 12.5px; color: var(--text-secondary);">Test whether any title exists on your Jellyfin server before searching Telegram.</p>
+                        <div style="display: flex; gap: 8px; margin-top: 8px;">
+                            <input type="text" id="jfCheckInput" class="form-input" placeholder="Title (e.g. Breaking Bad, Dune)..." style="flex: 1;">
+                            <button class="btn-primary-action" onclick="checkJellyfinItem()">Check Jellyfin</button>
+                        </div>
+                        <div id="jfCheckResultBox" style="display:none; margin-top: 10px; padding: 10px; background: var(--bg-input); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW 5: TELEGRAM BOT & 2FA CONTROL -->
+            <section class="view-container" id="view-bot">
+                <div class="bot-center-wrap">
+                    <div class="bot-connection-card">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div>
+                                <h2 style="font-size: 16px;">Telegram Bot Gateway</h2>
+                                <p style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">MTProto client session and authentication state.</p>
+                            </div>
+                            <button class="btn-primary-action" onclick="startBotReconnect()">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                Reconnect Bot
+                            </button>
+                        </div>
+
+                        <div class="bot-state-banner">
+                            <div style="display:flex; align-items:center; gap: 10px;">
+                                <div class="status-dot connecting" id="botCenterStatusDot"></div>
+                                <div>
+                                    <strong style="font-size: 13px; color: #fff;">MTProto Client Connection</strong>
+                                    <div style="font-size: 11.5px; color: var(--text-secondary);" id="botCenterStatusDetail">Monitoring connection...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="botAuthWizardArea" style="display:none;"></div>
+                </div>
+            </section>
+
+            <!-- VIEW 6: ADMIN USER MANAGEMENT -->
+            ${isAdmin ? `
+            <section class="view-container" id="view-admin">
+                <div class="admin-wrap">
+                    <div class="studio-search-card">
+                        <h2 style="font-size: 15px;">Create New User</h2>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 110px auto; gap: 8px; margin-top: 10px;">
+                            <input type="text" id="adminNewName" class="form-input" placeholder="Name">
+                            <input type="email" id="adminNewEmail" class="form-input" placeholder="Email">
+                            <input type="password" id="adminNewPass" class="form-input" placeholder="Password">
+                            <select id="adminNewRole" class="form-input" style="background: var(--bg-input);">
+                                <option value="user">User</option>
+                                <option value="admin">Admin</option>
+                            </select>
+                            <button class="btn-primary-action" onclick="addAdminUser()">Add User</button>
+                        </div>
+                    </div>
+
+                    <div class="history-card">
+                        <h2 style="font-size: 15px;">Registered Users</h2>
+                        <div class="data-table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>Email</th>
+                                        <th>Role</th>
+                                        <th>Registered</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="adminUsersTableBody">
+                                    <tr><td colspan="5" style="text-align:center; padding: 20px;">Loading users...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>` : ""}
+        </main>
     </div>
+
     <script>
-        async function loadUsers(){const r=await fetch('/api/admin/users');const d=await r.json();document.getElementById('usersTable').innerHTML=d.users.map(u=>'<tr><td>'+u.name+'</td><td>'+u.email+'</td><td style="color:'+(u.role==='admin'?'#00d4ff':'#888')+'">'+u.role+'</td><td>'+new Date(u.createdAt).toLocaleDateString()+'</td><td><button class="btn-danger" onclick="deleteUser('+u.id+')">Delete</button></td></tr>').join('')}
-        async function addUser(){const r=await fetch('/api/admin/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:document.getElementById('newName').value,email:document.getElementById('newEmail').value,password:document.getElementById('newPass').value,role:document.getElementById('newRole').value})});const d=await r.json();document.getElementById('addResult').innerHTML=d.success?'<span style="color:#00ff88">User created</span>':'<span style="color:#ff4444">'+d.error+'</span>';if(d.success)loadUsers()}
-        async function deleteUser(id){if(!confirm('Delete this user?'))return;await fetch('/api/admin/users/'+id,{method:'DELETE'});loadUsers()}
-        async function logout(){await fetch('/api/auth/logout',{method:'POST'});location.href='/login'}
-        loadUsers();
+        window.__APP_USER__ = ${userJson};
     </script>
+    <script src="/js/app.js"></script>
 </body>
 </html>`;
 }

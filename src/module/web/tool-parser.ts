@@ -1,4 +1,4 @@
-﻿// TOOL CALL PARSER - Handles multiple AI output formats
+// TOOL CALL PARSER - Robust parser for AI output formats
 
 const KNOWN_TOOLS = [
     "web_search", "search_movie", "search_series", "download_movie", "download_episode",
@@ -7,46 +7,74 @@ const KNOWN_TOOLS = [
 ];
 
 export function parseToolCall(text: string): { tool: string; args: Record<string, any> } | null {
+    if (!text || typeof text !== "string") return null;
 
-    // Format 1: JSON {"tool": "name", "args": {...}}
-    const jsonRegex = /\{"tool"\s*:\s*"([^"]+)"\s*,\s*"args"\s*:\s*(\{[\s\S]*?\})\s*\}/;
-    const jsonMatch = text.match(jsonRegex);
-    if (jsonMatch) {
-        const tool = jsonMatch[1];
-        if (!KNOWN_TOOLS.includes(tool)) return null;
-        let args: Record<string, any> = {};
-        try { args = JSON.parse(jsonMatch[2]); } catch {}
-        return { tool, args };
-    }
+    const trimmed = text.trim();
 
-    // Format 2: XML tool_call with function= and parameter tags
-    const tcMatch = text.match(/tool_call[^>]*>([\s\S]*?)<\/tool_call/i);
-    if (tcMatch) {
-        const inner = tcMatch[1];
-        const funcMatch = inner.match(/function=([a-z_]+)/i);
-        if (funcMatch) {
-            const tool = funcMatch[1];
-            if (!KNOWN_TOOLS.includes(tool)) return null;
-            const args: Record<string, any> = {};
-            const paramRegex = /parameter\s+name="([^"]+)"[^>]*>([\s\S]*?)<\/parameter/gi;
-            let m;
-            while ((m = paramRegex.exec(inner)) !== null) {
-                args[m[1]] = m[2].trim();
-            }
-            if (Object.keys(args).length === 0) {
-                const kvRegex = /([a-z_]+)\s*=\s*([^\s<]+)/gi;
-                let kv;
-                while ((kv = kvRegex.exec(inner)) !== null) {
-                    args[kv[1]] = kv[2].replace(/["']/g, "");
+    // 1. Check for JSON in codeblocks or raw text
+    // E.g., ```json\n{ "tool": "search_series", "args": { "title": "..." } }\n```
+    const cleanedText = trimmed.replace(/^```(?:json|xml)?\s*/i, "").replace(/\s*```$/i, "");
+
+    // Try finding JSON objects
+    const jsonMatches = cleanedText.match(/\{[\s\S]*\}/g);
+    if (jsonMatches) {
+        for (const candidate of jsonMatches) {
+            try {
+                const obj = JSON.parse(candidate);
+                // Check format: {"tool": "name", "args": {...}}
+                if (obj.tool && KNOWN_TOOLS.includes(obj.tool)) {
+                    return { tool: obj.tool, args: obj.args || {} };
+                }
+                // Check format: {"name": "tool_name", "parameters": {...}} or {"function": "...", "arguments": {...}}
+                const toolName = obj.name || obj.function;
+                if (toolName && KNOWN_TOOLS.includes(toolName)) {
+                    return { tool: toolName, args: obj.parameters || obj.arguments || obj.args || {} };
+                }
+            } catch {
+                // Regex fallback for non-strict JSON
+                const looseMatch = candidate.match(/\{\s*["']?tool["']?\s*:\s*["']([^"']+)["']\s*,\s*["']?args["']?\s*:\s*(\{[\s\S]*?\})\s*\}/i);
+                if (looseMatch) {
+                    const tool = looseMatch[1];
+                    if (KNOWN_TOOLS.includes(tool)) {
+                        try {
+                            const args = JSON.parse(looseMatch[2]);
+                            return { tool, args };
+                        } catch {}
+                    }
                 }
             }
-            return { tool, args };
         }
     }
 
-    // Format 3: bare function call like bot_reconnect() or web_search("query")
+    // 2. XML tool_call with function= and parameter tags
+    const tcMatch = text.match(/tool_call[^>]*>([\s\S]*?)<\/tool_call/i);
+    if (tcMatch) {
+        const inner = tcMatch[1];
+        const funcMatch = inner.match(/function=["']?([a-z_]+)["']?/i);
+        if (funcMatch) {
+            const tool = funcMatch[1];
+            if (KNOWN_TOOLS.includes(tool)) {
+                const args: Record<string, any> = {};
+                const paramRegex = /parameter\s+name=["']?([^"'>\s]+)["']?[^>]*>([\s\S]*?)<\/parameter/gi;
+                let m;
+                while ((m = paramRegex.exec(inner)) !== null) {
+                    args[m[1]] = m[2].trim();
+                }
+                if (Object.keys(args).length === 0) {
+                    const kvRegex = /([a-z_]+)\s*=\s*["']?([^"'\s<]+)["']?/gi;
+                    let kv;
+                    while ((kv = kvRegex.exec(inner)) !== null) {
+                        args[kv[1]] = kv[2].replace(/["']/g, "");
+                    }
+                }
+                return { tool, args };
+            }
+        }
+    }
+
+    // 3. Bare function call like web_search("query") or search_series(title="...")
     for (const tool of KNOWN_TOOLS) {
-        const bareRegex = new RegExp(tool + "\\s*\\(([^)]*)\\)", "i");
+        const bareRegex = new RegExp("(?:^|\\n)\\s*" + tool + "\\s*\\(([^)]*)\\)", "i");
         const bareMatch = text.match(bareRegex);
         if (bareMatch) {
             const args: Record<string, any> = {};
@@ -56,7 +84,7 @@ export function parseToolCall(text: string): { tool: string; args: Record<string
                 for (const kv of kvPairs) {
                     const parts = kv.split("=");
                     if (parts.length === 2) {
-                        args[parts[0].trim()] = parts[1].trim().replace(/["']/g, "");
+                        args[parts[0].trim()] = parts[1].trim().replace(/^["']|["']$/g, "");
                     } else {
                         const paramNames: Record<string, string[]> = {
                             web_search: ["query"],
@@ -72,7 +100,7 @@ export function parseToolCall(text: string): { tool: string; args: Record<string
                         };
                         const params = paramNames[tool];
                         if (params && params.length === 1) {
-                            args[params[0]] = kv.trim().replace(/["']/g, "");
+                            args[params[0]] = kv.trim().replace(/^["']|["']$/g, "");
                         }
                     }
                 }

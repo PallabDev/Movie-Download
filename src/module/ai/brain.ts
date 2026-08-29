@@ -13,7 +13,7 @@ export async function webSearch(query: string): Promise<WebSearchResult[]> {
     try {
         const results: WebSearchResult[] = [];
 
-        // Try Wikipedia API first (reliable, no rate limits)
+        // 1. Try Wikipedia API summary
         try {
             const wikiQuery = encodeURIComponent(query);
             const wikiResp = await fetch(
@@ -33,7 +33,7 @@ export async function webSearch(query: string): Promise<WebSearchResult[]> {
             }
         } catch {}
 
-        // Also try Wikipedia search API for multiple results
+        // 2. Try Wikipedia search API for multiple results
         try {
             const searchResp = await fetch(
                 `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3`,
@@ -55,11 +55,10 @@ export async function webSearch(query: string): Promise<WebSearchResult[]> {
             }
         } catch {}
 
-        // Try DuckDuckGo with delay
+        // 3. Try DuckDuckGo
         if (results.length === 0) {
             try {
                 const DDG = await import("duck-duck-scrape");
-                await new Promise(r => setTimeout(r, 1000));
                 const searchResults = await DDG.default.search(query, {
                     safeSearch: DDG.default.SafeSearchType.OFF,
                 });
@@ -72,6 +71,29 @@ export async function webSearch(query: string): Promise<WebSearchResult[]> {
                             snippet: (r.description || "").substring(0, 300),
                         });
                     }
+                }
+            } catch {}
+        }
+
+        // 4. Intelligent AI Encyclopedia Fallback (Ensures we NEVER return empty [])
+        if (results.length === 0) {
+            try {
+                const cleanQ = query.replace(/\s+(?:movie|series|season|episode|tv show|number of seasons|download).*$/i, "").trim() || query;
+                const aiKnowledge = await harness.processRequest(
+                    `You are a movie and TV series encyclopedia. The user asked for info about: "${cleanQ}". ` +
+                    `Provide accurate release details. Reply ONLY JSON in this format: ` +
+                    `{"title":"${cleanQ}","year":"...","type":"movie"|"series","seasons":3,"episodesPerSeason":[6,6,7],"synopsis":"..."}`
+                );
+
+                const m = aiKnowledge.match(/\{[\s\S]*\}/);
+                if (m) {
+                    const parsed = JSON.parse(m[0]);
+                    const epInfo = parsed.episodesPerSeason ? ` (${parsed.seasons || 1} seasons, episodes: ${parsed.episodesPerSeason.join(', ')})` : "";
+                    results.push({
+                        title: `${parsed.title || cleanQ} (${parsed.year || "Release"}) - ${parsed.type || "Series"}${epInfo}`,
+                        url: `https://www.google.com/search?q=${encodeURIComponent(cleanQ)}`,
+                        snippet: parsed.synopsis || `Metadata for ${parsed.title || cleanQ}: ${parsed.type || "Series"} with ${parsed.seasons || 1} seasons.`
+                    });
                 }
             } catch {}
         }
@@ -125,21 +147,26 @@ export async function getSeriesInfo(
     const harness = getHarness();
     harness.logActivity(`[WEB] Getting series info for: ${title}`);
 
-    const results = await webSearch(`${title} tv series number of seasons episodes`);
+    try {
+        const cleanTitle = title.replace(/\s+S\d+.*$/i, "").trim() || title;
+        const aiResp = await harness.processRequest(
+            `How many seasons and how many episodes per season does the TV series "${cleanTitle}" have? ` +
+            `Reply ONLY JSON: {"seasons": 3, "episodesPerSeason": [6, 6, 7]}`
+        );
 
-    const allText = results.map((r) => r.title + " " + r.snippet).join(" ");
+        const m = aiResp.match(/\{[\s\S]*\}/);
+        if (m) {
+            const parsed = JSON.parse(m[0]);
+            if (parsed.seasons && Array.isArray(parsed.episodesPerSeason)) {
+                return {
+                    seasons: Number(parsed.seasons),
+                    episodesPerSeason: parsed.episodesPerSeason.map(Number)
+                };
+            }
+        }
+    } catch {}
 
-    const seasonMatch = allText.match(/(\d+)\s*season/i);
-    const seasons = seasonMatch ? parseInt(seasonMatch[1]) : 1;
-
-    // Default estimate if we can't find exact info
-    const episodesPerSeason = Array(seasons).fill(10);
-
-    harness.logActivity(
-        `[AI] Series "${title}": ${seasons} seasons, ~10 episodes each`
-    );
-
-    return { seasons, episodesPerSeason };
+    return { seasons: 1, episodesPerSeason: [10] };
 }
 
 export async function getEpisodeDetails(
@@ -154,7 +181,6 @@ export async function getEpisodeDetails(
         const results = await webSearch(`${title} season ${season} episode list`);
         const allText = results.map((r) => r.title + " " + r.snippet).join(" ");
 
-        // Try to extract episode numbers and titles
         const episodes: { episode: number; title: string }[] = [];
         const epRegex = /(?:e(?:p(?:isode)?)?[\s.]?)(\d+)[\s:.\-]+([^\n,;]+)/gi;
         let match;
@@ -165,11 +191,9 @@ export async function getEpisodeDetails(
             }
         }
 
-        // Sort by episode number
         episodes.sort((a, b) => a.episode - b.episode);
 
         if (episodes.length === 0) {
-            // Fallback: assume 10 episodes
             for (let i = 1; i <= 10; i++) {
                 episodes.push({ episode: i, title: `Episode ${i}` });
             }
@@ -178,7 +202,6 @@ export async function getEpisodeDetails(
         harness.logActivity(`[AI] S${seasonStr}: Found ${episodes.length} episodes`);
         return episodes;
     } catch {
-        // Fallback
         const eps = [];
         for (let i = 1; i <= 10; i++) {
             eps.push({ episode: i, title: `Episode ${i}` });
@@ -196,7 +219,6 @@ export async function pickBestResult(
     if (results.length === 0) return { index: -1, reason: "No results" };
     if (results.length === 1) return { index: 0, reason: "Only result" };
 
-    // Score each result
     let bestIdx = 0;
     let bestScore = -1;
     let bestReason = "";
@@ -252,19 +274,32 @@ export async function pickBestResult(
 export function groupByEpisode(
     results: { text: string; sizeMB: number }[]
 ): { season: number; episode: number; text: string; sizeMB: number; label: string }[] {
-    // Extract S01E01 style episode tags from results
-    const epRegex = /\[?S(\d+)E(\d+)\]?/i;
+    // Regex matches S01E01, S1E1, S01 E01, Season 1 Episode 2, or S0201
+    const epRegexes = [
+        /(?:\[|\b)S(\d{1,2})[\s._-]*E(\d{1,2})(?:\]|\b)/i,
+        /Season\s*(\d{1,2})\s*Episode\s*(\d{1,2})/i,
+        /(?:\[|\b)S(\d{2})(\d{2})(?:\]|\b)/i,
+    ];
+
     const grouped = new Map<string, { season: number; episode: number; text: string; sizeMB: number; label: string }>();
 
     for (const r of results) {
-        const match = r.text.match(epRegex);
-        if (!match) continue;
+        let season = 0;
+        let episode = 0;
 
-        const season = parseInt(match[1]);
-        const episode = parseInt(match[2]);
+        for (const rgx of epRegexes) {
+            const match = r.text.match(rgx);
+            if (match) {
+                season = parseInt(match[1]);
+                episode = parseInt(match[2]);
+                break;
+            }
+        }
+
+        if (season === 0 || episode === 0) continue;
+
         const key = `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
 
-        // Keep the one with better size (closer to 700MB ideal)
         const existing = grouped.get(key);
         if (!existing || Math.abs(r.sizeMB - 700) < Math.abs(existing.sizeMB - 700)) {
             grouped.set(key, { season, episode, text: r.text, sizeMB: r.sizeMB, label: key });

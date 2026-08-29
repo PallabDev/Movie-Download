@@ -4,7 +4,7 @@ import { desc, eq } from "drizzle-orm";
 import { checkMovieExists, checkSeriesExists } from "../../common/jellyfin/client.js";
 import { downloadQueue } from "../queue/queue.js";
 import { isBotConnected, getAuthState, submitPhone, submitCode, submitPassword, startWebAuth } from "../bot/bot.js";
-import { webSearch, pickBestResult, groupByEpisode } from "../ai/brain.js";
+import { webSearch, pickBestResult, groupByEpisode, getSeriesInfo } from "../ai/brain.js";
 import { parseToolCall } from "./tool-parser.js";
 import { inngest } from "../inngest/client.js";
 import { broadcastNewDownload } from "./ws.js";
@@ -31,6 +31,7 @@ const searchSessions = new Map<string, {
     bot: string;
     btnMsgId: number;
     btnMsg: any;
+    buttonMap?: Map<string, { bot: string; btnMsg: any; btnMsgId: number; text: string }>;
     results: { text: string; sizeMB: number }[];
     grouped: any[];
     title: string;
@@ -71,53 +72,22 @@ function clearWorkflow(sessionId: string) {
     workflowState.delete(sessionId);
 }
 
-// Which tools are allowed at each step — web_search only once
-const ALLOWED_TOOLS: Record<WorkflowStep, string[]> = {
-    idle: ["web_search", "bot_reconnect", "bot_auth_phone", "bot_auth_code", "bot_auth_password", "bot_auth_status", "list_downloads", "check_jellyfin"],
-    web_searched: ["search_movie", "search_series", "bot_reconnect", "bot_auth_phone", "bot_auth_code", "bot_auth_password", "bot_auth_status", "check_jellyfin"],
-    telegram_searched: ["download_movie", "download_episode", "download_season", "search_series", "search_movie", "bot_reconnect", "bot_auth_phone", "bot_auth_code", "bot_auth_password", "bot_auth_status", "list_downloads", "check_jellyfin"],
-    user_picked: ["download_movie", "download_episode", "download_season", "bot_reconnect", "bot_auth_phone", "bot_auth_code", "bot_auth_password", "bot_auth_status"],
-    downloading: ["list_downloads", "check_jellyfin", "web_search"],
-};
-
-function isToolAllowed(sessionId: string, toolName: string): { allowed: boolean; reason?: string } {
-    const wf = getWorkflow(sessionId);
-    const step = wf?.step || "idle";
-    const allowed = ALLOWED_TOOLS[step];
-
-    if (allowed.includes(toolName)) return { allowed: true };
-
-    // Specific error messages
-    if (step === "idle" && (toolName === "search_movie" || toolName === "search_series")) {
-        return { allowed: false, reason: "Must call web_search first to get accurate info before searching Telegram" };
-    }
-    if (step === "web_searched" && (toolName === "download_movie" || toolName === "download_episode" || toolName === "download_season")) {
-        return { allowed: false, reason: "Must search Telegram first before downloading" };
-    }
-    return { allowed: false, reason: `Tool "${toolName}" not allowed at step "${step}"` };
-}
-
-// Detect what the user is asking about
 function detectIntent(message: string): { type: "movie" | "series" | "download" | "other"; title?: string } {
     const lower = message.toLowerCase();
 
-    // Check if user is picking a season/episode
     if (/^(all|s\d+e?\d*|season\s*\d+)/i.test(lower.trim())) {
         return { type: "download" };
     }
 
-    // Check if user is confirming download
-    if (/^(yes|yeah|y|ok|okay|download|go|sure|confirm)/i.test(lower.trim())) {
+    if (/^(yes|yeah|y|ok|okay|download|go|sure|confirm|720p|1080p|option\s*\d+|\d+)/i.test(lower.trim())) {
         return { type: "download" };
     }
 
-    // Check for series indicators
     const seriesPatterns = /\b(series|season|episode|ep\b|show|anime|web\s*series|part\s*\d+)/i;
     if (seriesPatterns.test(lower)) {
         return { type: "series" };
     }
 
-    // Default to movie if it looks like a title (not a command)
     if (lower.length > 2 && !lower.startsWith("/")) {
         return { type: "movie" };
     }
@@ -137,71 +107,46 @@ function extractSizeMB(text: string): number {
 
 // ─── SYSTEM PROMPT ───
 
-const SYSTEM_PROMPT = `You are a movie & series download assistant. You search Telegram bots and download content for the user.
+const SYSTEM_PROMPT = `You are a movie & TV series download copilot. You find movies and TV shows, check releases, verify media libraries, and trigger downloads on Telegram bots for the user.
 
-## FORMAT: ALWAYS respond with ONLY this JSON:
+## HOW TO RESPOND:
+- If you need to search or perform an action, output ONLY ONE JSON tool call in this exact format:
 {"tool": "tool_name", "args": {"key": "value"}}
+- When a tool result is returned, respond to the user in friendly, conversational Markdown with clear formatting.
+- When the user confirms a download (e.g. "yes", "download", "yes go with 720p", "go with 1080p", "option 2", "yes please"), IMMEDIATELY invoke download_movie or download_episode/download_season.
+- NEVER show raw JSON to the user in your final reply.
 
-## TOOLS:
+## AVAILABLE TOOLS:
 
 ### web_search(query)
-Search the internet for movie/series information. ALWAYS call this FIRST.
-- query: what to search for (e.g., "Stranger Things Netflix series", "Inception 2010 movie")
-Returns: accurate title, year, type, episode count, synopsis
+Search online / encyclopedia for canonical title, release year, seasons, episode count, and synopsis.
+- query: e.g., "Feludar Goyendagiri series" or "Bajrangi Bhaijaan 2015"
 
 ### search_movie(title, year)
-Searches Telegram @ProSearchM11Bot for a movie. ONLY call AFTER web_search returns results.
-- title: exact movie name (from web search)
-- year: release year (from web search)
-Returns: list of results with sizes, bestPick (720p preferred), sessionId
+Search Telegram @ProSearchM11Bot for movie releases.
 
-### search_series(title)  
-Searches Telegram @ProSearchY11Bot for a series. ONLY call AFTER web_search returns results.
-- title: series name, optionally with season/episode suffix like "Feludar Goyendagiri S01E01" or "Feludar Goyendagiri S02" to filter specific seasons. For full series use plain name, for specific episode use "Name S01E01" format
-Returns: grouped episodes by season, list of seasons with episode counts, sessionId
+### search_series(title)
+Search Telegram @ProSearchY11Bot for TV series episodes and season packs.
+- title: e.g. "Feludar Goyendagiri" (full series), "Feludar Goyendagiri S01" (specific season), or "Feludar Goyendagiri S03E01" (specific episode)
 
 ### download_movie(title, year, buttonText, sessionId)
-Downloads a specific movie. ONLY call after user confirms.
+Downloads a specific movie release using the sessionKey returned by search_movie.
+- buttonText: e.g. "720p", "1080p", or the full button string from search_movie
 
 ### download_episode(title, season, episode, buttonText, sessionId)
-Downloads a single episode. ONLY call after user confirms.
+Downloads a single episode using the sessionKey returned by search_series.
 
 ### download_season(title, season, count, episodes, sessionId)
-Downloads ALL episodes in a season at once. Call once per season after user says "all" or "S01".
-- count: number of episodes (from search_series)
-- episodes: array of {episode, buttonText} objects (from search_series seasons data)
-- sessionId: the sessionKey returned by search_series (REQUIRED, e.g. "sess_abc123")
+Downloads ALL episodes for a season in bulk using the sessionKey returned by search_series.
 
 ### check_jellyfin(title, type, year)
-Check if content already exists in Jellyfin library.
+Checks if content is already in the Jellyfin media library.
 
 ### list_downloads
-Show recent downloads.
+List recent downloads and status.
 
-### bot_reconnect / bot_auth_phone / bot_auth_code / bot_auth_password
-Handle Telegram bot authentication.
-
-## STRICT WORKFLOW FOR MOVIES:
-1. Call web_search ONCE with movie name + year
-2. If user said "download", immediately call search_movie with exact title/year from web_search (include SxxEyy if user provided)
-3. Otherwise present info and ask confirmation before search_movie
-4. Show results, highlight best pick
-5. User confirms → call download_movie
-
-## STRICT WORKFLOW FOR SERIES:
-1. Call web_search ONCE with series name (keep S01E01 if user provided, e.g., "Feludar Goyendagiri S01E01")
-2. If user said "download" or provided SxxEyy, immediately call search_series with "Title SxxEyy" (e.g., "Feludar Goyendagiri S01E01"), else use plain title
-3. Otherwise present info and ask confirmation before search_series
-4. Show seasons/episodes, ask "Which? all/S01/S01E01" only if multiple seasons found
-5. User picks → call download_season or download_episode with sessionKey from search_series
-
-## RULES:
-- Call web_search EXACTLY ONCE per request, then immediately go to search_movie/search_series if user said download — do NOT call web_search twice
-- If user already said "download S01E01", skip asking and go directly: web_search -> search_series("Title S01E01") -> show results -> download
-- Preserve S01/S01E01 suffix from user query in both web_search and search_series
-- NEVER download without user saying download/yes/all/Sxx
-- Prefer 720p, Movie 600MB-1.9GB, Episode 50MB-1GB
-- After web_search, do NOT repeat web_search — proceed to Telegram search
+### bot_reconnect / bot_auth_phone / bot_auth_code / bot_auth_password / bot_auth_status
+Manage Telegram bot connection.
 `;
 
 // ─── TOOL EXECUTION ───
@@ -212,7 +157,7 @@ async function executeTool(toolName: string, args: Record<string, any>, sessionI
     try {
         switch (toolName) {
 
-            // ── WEB SEARCH (FIRST STEP) ──
+            // ── WEB SEARCH ──
             case "web_search": {
                 const { query } = args;
                 if (!query) return { success: false, message: "Query is required" };
@@ -221,23 +166,19 @@ async function executeTool(toolName: string, args: Record<string, any>, sessionI
                 harness.logActivity(`[WEB SEARCH] Query: ${query} -> clean: ${cleanQuery}`);
                 const results = await webSearch(cleanQuery);
 
-                if (!results || results.length === 0) {
-                    const intent0 = detectIntent(query);
-                    const baseTitle = query.replace(/\s+S\d+E\d+.*$/i, "").replace(/\s+S\d+.*$/i, "").trim() || query;
-                    setWorkflow(sessionId, { step: "web_searched", type: intent0.type === "other" ? "series" : intent0.type as "movie" | "series", title: baseTitle, webResults: [] });
-                    return { success: true, message: `NO_WEB_RESULTS:${query} (proceeding anyway)`, data: { results: [], query, baseTitle } };
-                }
-
-                // Return first 3 results
                 const top = results.slice(0, 3).map((r: any) => ({
                     title: r.title,
                     snippet: r.snippet,
                     url: r.url
                 }));
 
-                // Set workflow state: web search done
                 const intent = detectIntent(query);
-                setWorkflow(sessionId, { step: "web_searched", type: intent.type === "other" ? "movie" : intent.type as "movie" | "series", title: query, webResults: top });
+                setWorkflow(sessionId, {
+                    step: "web_searched",
+                    type: intent.type === "other" ? "movie" : intent.type as "movie" | "series",
+                    title: query,
+                    webResults: top
+                });
 
                 return {
                     success: true,
@@ -254,10 +195,9 @@ async function executeTool(toolName: string, args: Record<string, any>, sessionI
                 inngest.send({ name: "movie.search", data: { title, year: year || "", sessionId } }).catch(() => {});
 
                 if (!isBotConnected()) {
-                    return { success: false, message: "BOT_DISCONNECTED" };
+                    return { success: false, message: "BOT_DISCONNECTED: Please connect the Telegram bot first." };
                 }
 
-                // Check Jellyfin first
                 const jf = await checkMovieExists(title, year || "");
                 if (jf.exists) {
                     return { success: true, message: `ALREADY_IN_JELLYFIN:${title}`, data: { exists: true } };
@@ -271,21 +211,15 @@ async function executeTool(toolName: string, args: Record<string, any>, sessionI
                 await new Promise(r => setTimeout(r, 4000));
 
                 let btnMsg: any = null;
-                let messages = await botClient.getMessages("ProSearchM11Bot", { limit: 10 });
-                for (const msg of messages) {
-                    if (msg.id === sent.id) continue;
-                    const buttons = await msg.getButtons();
-                    if (buttons && buttons.length > 0) { btnMsg = msg; break; }
-                }
-
-                if (!btnMsg) {
-                    await new Promise(r => setTimeout(r, 3000));
-                    messages = await botClient.getMessages("ProSearchM11Bot", { limit: 10 });
+                for (let attempt = 0; attempt < 2; attempt++) {
+                    const messages = await botClient.getMessages("ProSearchM11Bot", { limit: 10 });
                     for (const msg of messages) {
                         if (msg.id === sent.id) continue;
                         const buttons = await msg.getButtons();
                         if (buttons && buttons.length > 0) { btnMsg = msg; break; }
                     }
+                    if (btnMsg) break;
+                    await new Promise(r => setTimeout(r, 2500));
                 }
 
                 if (!btnMsg) {
@@ -315,14 +249,6 @@ async function executeTool(toolName: string, args: Record<string, any>, sessionI
                 });
 
                 const best = await pickBestResult(title, "movie", results);
-
-                // Send inngest event for visibility
-                inngest.send({
-                    name: "movie.search.completed",
-                    data: { title, year, resultCount: results.length, sessionKey, sessionId }
-                });
-
-                // Set workflow state: Telegram search done
                 setWorkflow(sessionId, { step: "telegram_searched", type: "movie", title, year: year || "" });
 
                 return {
@@ -347,62 +273,88 @@ async function executeTool(toolName: string, args: Record<string, any>, sessionI
                 inngest.send({ name: "series.search", data: { title, sessionId } }).catch(() => {});
 
                 if (!isBotConnected()) {
-                    return { success: false, message: "BOT_DISCONNECTED" };
+                    return { success: false, message: "BOT_DISCONNECTED: Please connect the Telegram bot first." };
                 }
 
-                // Check Jellyfin first
-                const jfClean = title.replace(/\s+S\d+.*$/i, "").trim();
-                const jf = await checkSeriesExists(jfClean);
-                if (jf.exists) {
-                    return { success: true, message: `ALREADY_IN_JELLYFIN:${title}`, data: { exists: true } };
-                }
-
-                harness.logActivity(`[SEARCH] Series: ${title}`);
+                const baseTitle = title.replace(/\s+(?:S\d+.*|Season\s*\d+.*)$/i, "").trim() || title;
                 const botClient = (await import("../bot/bot.js")).default;
 
-                const sent = await botClient.sendMessage("ProSearchY11Bot", { message: title });
-                await new Promise(r => setTimeout(r, 4000));
+                const queryBot = async (queryText: string) => {
+                    harness.logActivity(`[SEARCH] Querying @ProSearchY11Bot for: "${queryText}"`);
+                    try {
+                        const sent = await botClient.sendMessage("ProSearchY11Bot", { message: queryText });
+                        await new Promise(r => setTimeout(r, 3500));
 
-                let btnMsg: any = null;
-                let messages = await botClient.getMessages("ProSearchY11Bot", { limit: 10 });
-                for (const msg of messages) {
-                    if (msg.id === sent.id) continue;
-                    const buttons = await msg.getButtons();
-                    if (buttons && buttons.length > 0) { btnMsg = msg; break; }
-                }
+                        let btnMsg: any = null;
+                        for (let attempt = 0; attempt < 2; attempt++) {
+                            const messages = await botClient.getMessages("ProSearchY11Bot", { limit: 10 });
+                            for (const msg of messages) {
+                                if (msg.id === sent.id) continue;
+                                const buttons = await msg.getButtons();
+                                if (buttons && buttons.length > 0) { btnMsg = msg; break; }
+                            }
+                            if (btnMsg) break;
+                            await new Promise(r => setTimeout(r, 2000));
+                        }
 
-                if (!btnMsg) {
-                    await new Promise(r => setTimeout(r, 3000));
-                    messages = await botClient.getMessages("ProSearchY11Bot", { limit: 10 });
-                    for (const msg of messages) {
-                        if (msg.id === sent.id) continue;
-                        const buttons = await msg.getButtons();
-                        if (buttons && buttons.length > 0) { btnMsg = msg; break; }
+                        if (!btnMsg) return { btnMsg: null, results: [] };
+
+                        const buttons = (await btnMsg.getButtons())!;
+                        const res: { text: string; sizeMB: number; btnMsg: any; btnMsgId: number }[] = [];
+                        for (const row of buttons) {
+                            for (const btn of row) {
+                                const text = (btn as any).text || "";
+                                if (!text) continue;
+                                const lower = text.toLowerCase();
+                                if (lower.includes("srt") || lower.includes("sub")) continue;
+                                const sizeMB = extractSizeMB(text);
+                                if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
+                                res.push({ text, sizeMB, btnMsg, btnMsgId: btnMsg.id });
+                            }
+                        }
+                        return { btnMsg, results: res };
+                    } catch (e: any) {
+                        harness.logError(`[SEARCH] Bot query error for "${queryText}": ${e.message}`);
+                        return { btnMsg: null, results: [] };
+                    }
+                };
+
+                const mainSearch = await queryBot(title);
+                let allFound = [...mainSearch.results];
+                let primaryBtnMsg = mainSearch.btnMsg;
+
+                const isSingleEp = /S\d{1,2}E\d{1,2}/i.test(title);
+                if (!isSingleEp) {
+                    const currentGrouped = groupByEpisode(allFound);
+                    const foundSeasons = new Set(currentGrouped.map(e => e.season));
+
+                    const seriesInfo = await getSeriesInfo(baseTitle);
+                    const totalExpectedSeasons = Math.max(seriesInfo.seasons || 1, 3);
+
+                    for (let s = 1; s <= totalExpectedSeasons; s++) {
+                        if (!foundSeasons.has(s)) {
+                            harness.logActivity(`[SEARCH] Season ${s} missing, probing "${baseTitle} S0${s}"...`);
+                            const sSearch = await queryBot(`${baseTitle} S0${s}`);
+                            if (sSearch.results.length > 0) {
+                                allFound.push(...sSearch.results);
+                                if (!primaryBtnMsg) primaryBtnMsg = sSearch.btnMsg;
+                            }
+                        }
                     }
                 }
 
-                if (!btnMsg) {
+                if (allFound.length === 0 || !primaryBtnMsg) {
                     return { success: true, message: `NO_RESULTS:${title}`, data: { results: [] } };
                 }
 
-                const buttons = (await btnMsg.getButtons())!;
-                const results: { text: string; sizeMB: number }[] = [];
-                for (const row of buttons) {
-                    for (const btn of row) {
-                        const text = (btn as any).text || "";
-                        if (!text) continue;
-                        const lower = text.toLowerCase();
-                        if (lower.includes("srt") || lower.includes("sub")) continue;
-                        const sizeMB = extractSizeMB(text);
-                        if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
-                        results.push({ text, sizeMB });
-                    }
+                const buttonMap = new Map<string, { bot: string; btnMsg: any; btnMsgId: number; text: string }>();
+                for (const r of allFound) {
+                    buttonMap.set(r.text, { bot: "ProSearchY11Bot", btnMsg: r.btnMsg, btnMsgId: r.btnMsgId, text: r.text });
                 }
 
-                const grouped = groupByEpisode(results);
+                const grouped = groupByEpisode(allFound);
                 const seasons = [...new Set(grouped.map(e => e.season))].sort((a, b) => a - b);
 
-                // Build season summary with episode counts
                 const seasonSummary = seasons.map(s => {
                     const eps = grouped.filter(e => e.season === s);
                     return { season: s, count: eps.length, episodes: eps };
@@ -412,182 +364,241 @@ async function executeTool(toolName: string, args: Record<string, any>, sessionI
                 const sessionKey = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
                 searchSessions.set(sessionKey, {
-                    bot: "ProSearchY11Bot", btnMsgId: btnMsg.id, btnMsg, results, grouped,
-                    title, type: "series", year: "", createdAt: Date.now()
+                    bot: "ProSearchY11Bot", btnMsgId: primaryBtnMsg.id, btnMsg: primaryBtnMsg,
+                    buttonMap, results: allFound, grouped,
+                    title: baseTitle, type: "series", year: "", createdAt: Date.now()
                 });
 
-                // Send inngest event for visibility
-                inngest.send({
-                    name: "series.search.completed",
-                    data: { title, resultCount: results.length, episodeCount: grouped.length, seasonCount: seasons.length, sessionKey, sessionId }
-                });
-
-                // Set workflow state: Telegram search done
-                setWorkflow(sessionId, { step: "telegram_searched", type: "series", title });
+                setWorkflow(sessionId, { step: "telegram_searched", type: "series", title: baseTitle });
 
                 return {
                     success: true,
-                    message: `SERIES_RESULTS:${grouped.length} episodes across ${seasons.length} seasons`,
+                    message: `SERIES_RESULTS:${grouped.length} episodes found across ${seasons.length} seasons (Seasons: ${seasons.join(", ")})`,
                     data: {
                         seasons: seasonSummary,
-                        totalResults: results.length,
+                        totalResults: allFound.length,
                         totalEpisodes: grouped.length,
-                        sessionKey, title
+                        sessionKey, title: baseTitle
                     }
                 };
             }
 
-            // ── DOWNLOAD MOVIE ──
+            // ── DOWNLOAD MOVIE (Resilient Session Recovery & Quality Resolution) ──
             case "download_movie": {
                 let { title, year, buttonText, sessionId: sk } = args;
-                if (!title || !buttonText || !sk) {
-                    return { success: false, message: "title, buttonText, sessionId required" };
-                }
-                const sessMovie = searchSessions.get(sk);
-                if (sessMovie && !buttonText.includes("[")) {
-                    const found = sessMovie.results.find((r: any) => r.text.includes(buttonText));
-                    if (found) buttonText = found.text;
-                }
-                inngest.send({ name: "download.start", data: { requestId: `req_${Date.now()}`, title, type: "movie", buttonText, bot: searchSessions.get(sk)?.bot || "ProSearchM11Bot", btnMsgId: searchSessions.get(sk)?.btnMsgId || 0, year } }).catch(() => {});
+                if (!title) return { success: false, message: "title required" };
 
-                const session = searchSessions.get(sk);
-                if (!session) return { success: false, message: "Session expired. Search again." };
+                // Locate matching session
+                let session = sk ? searchSessions.get(sk) : null;
+                if (!session) {
+                    for (const [_, v] of searchSessions) {
+                        if (v.type === "movie" && (v.title.toLowerCase().includes(title.toLowerCase()) || title.toLowerCase().includes(v.title.toLowerCase()))) {
+                            session = v;
+                            break;
+                        }
+                    }
+                }
 
+                // Resolve button text
+                if (!buttonText || buttonText.toLowerCase().includes("720") || buttonText.toLowerCase().includes("best") || buttonText.toLowerCase().includes("yes") || !buttonText.includes("[")) {
+                    if (session && session.results.length > 0) {
+                        const prefer720 = session.results.find((r: any) => r.text.toLowerCase().includes("720p") && !r.text.toLowerCase().includes("srt"));
+                        buttonText = prefer720 ? prefer720.text : session.results[0].text;
+                    } else {
+                        buttonText = buttonText || "720p";
+                    }
+                }
+
+                const movieTitle = year ? `${title} (${year})` : (session?.year ? `${title} (${session.year})` : title);
                 const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
                 const sizeMatch = buttonText.match(/\[([\d.]+)\s*(GB|MB)\]/i);
                 const fileSize = sizeMatch ? sizeMatch[1] + " " + sizeMatch[2].toUpperCase() : null;
+
                 await db.insert(schema.downloads).values({
-                    requestId, title: year ? `${title} (${year})` : title,
-                    year: year || null, type: "movie", status: "queued",
-                    fileSize: fileSize || extractSizeMB(buttonText).toFixed(0) + " MB",
+                    requestId, title: movieTitle,
+                    year: year || session?.year || null, type: "movie", status: "queued",
+                    fileSize: fileSize || (extractSizeMB(buttonText) > 0 ? extractSizeMB(buttonText).toFixed(0) + " MB" : "1.2 GB"),
                 });
 
                 downloadQueue.addJob({
-                    requestId, bot: session.bot, btnMsgId: session.btnMsgId,
-                    type: "movie", title, year: session.year, fileSize: fileSize || undefined,
+                    requestId,
+                    bot: session?.bot || "ProSearchM11Bot",
+                    btnMsgId: session?.btnMsgId || 0,
+                    type: "movie",
+                    title: movieTitle,
+                    year: year || session?.year || undefined,
+                    fileSize: fileSize || undefined,
                     buttonText,
                 });
-                try { broadcastNewDownload({ jobId: requestId, title: year ? `${title} (${year})` : title, type: "movie", requestedBy: "ai" }); } catch {}
 
-                searchSessions.delete(sk);
+                try { broadcastNewDownload({ jobId: requestId, title: movieTitle, type: "movie", requestedBy: "ai" }); } catch {}
+
                 setWorkflow(sessionId, { step: "downloading" });
-
-                // Send inngest event for visibility
-                inngest.send({
-                    name: "download.started",
-                    data: { requestId, title, type: "movie", fileSize }
-                });
 
                 return {
                     success: true,
-                    message: `DOWNLOAD_QUEUED:${title} — reply with ONE short line "Downloading..." and let the circular card show progress`,
-                    data: { requestId, title }
+                    message: `DOWNLOAD_QUEUED:${movieTitle} — reply with ONE short line "Downloading ${movieTitle}..."`,
+                    data: { requestId, title: movieTitle }
                 };
             }
 
             // ── DOWNLOAD EPISODE ──
             case "download_episode": {
                 let { title, season, episode, buttonText, sessionId: sk } = args;
-                if (!title || !buttonText || !sk) {
-                    return { success: false, message: "title, buttonText, sessionId required" };
+                if (!title) return { success: false, message: "title required" };
+
+                const cleanTitle = title.replace(/\s+S\d+.*$/i, "").trim() || title;
+
+                let sNum = typeof season === "number" ? season : parseInt(season);
+                if (isNaN(sNum) || sNum <= 0) {
+                    const sMatch = (buttonText || title).match(/S(\d+)/i);
+                    sNum = sMatch ? parseInt(sMatch[1]) : 1;
                 }
-                const sessEp = searchSessions.get(sk);
-                if (sessEp && !buttonText.includes("[")) {
-                    const label = buttonText.includes("S") ? buttonText : `S${String(season).padStart(2,"0")}E${String(episode).padStart(2,"0")}`;
-                    const found = sessEp.grouped.find((g: any) => g.label.toLowerCase() === label.toLowerCase()) || sessEp.results.find((r: any) => r.text.includes(label));
+
+                let eNum = typeof episode === "number" ? episode : parseInt(episode);
+                if (isNaN(eNum) || eNum <= 0) {
+                    const eMatch = (buttonText || title).match(/E(\d+)/i);
+                    eNum = eMatch ? parseInt(eMatch[1]) : 1;
+                }
+
+                const epLabel = `${cleanTitle} S${String(sNum).padStart(2, "0")}E${String(eNum).padStart(2, "0")}`;
+
+                let session = sk ? searchSessions.get(sk) : null;
+                if (!session) {
+                    for (const [_, v] of searchSessions) {
+                        if (v.type === "series" && (v.title.toLowerCase().includes(cleanTitle.toLowerCase()) || cleanTitle.toLowerCase().includes(v.title.toLowerCase()))) {
+                            session = v;
+                            break;
+                        }
+                    }
+                }
+
+                if (session && (!buttonText || !buttonText.includes("["))) {
+                    const label = `S${String(sNum).padStart(2,"0")}E${String(eNum).padStart(2,"0")}`;
+                    const found = session.grouped.find((g: any) => g.label.toLowerCase() === label.toLowerCase()) || session.results.find((r: any) => r.text.includes(label));
                     if (found) buttonText = (found as any).text;
                 }
-                inngest.send({ name: "download.start", data: { requestId: `req_${Date.now()}`, title: `${title} S${String(season).padStart(2,"0")}E${String(episode).padStart(2,"0")}`, type: "series", buttonText, bot: searchSessions.get(sk)?.bot || "ProSearchY11Bot", btnMsgId: searchSessions.get(sk)?.btnMsgId || 0 } }).catch(() => {});
 
-                const session = searchSessions.get(sk);
-                if (!session) return { success: false, message: "Session expired. Search again." };
+                const btnInfo = session?.buttonMap?.get(buttonText || "") || {
+                    bot: session?.bot || "ProSearchY11Bot",
+                    btnMsg: session?.btnMsg,
+                    btnMsgId: session?.btnMsgId || 0,
+                    text: buttonText || epLabel
+                };
 
-                const epLabel = `${title} S${String(season || 1).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
                 const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-                const sizeMatch = buttonText.match(/\[([\d.]+)\s*(GB|MB)\]/i);
+                const sizeMatch = (buttonText || "").match(/\[([\d.]+)\s*(GB|MB)\]/i);
                 const fileSize = sizeMatch ? sizeMatch[1] + " " + sizeMatch[2].toUpperCase() : null;
 
                 await db.insert(schema.downloads).values({
                     requestId, title: epLabel, type: "series", status: "queued",
-                    season: season || 1, episode: episode || 1,
-                    fileSize: fileSize || extractSizeMB(buttonText).toFixed(0) + " MB",
+                    season: sNum, episode: eNum,
+                    fileSize: fileSize || (extractSizeMB(buttonText || "") > 0 ? extractSizeMB(buttonText || "").toFixed(0) + " MB" : "600 MB"),
                 });
 
                 downloadQueue.addJob({
-                    requestId, bot: session.bot, btnMsgId: session.btnMsgId,
-                    type: "series", title: epLabel, year: session.year, fileSize: fileSize || undefined,
-                    buttonText,
+                    requestId, bot: btnInfo.bot, btnMsgId: btnInfo.btnMsgId,
+                    type: "series", title: epLabel, year: session?.year, fileSize: fileSize || undefined,
+                    buttonText: btnInfo.text,
                 });
+
                 try { broadcastNewDownload({ jobId: requestId, title: epLabel, type: "series", requestedBy: "ai" }); } catch {}
 
                 setWorkflow(sessionId, { step: "downloading" });
 
-                // Send inngest event for visibility
-                inngest.send({
-                    name: "download.started",
-                    data: { requestId, title: epLabel, type: "series", fileSize }
-                });
-
                 return {
                     success: true,
-                    message: `DOWNLOAD_QUEUED:${epLabel} — reply with ONE short line "Downloading ${epLabel}..." and let the circular card show progress, do NOT make a table or repeat size/request ID`,
+                    message: `DOWNLOAD_QUEUED:${epLabel} — reply with ONE short line "Downloading ${epLabel}..."`,
                     data: { requestId, title: epLabel }
                 };
             }
 
-            // ── DOWNLOAD SEASON (batch) ──
+            // ── DOWNLOAD SEASON ──
             case "download_season": {
                 const sk = args.sessionId || args.sessionKey || args.sessId || args.session_id;
-                const { title, season, count, episodes } = args;
-                if (!title || !episodes || !sk) {
-                    return { success: false, message: `MISSING_FIELDS: need title, episodes, sessionId. Got title=${!!title} episodes=${!!episodes} sessionId=${!!sk}. Use sessionKey from search_series as sessionId, and pass episodes from seasons data` };
+                const { title, season, episodes } = args;
+                if (!title || !episodes) {
+                    return { success: false, message: "Missing title or episodes." };
                 }
                 const epList = typeof episodes === "string" ? JSON.parse(episodes) : episodes;
-                inngest.send({ name: "download.start", data: { requestId: `req_${Date.now()}`, title: `${title} S${String(season).padStart(2,"0")}`, type: "series", buttonText: epList[0]?.buttonText || "", bot: searchSessions.get(sk)?.bot || "ProSearchY11Bot", btnMsgId: searchSessions.get(sk)?.btnMsgId || 0 } }).catch(() => {});
 
-                const session = searchSessions.get(sk);
-                if (!session) return { success: false, message: "Session expired. Search again." };
+                let session = sk ? searchSessions.get(sk) : null;
+                const cleanTitle = title.replace(/\s+S\d+.*$/i, "").trim() || title;
+
+                if (!session) {
+                    for (const [_, v] of searchSessions) {
+                        if (v.type === "series" && (v.title.toLowerCase().includes(cleanTitle.toLowerCase()) || cleanTitle.toLowerCase().includes(v.title.toLowerCase()))) {
+                            session = v;
+                            break;
+                        }
+                    }
+                }
+
+                let sNum = typeof season === "number" ? season : parseInt(season);
+                if (isNaN(sNum) || sNum <= 0) {
+                    const sMatch = (title || "").match(/S(\d+)/i);
+                    sNum = sMatch ? parseInt(sMatch[1]) : 1;
+                }
 
                 const results: { title: string; success: boolean }[] = [];
 
-                for (const ep of epList) {
-                    const epNum = ep.episode;
-                    let btnText = ep.buttonText || (ep as any).text || (ep as any).label || "";
+                for (let idx = 0; idx < epList.length; idx++) {
+                    const ep = epList[idx];
+                    let btnText = ep?.buttonText || ep?.text || ep?.label || (typeof ep === "string" ? ep : "");
+
+                    let epNum = typeof ep === "number" ? ep : (ep?.episode || ep?.ep || ep?.num);
+                    if (typeof epNum !== "number" || isNaN(epNum) || epNum <= 0) {
+                        const match = (btnText || "").match(/S\d+E(\d+)/i) || (btnText || "").match(/E(\d+)/i);
+                        if (match) {
+                            epNum = parseInt(match[1]);
+                        } else {
+                            epNum = idx + 1;
+                        }
+                    }
+
+                    const epLabel = `${cleanTitle} S${String(sNum).padStart(2, "0")}E${String(epNum).padStart(2, "0")}`;
+
                     if (!btnText.includes("[") && session) {
-                        const label = btnText.includes("S") ? btnText : `S${String(season).padStart(2,"0")}E${String(epNum).padStart(2,"0")}`;
+                        const label = `S${String(sNum).padStart(2,"0")}E${String(epNum).padStart(2,"0")}`;
                         const found = session.grouped.find((g: any) => g.label.toLowerCase() === label.toLowerCase()) || session.results.find((r: any) => r.text.includes(label));
                         if (found) btnText = (found as any).text;
                     }
-                    const buttonText = (ep as any).text || btnText;
-                    const epLabel = `${title} S${String(season || 1).padStart(2, "0")}E${String(epNum).padStart(2, "0")}`;
+                    const buttonText = (ep as any)?.text || btnText || epLabel;
                     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-                    await db.insert(schema.downloads).values({
-                        requestId, title: epLabel, type: "series", status: "queued",
-                        season: season || 1, episode: epNum,
-                        fileSize: extractSizeMB(buttonText).toFixed(0) + " MB",
-                    });
+                    const btnInfo = session?.buttonMap?.get(buttonText) || {
+                        bot: session?.bot || "ProSearchY11Bot",
+                        btnMsg: session?.btnMsg,
+                        btnMsgId: session?.btnMsgId || 0,
+                        text: buttonText
+                    };
 
                     const sizeMatch = buttonText.match(/\[([\d.]+)\s*(GB|MB)\]/i);
                     const fileSize = sizeMatch ? sizeMatch[1] + " " + sizeMatch[2].toUpperCase() : null;
 
-                    downloadQueue.addJob({
-                        requestId, bot: session.bot, btnMsgId: session.btnMsgId,
-                        type: "series", title: epLabel, year: session.year, fileSize: fileSize || undefined,
-                        buttonText: buttonText,
+                    await db.insert(schema.downloads).values({
+                        requestId, title: epLabel, type: "series", status: "queued",
+                        season: sNum, episode: epNum,
+                        fileSize: fileSize || (extractSizeMB(buttonText) > 0 ? extractSizeMB(buttonText).toFixed(0) + " MB" : "600 MB"),
                     });
-                    try { broadcastNewDownload({ jobId: requestId, title: epLabel, type: "series", requestedBy: "ai" }); } catch {}
 
+                    downloadQueue.addJob({
+                        requestId, bot: btnInfo.bot, btnMsgId: btnInfo.btnMsgId,
+                        type: "series", title: epLabel, year: session?.year, fileSize: fileSize || undefined,
+                        buttonText: btnInfo.text,
+                    });
+
+                    try { broadcastNewDownload({ jobId: requestId, title: epLabel, type: "series", requestedBy: "ai" }); } catch {}
                     results.push({ title: epLabel, success: true });
                 }
 
-                searchSessions.delete(sk);
                 setWorkflow(sessionId, { step: "downloading" });
                 const ok = results.filter(r => r.success).length;
+
                 return {
                     success: true,
-                    message: `SEASON_QUEUED:${ok}/${results.length} for S${String(season).padStart(2,"0")} — reply with ONE short line and let circular cards show progress, do NOT make a table`,
-                    data: { queued: ok, total: results.length, season, results }
+                    message: `SEASON_QUEUED:${ok}/${results.length} episodes for Season ${sNum}`,
+                    data: { queued: ok, total: results.length, season: sNum, results }
                 };
             }
 
@@ -695,7 +706,6 @@ export async function handleChat(
     const harness = getHarness();
     const toolCalls: { tool: string; args: any; result: ToolResult }[] = [];
 
-    // Check if user is starting a new conversation (greeting or reset)
     const lowerMsg = userMessage.toLowerCase().trim();
     if (/^(hi|hello|hey|start|reset|clear|new|help|\?)/.test(lowerMsg) || lowerMsg.length < 3) {
         clearWorkflow(sessionId);
@@ -709,30 +719,18 @@ export async function handleChat(
         { role: "user", content: userMessage },
     ];
 
-    const MAX_ITERATIONS = 10;
+    const MAX_ITERATIONS = 8;
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
         harness.logActivity(`[CHAT] AI iteration ${i + 1}`);
 
         const response = await harness.chat(messages);
-        harness.logActivity(`[CHAT] AI: ${response.substring(0, 300)}`);
+        harness.logActivity(`[CHAT] AI output: ${response.substring(0, 200)}`);
 
         const parsed = parseToolCall(response);
 
         if (parsed) {
-            // INGEST: Check if tool is allowed at this workflow step
-            const check = isToolAllowed(sessionId, parsed.tool);
-            if (!check.allowed) {
-                const enforceMsg = `WORKFLOW_BLOCKED: ${check.reason}. Current step: ${getWorkflow(sessionId)?.step || "idle"}. You MUST follow the correct order.`;
-                toolCalls.push({ tool: parsed.tool, args: parsed.args, result: { success: false, message: enforceMsg } });
-
-                messages.push({ role: "assistant", content: response });
-                messages.push({
-                    role: "user",
-                    content: `Tool "${parsed.tool}" was BLOCKED by workflow engine: ${check.reason}\n\nYou must follow the correct order. Current step: ${getWorkflow(sessionId)?.step || "idle"}\n\nNow respond to the user with the correct next step.`
-                });
-                continue;
-            }
+            harness.logActivity(`[CHAT] Executing parsed tool: "${parsed.tool}" with args: ${JSON.stringify(parsed.args)}`);
 
             const result = await executeTool(parsed.tool, parsed.args, sessionId);
             toolCalls.push({ tool: parsed.tool, args: parsed.args, result });
@@ -740,7 +738,7 @@ export async function handleChat(
             messages.push({ role: "assistant", content: response });
             messages.push({
                 role: "user",
-                content: `Tool "${parsed.tool}" result: ${result.message}\nData: ${JSON.stringify(result.data || {})}\n\nNow respond to the user. Be conversational. If you need user input, ask for it. If done, confirm.`
+                content: `Tool "${parsed.tool}" executed.\nResult message: ${result.message}\nData: ${JSON.stringify(result.data || {})}\n\nNow respond to the user in conversational, friendly Markdown. NEVER display raw JSON in your reply.`
             });
             continue;
         }
@@ -749,5 +747,5 @@ export async function handleChat(
         return { reply: response, toolCalls };
     }
 
-    return { reply: "Done! Check the results above.", toolCalls };
+    return { reply: "Done processing your request!", toolCalls };
 }

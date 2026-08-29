@@ -6,3 +6,5 @@ dist
 bot-session
 *.log
 .DS_Store
+download
+download/**

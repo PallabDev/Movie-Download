@@ -82,6 +82,44 @@ async function updateDB(requestId: string, updates: Record<string, any>) {
     }
 }
 
+function parseSizeMB(text: string): number {
+    const match = text.match(/\[([\d.]+)\s*(GB|MB|KB)\]/i);
+    if (!match) return 0;
+    const val = parseFloat(match[1]);
+    const unit = match[2].toUpperCase();
+    if (unit === "GB") return val * 1024;
+    if (unit === "MB") return val;
+    return val / 1024;
+}
+
+function isInvalidNonVideo(text: string): boolean {
+    const lower = text.toLowerCase();
+    if (
+        lower.includes(".srt") ||
+        lower.includes(" srt") ||
+        lower.includes("[srt]") ||
+        lower.includes("subtitle") ||
+        lower.includes("sub") ||
+        lower.includes("sample") ||
+        lower.includes("trailer") ||
+        lower.includes("next") ||
+        lower.includes("prev") ||
+        lower.includes("page") ||
+        lower.includes("back") ||
+        lower.includes("close")
+    ) {
+        return true;
+    }
+    if (/\[\s*[\d.]+\s*kb\s*\]/i.test(text)) {
+        return true;
+    }
+    const size = parseSizeMB(text);
+    if (size > 0 && size < 50) {
+        return true; // Any video release less than 50MB is almost certainly a subtitle/sample
+    }
+    return false;
+}
+
 async function downloadFileWithResume(
     msg: any,
     downloadPath: string,
@@ -108,13 +146,13 @@ async function downloadFileWithResume(
             try {
                 for await (const chunk of client.iterDownload(msg, {
                     offset: downloadedBytes,
-                    requestSize: 512 * 1024,
+                    requestSize: 1024 * 1024,
                 })) {
                     await fileHandle.write(chunk, 0, chunk.length, downloadedBytes);
                     downloadedBytes += chunk.length;
 
                     const now = Date.now();
-                    if (now - lastBroadcast >= 3000) {
+                    if (now - lastBroadcast >= 2000) {
                         lastBroadcast = now;
                         const pct = totalSize > 0 ? Math.min((downloadedBytes / totalSize) * 100, 100) : 0;
                         const elapsed = (now - startTime) / 1000;
@@ -154,7 +192,7 @@ async function downloadFileWithResume(
             process.stdout.write("\n");
             console.error(`[DL] Error (attempt ${attempt}):`, dlErr instanceof Error ? dlErr.message : dlErr);
             if (attempt < MAX_RETRIES) {
-                const waitSec = attempt * 5;
+                const waitSec = attempt * 4;
                 console.log(`[DL] Retrying in ${waitSec}s from ${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB...`);
                 await sleep(waitSec * 1000);
             }
@@ -167,79 +205,163 @@ export function createDownloadWorker() {
     console.log("[QUEUE] Worker initialized");
 
     downloadQueue.setProcessor(async (job) => {
-        let data = job.data;
+        const data = job.data;
+        const targetBot = data.bot || (data.type === "movie" ? "ProSearchM11Bot" : "ProSearchY11Bot");
 
         try {
-            // Step 1: Get the button message from the bot
-            console.log(`[WORKER] Fetching button message ${data.btnMsgId} from @${data.bot}`);
-            const messages = await client.getMessages(data.bot, { limit: 30 });
+            console.log(`[WORKER] Starting job: "${data.title}" via @${targetBot}`);
+            await updateDB(data.requestId, { status: "downloading" });
+
             let btnMsg: any = null;
-            for (const msg of messages) {
-                if (msg.id === data.btnMsgId) {
-                    btnMsg = msg;
-                    break;
+
+            // Step 1: Try locating the original button message
+            if (data.btnMsgId && data.btnMsgId > 0) {
+                const messages = await client.getMessages(targetBot, { limit: 20 });
+                for (const msg of messages) {
+                    if (msg.id === data.btnMsgId) {
+                        const buttons = await msg.getButtons();
+                        if (buttons && buttons.length > 0) {
+                            btnMsg = msg;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Step 2: Self-healing bot search if button message not found
+            if (!btnMsg) {
+                const searchQuery = data.title.replace(/\s*\(\d{4}\).*$/, "").trim();
+                console.log(`[WORKER] Querying @${targetBot} directly for: "${searchQuery}"`);
+                const sent = await client.sendMessage(targetBot, { message: searchQuery });
+                await sleep(3500);
+
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    const messages = await client.getMessages(targetBot, { limit: 10 });
+                    for (const msg of messages) {
+                        if (msg.id === sent.id) continue;
+                        const buttons = await msg.getButtons();
+                        if (buttons && buttons.length > 0) {
+                            btnMsg = msg;
+                            break;
+                        }
+                    }
+                    if (btnMsg) break;
+                    await sleep(2000);
                 }
             }
 
             if (!btnMsg) {
-                throw new Error("Button message not found in bot chat");
+                throw new Error(`No buttons returned by @${targetBot} for "${data.title}"`);
             }
 
-            const buttons = await btnMsg.getButtons();
-            if (!buttons) throw new Error("No buttons found on message");
+            // Step 3: Find and click the target video button
+            const buttons = (await btnMsg.getButtons())!;
+            let targetRow = -1;
+            let targetCol = -1;
+            let targetBtnText = "";
 
-            // Step 2: Click the button if buttonText is provided (bulk download)
+            const epMatch = data.title.match(/S(\d+)E(\d+)/i);
+            const epTag = epMatch ? `s${epMatch[1].padStart(2, "0")}e${epMatch[2].padStart(2, "0")}` : "";
+
+            // 1. Try matching specified buttonText (excluding subtitles / non-video)
             if (data.buttonText) {
-                let clickText: string = data.buttonText;
-                if (!clickText.includes("[")) {
-                    const btns = await btnMsg.getButtons();
-                    let found: string | null = null;
-                    for (const row of btns as any) {
-                        for (const b of row) {
-                            const t = b.text || "";
-                            if (t.includes(clickText) || clickText.includes(t.substring(0, 10))) { found = t; break; }
-                        }
-                        if (found) break;
-                    }
-                    if (found) {
-                        console.log(`[WORKER] Resolved "${clickText}" -> "${found.substring(0, 60)}"`);
-                        clickText = found;
-                    }
-                }
-                console.log(`[WORKER] Clicking button: "${clickText.substring(0, 80)}"`);
-                try {
-                    await btnMsg.click({ text: clickText });
-                } catch (e: any) {
-                    console.log(`[WORKER] Click exact failed, trying contains: ${e.message}`);
-                    const btns2 = await btnMsg.getButtons();
-                    for (const row of btns2 as any) {
-                        for (const b of row) {
-                            const t = b.text || "";
-                            if (t.includes(data.buttonText) || data.buttonText.includes(t.slice(0,8))) {
-                                await btnMsg.click({ text: t });
-                                break;
-                            }
+                const bLower = data.buttonText.toLowerCase();
+                for (let r = 0; r < buttons.length; r++) {
+                    for (let c = 0; c < buttons[r].length; c++) {
+                        const btn = buttons[r][c] as any;
+                        const text = btn.text || "";
+                        if (isInvalidNonVideo(text)) continue;
+
+                        if (text.toLowerCase().includes(bLower) || bLower.includes(text.toLowerCase().slice(0, 15))) {
+                            targetRow = r;
+                            targetCol = c;
+                            targetBtnText = btn.text;
+                            break;
                         }
                     }
+                    if (targetRow >= 0) break;
                 }
-                await sleep(2500);
             }
 
-            // Step 3: Wait for the file
-            console.log(`[WORKER] Waiting for file from @${data.bot}...`);
-            await updateDB(data.requestId, { status: "downloading" });
+            // 2. Try episode tag match for series
+            if (targetRow < 0 && epTag) {
+                for (let r = 0; r < buttons.length; r++) {
+                    for (let c = 0; c < buttons[r].length; c++) {
+                        const btn = buttons[r][c] as any;
+                        const text = (btn.text || "").toLowerCase();
+                        if (isInvalidNonVideo(btn.text || "")) continue;
 
+                        if (text.includes(`[${epTag}]`) || text.includes(epTag)) {
+                            targetRow = r;
+                            targetCol = c;
+                            targetBtnText = btn.text;
+                            break;
+                        }
+                    }
+                    if (targetRow >= 0) break;
+                }
+            }
+
+            // 3. Try quality-based match (720p preferred, then 1080p, then 480p)
+            if (targetRow < 0) {
+                const want1080 = (data.buttonText || "").toLowerCase().includes("1080");
+                const want480 = (data.buttonText || "").toLowerCase().includes("480");
+
+                for (let r = 0; r < buttons.length; r++) {
+                    for (let c = 0; c < buttons[r].length; c++) {
+                        const btn = buttons[r][c] as any;
+                        const text = (btn.text || "").toLowerCase();
+                        if (isInvalidNonVideo(btn.text || "")) continue;
+
+                        if (want1080 && text.includes("1080p")) {
+                            targetRow = r; targetCol = c; targetBtnText = btn.text; break;
+                        } else if (want480 && text.includes("480p")) {
+                            targetRow = r; targetCol = c; targetBtnText = btn.text; break;
+                        } else if (!want1080 && !want480 && text.includes("720p")) {
+                            targetRow = r; targetCol = c; targetBtnText = btn.text; break;
+                        }
+                    }
+                    if (targetRow >= 0) break;
+                }
+            }
+
+            // 4. Fallback: First valid video button with size >= 100MB
+            if (targetRow < 0) {
+                for (let r = 0; r < buttons.length; r++) {
+                    for (let c = 0; c < buttons[r].length; c++) {
+                        const btn = buttons[r][c] as any;
+                        if (isInvalidNonVideo(btn.text || "")) continue;
+                        targetRow = r;
+                        targetCol = c;
+                        targetBtnText = btn.text;
+                        break;
+                    }
+                    if (targetRow >= 0) break;
+                }
+            }
+
+            if (targetRow < 0) {
+                throw new Error(`Could not find a downloadable video release button on @${targetBot}`);
+            }
+
+            console.log(`[WORKER] Clicking verified video button [${targetRow}, ${targetCol}]: "${targetBtnText}"`);
+            const clickTriggerTime = Date.now();
+            await btnMsg.click(targetRow, targetCol);
+            await sleep(2000);
+
+            // Step 4: Wait for the file document to be delivered by the bot
+            console.log(`[WORKER] Waiting for video document from @${targetBot}...`);
             let fileReceived = false;
-            const expectedEp = data.title.match(/S(\d+)E(\d+)/i);
-            for (let attempt = 0; attempt < 30; attempt++) {
-                await sleep(3000);
-                const recent = await client.getMessages(data.bot, { limit: 15 });
+
+            for (let attempt = 0; attempt < 40; attempt++) {
+                await sleep(2500);
+                const recent = await client.getMessages(targetBot, { limit: 12 });
 
                 for (const msg of recent) {
-                    if (msg.id <= data.btnMsgId) continue;
+                    if (msg.date && msg.date * 1000 < clickTriggerTime - 5000) continue;
 
                     if (msg.document || msg.photo) {
-                        let fileName = "download.mp4";
+                        let fileName = "video.mp4";
                         let totalSize = 0;
 
                         if (msg.document) {
@@ -248,29 +370,38 @@ export function createDownloadWorker() {
                                 (a: any) => a.className === "DocumentAttributeFilename"
                             ) as any;
                             if (fnameAttr?.fileName) fileName = fnameAttr.fileName;
-                        }
 
-                        if (data.type === "series" && expectedEp) {
-                            const epTag = `S${expectedEp[1].padStart(2,"0")}E${expectedEp[2].padStart(2,"0")}`.toLowerCase();
-                            if (!fileName.toLowerCase().includes(epTag.toLowerCase()) && !fileName.toLowerCase().includes(`s${expectedEp[1]}e${expectedEp[2]}`)) {
-                                const msgText = (msg.message || "").toLowerCase();
-                                if (!msgText.includes(epTag.toLowerCase())) continue;
+                            const mime = msg.document.mimeType || "";
+
+                            // Strict check: Skip subtitles and tiny non-video files
+                            if (
+                                fileName.toLowerCase().endsWith(".srt") ||
+                                fileName.toLowerCase().endsWith(".vtt") ||
+                                fileName.toLowerCase().endsWith(".sub") ||
+                                fileName.toLowerCase().endsWith(".txt") ||
+                                mime.includes("subrip") ||
+                                mime.includes("text") ||
+                                totalSize < 20 * 1024 * 1024 // Subtitles/samples are < 20 MB
+                            ) {
+                                console.log(`[WORKER] Skipped subtitle/non-video document: "${fileName}" (${(totalSize / 1024).toFixed(0)} KB)`);
+                                continue;
                             }
                         }
 
-                        console.log(`[TG] File: "${fileName}" (${(totalSize / (1024 * 1024)).toFixed(0)} MB)`);
+                        console.log(`[TG] Received Media Video: "${fileName}" (${(totalSize / (1024 * 1024)).toFixed(0)} MB)`);
 
                         let downloadPath: string;
                         if (data.type === "movie") {
-                            downloadPath = getMoviePath(data.title, data.year || "unknown");
+                            downloadPath = getMoviePath(data.title, data.year || "unknown", fileName);
                         } else {
                             const m = data.title.match(/^(.*?)\s*S(\d+)E(\d+)/i);
                             if (m) {
                                 const baseTitle = m[1].trim();
-                                const s = parseInt(m[2]); const e = parseInt(m[3]);
-                                downloadPath = getSeriesPath(baseTitle, s, e);
+                                const s = parseInt(m[2]);
+                                const e = parseInt(m[3]);
+                                downloadPath = getSeriesPath(baseTitle, s, e, fileName);
                             } else {
-                                downloadPath = getSeriesPath(data.title, 1, 1);
+                                downloadPath = getSeriesPath(data.title, 1, 1, fileName);
                             }
                         }
 
@@ -302,26 +433,25 @@ export function createDownloadWorker() {
                     }
                 }
                 if (fileReceived) break;
-                if (attempt % 5 === 0) console.log(`[WORKER] Waiting for file... ${attempt * 3}s`);
             }
 
             if (!fileReceived) {
-                await updateDB(data.requestId, { status: "failed", error: "File not received from bot" });
+                await updateDB(data.requestId, { status: "failed", error: "Video file delivery timed out from bot" });
                 broadcastDownloadComplete(data.requestId, {
                     title: data.title,
                     type: data.type,
                     path: "",
                     success: false,
-                    error: "File not received from bot",
+                    error: "Video file delivery timed out from bot",
                 });
-                throw new Error("File not received from bot");
+                throw new Error("Video file delivery timed out from bot");
             }
 
-            console.log(`[WORKER] Job ${job.id} finished`);
+            console.log(`[WORKER] Job completed successfully: "${data.title}"`);
 
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
-            console.error(`[WORKER] Error:`, errMsg);
+            console.error(`[WORKER] Job failed:`, errMsg);
             await updateDB(data.requestId, { status: "failed", error: errMsg });
             broadcastDownloadComplete(data.requestId, {
                 title: data.title,
