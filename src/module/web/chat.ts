@@ -25,7 +25,8 @@ export async function handleChat(
     const toolCalls: { tool: string; args: any; result: ToolResult }[] = [];
 
     const lowerMsg = userMessage.toLowerCase().trim();
-    if (/^(hi|hello|hey|start|reset|clear|new|help|\?)/.test(lowerMsg) || lowerMsg.length < 3) {
+    const isSingleNumber = /^\d+$/.test(lowerMsg);
+    if (!isSingleNumber && (/^(hi|hello|hey|start|reset|clear|new|help|\?)/.test(lowerMsg) || (lowerMsg.length < 3 && !/^[1-9]$/.test(lowerMsg)))) {
         clearWorkflow(sessionId);
     }
 
@@ -39,8 +40,7 @@ export async function handleChat(
             const mediaFacts = await lookupMedia(cleanT);
             if (mediaFacts && mediaFacts.found) {
                 if (mediaFacts.type === "series") {
-                    const seasonLines = (mediaFacts.seasons || []).map(s => `Season ${s.seasonNumber}: ${s.episodeCount} episodes (${s.name})`).join(", ");
-                    tmdbGroundTruth = `\n\n[VERIFIED TMDB GROUND TRUTH FOR "${mediaFacts.title}"]:\n- Type: TV Series\n- First Air Year: ${mediaFacts.year}\n- Total Seasons: ${mediaFacts.totalSeasons}\n- Total Episodes: ${mediaFacts.totalEpisodes}\n- Season Breakdown: ${seasonLines}\n- Overview: ${mediaFacts.overview}\nCRITICAL: USE THIS EXACT VERIFIED TMDB DATA IN YOUR RESPONSE. NEVER HALLUCINATE OR INVENT DIFFERENT SEASON OR EPISODE NUMBERS.`;
+                    tmdbGroundTruth = `\n\n[NOTICE FOR "${mediaFacts.title}"]: This title is a TV Series. TV Series & TV Shows are strictly NOT supported. Inform the user politely that TV series/shows are not supported, and that only Movies are available for download.`;
                 } else if (mediaFacts.type === "movie") {
                     const collInfo = mediaFacts.collection ? `Franchise: "${mediaFacts.collection.name}" (${mediaFacts.collection.partsCount} released parts: ${mediaFacts.collection.parts.map(p => `${p.title} [${p.year}]`).join(", ")})` : "Standalone Movie";
                     tmdbGroundTruth = `\n\n[VERIFIED TMDB GROUND TRUTH FOR "${mediaFacts.title}"]:\n- Type: Movie\n- Release Year: ${mediaFacts.year}\n- ${collInfo}\n- Overview: ${mediaFacts.overview}\nCRITICAL: USE THIS EXACT VERIFIED TMDB DATA IN YOUR RESPONSE.`;

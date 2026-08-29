@@ -102,61 +102,44 @@ export function extractSizeMB(text: string): number {
 
 // ─── SYSTEM PROMPT ───
 
-export const SYSTEM_PROMPT = `You are an expert movie & TV series download copilot connected to The Movie Database (TMDB) and Telegram bots (@ProSearchM11Bot and @ProSearchY11Bot).
+export const SYSTEM_PROMPT = `You are an expert movie download copilot connected to The Movie Database (TMDB) and Telegram bot (@ProSearchM11Bot).
+
+## STRICT POLICY:
+1. ONLY MOVIES ARE SUPPORTED. TV Series, TV shows, and web series downloading is currently disabled.
+2. If the user searches for or asks to download a TV series, TV show, or web series, immediately inform them politely:
+   "⚠️ **TV Shows & Series are currently not supported.** Only **Movies** are available for download. Please tell me which movie you would like to search or download! 🎬"
+3. When searching movies, ALWAYS prioritize the **720p** release (recommend Option 2 / 720p for best balance of video quality and file size). If 720p is not available, only then recommend the best available higher quality (1080p).
+4. When the user confirms with "yes", "download", "download recommend", or chooses an option number (e.g. "1", "2", "download 2"), call 'download_movie' with the corresponding optionIndex.
 
 ## 2-STEP WORKFLOW:
 
-### STEP 1: TMDB SEARCH & PRESENTATION (Initial User Query)
-- When the user asks about a movie or series (e.g., "Eken Babu", "Eken Babu download", "Bajrangi Bhaijaan 2015"):
-  - For TV Series: Call 'search_series' (or 'tmdb_search').
-    - Displays canonical title, year, synopsis, genres, and a verified Markdown table of ALL Seasons with exact episode counts from TMDB (e.g. Seasons 1 to 9, 60 total episodes).
-    - Then prompts the user: "Which season or episodes would you like me to download? (e.g. **Download Season 1**, **Download Season 5**, **Download Seasons 6, 7, 8, 9**, **Download S01E01**, or **Download All**)".
-  - For Movies: Call 'search_movie'.
-    - Validates release on TMDB, checks Jellyfin, queries Telegram @ProSearchM11Bot, and displays available quality releases (1080p, 720p).
+### STEP 1: MOVIE SEARCH & PRESENTATION
+- When the user asks about a movie (e.g., "Grihapravesh", "Bajrangi Bhaijaan 2015", "Inception"):
+  - Call 'search_movie' with title and optional year.
+  - Presents available releases (720p, 1080p) from Telegram @ProSearchM11Bot with clear option numbers (#1, #2, #3...).
+  - Highlights the recommended 720p option.
 
-### STEP 2: DOWNLOAD EXECUTION (User Confirms Selection)
-- When the user selects or confirms a season, episode, or download (e.g., "Download Season 5", "Download Seasons 6, 7, 8, 9", "Download all", "1", "S01E01"):
-  - Call 'download_series' passing the title and requested seasons (e.g. {"tool": "download_series", "args": {"title": "Eken Babu", "seasons": [5]}}).
-  - The engine prepares all exact episode queries (e.g. "Eken Babu S05E01" through "Eken Babu S05E06"), queries @ProSearchY11Bot episode-by-episode, picks the best video release, clicks the button, and queues each episode directly into the download queue!
-  - For movies: Call 'download_movie'.
+### STEP 2: DOWNLOAD EXECUTION
+- When the user selects or confirms an option (e.g. "2", "download 2", "yes", "download recommend"):
+  - Call 'download_movie' passing title, year, and optionIndex (e.g. {"tool": "download_movie", "args": {"title": "Grihapravesh", "year": "2025", "optionIndex": 2}}).
 
 ## RULES:
-1. NEVER claim seasons or episodes are missing from Telegram unless you specifically queried those exact episodes and received 0 results.
-2. NEVER display raw JSON in your final conversational response. Use clean, beautiful Markdown tables, bullet points, and emojis.
-3. If you need to perform an action, output ONLY ONE JSON tool call in format: {"tool": "tool_name", "args": {"key": "value"}}.
+1. NEVER display raw JSON in your final conversational response. Use clean, beautiful Markdown tables, bullet points, and emojis.
+2. If you need to perform an action, output ONLY ONE JSON tool call in format: {"tool": "tool_name", "args": {"key": "value"}}.
 
 ## AVAILABLE TOOLS:
-
-### search_series(title)
-Searches TMDB for the canonical TV series details, total seasons, synopsis, and exact per-season episode breakdown.
-- title: e.g. "Eken Babu", "Stranger Things"
-
-### download_series(title, season, seasons, episode)
-Searches Telegram @ProSearchY11Bot episode-by-episode ("Title SXXEXX") for the requested seasons, clicks the best video release, and queues downloads.
-- title: e.g. "Eken Babu"
-- seasons: optional array of season numbers, e.g. [5] or [6, 7, 8, 9]
-- season: optional season number, e.g. 5
-- episode: optional episode number, e.g. 1
 
 ### search_movie(title, year)
 Searches TMDB and Telegram @ProSearchM11Bot for movie releases.
 - title: e.g. "Bajrangi Bhaijaan", "Inception"
 - year: optional release year, e.g. "2015"
 
-### download_movie(title, year, buttonText, sessionId)
-Downloads a specific movie release.
-
-### download_episode(title, season, episode, buttonText, sessionId)
-Downloads a single episode.
-
-### tmdb_search(query)
-Direct TMDB search for movies or series.
-
-### get_series_seasons(title)
-Get the exact number of seasons and per-season episode counts from TMDB.
-
-### get_season_episodes(title, season)
-Get the episode list for a specific season from TMDB.
+### download_movie(title, year, optionIndex, buttonText, sessionId)
+Downloads a specific movie release. Pass optionIndex (e.g. 1, 2, 3) if the user chose an option number.
+- title: movie title (e.g. "Grihapravesh")
+- year: optional release year (e.g. "2025")
+- optionIndex: optional 1-based number matching the user's choice (e.g. 2)
+- buttonText: optional button label text
 
 ### check_jellyfin(title, type, year)
 Checks if content is already in the Jellyfin media library.
@@ -168,397 +151,34 @@ List recent downloads and active queue status.
 // ─── TOOL IMPLEMENTATIONS ───
 
 /**
- * 1. SEARCH SERIES (TMDB Lookup & Season Breakdown)
+ * 1. SEARCH SERIES (Disabled - Movies Only)
  */
 export async function toolSearchSeries(args: Record<string, any>, sessionId: string): Promise<ToolResult> {
     const { title } = args;
-    if (!title) return { success: false, message: "Title is required" };
-
-    const harness = safeHarness();
-    const cleaned = cleanMediaTitle(title);
-    let baseTitle = cleaned.title || title.trim();
-
-    const wf = getWorkflow(sessionId);
-    if (wf && wf.title && (/^(1|2|3|4|5|6|7|8|9|s\d+|season\s*\d+|series|all|option\s*\d+)$/i.test(title.trim()) || baseTitle.length <= 2)) {
-        baseTitle = wf.title;
-    }
-
-    harness.logActivity(`[TOOL search_series] Looking up TMDB metadata for: "${baseTitle}"`);
-
-    const tmdbDetails = await lookupMedia(baseTitle);
-    const seriesInfo = await getSeriesInfo(baseTitle);
-
-    const totalSeasons = seriesInfo?.seasons || tmdbDetails?.totalSeasons || 1;
-    const episodesPerSeason = seriesInfo?.episodesPerSeason || tmdbDetails?.episodesPerSeason || [10];
-    const totalEpisodes = episodesPerSeason.reduce((a, b) => a + b, 0);
-
-    setWorkflow(sessionId, {
-        step: "web_searched",
-        type: "series",
-        title: baseTitle,
-        year: tmdbDetails?.year || "",
-    });
-
-    const seasonsBreakdown = [];
-    for (let s = 1; s <= totalSeasons; s++) {
-        seasonsBreakdown.push({
-            season: s,
-            episodes: episodesPerSeason[s - 1] || 10,
-        });
-    }
-
     return {
-        success: true,
-        message: `TMDB_SERIES_DETAILS: Found TV series "${baseTitle}" (${tmdbDetails?.year || "Series"}) with ${totalSeasons} seasons (${totalEpisodes} total episodes). Output the full TMDB seasons table and ask user which season to download. DO NOT QUERY TELEGRAM YET.`,
-        data: {
-            step: "tmdb_presentation",
-            title: baseTitle,
-            year: tmdbDetails?.year || "",
-            overview: tmdbDetails?.overview || "",
-            genres: tmdbDetails?.genres || [],
-            totalSeasons,
-            totalEpisodes,
-            episodesPerSeason,
-            seasons: seasonsBreakdown,
-        }
+        success: false,
+        message: `TV_SHOWS_NOT_SUPPORTED: TV Shows & Series ("${title || "series"}") are currently not supported. Only Movies are available for download.`,
+        data: { supported: false }
     };
 }
 
 /**
- * 2. DOWNLOAD SERIES (Episode-by-Episode Telegram Search & Direct Queueing)
+ * 2. DOWNLOAD SERIES (Disabled - Movies Only)
  */
 export async function toolDownloadSeries(args: Record<string, any>, sessionId: string): Promise<ToolResult> {
-    let { title, season, seasons, episode } = args;
-    if (!title) return { success: false, message: "Title is required" };
-
-    const harness = safeHarness();
-
-    if (!isBotConnected()) {
-        return { success: false, message: "BOT_DISCONNECTED: Please connect the Telegram bot first." };
-    }
-
-    const cleaned = cleanMediaTitle(title);
-    let baseTitle = cleaned.title || title.replace(/\s+(?:S\d+.*|Season\s*\d+.*)$/i, "").trim() || title;
-
-    const wf = getWorkflow(sessionId);
-    if (wf && wf.title && (/^(1|2|3|4|5|6|7|8|9|s\d+|season\s*\d+|series|all|option\s*\d+)$/i.test(title.trim()) || baseTitle.length <= 2)) {
-        baseTitle = wf.title;
-    }
-
-    // Extract exact seasons and episode targets
-    const targetSeasons: number[] = [];
-    let targetEpisode: number | undefined = episode ? Number(episode) : undefined;
-
-    if (Array.isArray(seasons)) {
-        targetSeasons.push(...seasons.map(Number).filter(n => !isNaN(n) && n > 0));
-    } else if (typeof seasons === "string") {
-        const matches = seasons.match(/\d+/g);
-        if (matches) targetSeasons.push(...matches.map(Number));
-    } else if (season) {
-        const sNum = typeof season === "number" ? season : parseInt(String(season), 10);
-        if (!isNaN(sNum) && sNum > 0) targetSeasons.push(sNum);
-    } else {
-        const epMatch = title.match(/(?:\[|\b)S(\d{1,2})[\s._-]*E(\d{1,2})(?:\]|\b)/i) ||
-                       title.match(/Season\s*(\d{1,2})\s*Episode\s*(\d{1,2})/i);
-        if (epMatch) {
-            targetSeasons.push(parseInt(epMatch[1], 10));
-            targetEpisode = parseInt(epMatch[2], 10);
-        } else if (/\ball\b/i.test(title)) {
-            // Handled below with full TMDB season count
-        } else {
-            const multiMatch = title.match(/(?:seasons?|s)\s*([\d\s,–\-and]+)/i);
-            if (multiMatch) {
-                const nums = multiMatch[1].match(/\d+/g);
-                if (nums) targetSeasons.push(...nums.map(Number));
-            } else if (cleaned.season) {
-                targetSeasons.push(cleaned.season);
-            } else {
-                const singleSMatch = title.match(/\bS(\d{1,2})\b/i) || title.match(/\bSeason\s*(\d{1,2})\b/i);
-                if (singleSMatch) {
-                    targetSeasons.push(parseInt(singleSMatch[1], 10));
-                } else if (/^\d{1,2}$/.test(title.trim())) {
-                    targetSeasons.push(parseInt(title.trim(), 10));
-                }
-            }
-        }
-    }
-
-    const botClient = (await import("../bot/bot.js")).default;
-    const seriesInfo = await getSeriesInfo(baseTitle);
-
-    // If no seasons specified, default to Season 1 or all if "all" in title
-    if (targetSeasons.length === 0) {
-        if (/\ball\b/i.test(title)) {
-            const totalS = seriesInfo.seasons || 1;
-            for (let i = 1; i <= totalS; i++) targetSeasons.push(i);
-        } else {
-            targetSeasons.push(1);
-        }
-    }
-
-    const queryBot = async (queryText: string, seasonCtx: number, episodeCtx: number) => {
-        harness.logActivity(`[TOOL download_series] Querying @ProSearchY11Bot for: "${queryText}"`);
-        try {
-            const sent = await botClient.sendMessage("ProSearchY11Bot", { message: queryText });
-            logTelegramAudit({
-                action: "SEND_QUERY",
-                bot: "ProSearchY11Bot",
-                query: queryText,
-                sentMsgId: sent.id,
-                caller: "download_series"
-            });
-
-            let btnMsg: any = null;
-
-            for (let attempt = 0; attempt < 4; attempt++) {
-                await new Promise(r => setTimeout(r, 1500));
-                const messages = await botClient.getMessages("ProSearchY11Bot", { limit: 10 });
-                for (const msg of messages) {
-                    if (msg.id <= sent.id) continue;
-
-                    const buttons = await msg.getButtons();
-                    if (buttons && buttons.length > 0) {
-                        btnMsg = msg;
-                        break;
-                    }
-
-                    const text = msg.message || "";
-                    if (text.toLowerCase().includes("no results found") || text.toLowerCase().includes("not found")) {
-                        logTelegramAudit({
-                            action: "NO_RESULTS",
-                            bot: "ProSearchY11Bot",
-                            query: queryText,
-                            caller: "download_series",
-                            details: { botReply: text }
-                        });
-                        return { btnMsg: null, results: [] };
-                    }
-                }
-                if (btnMsg) break;
-            }
-
-            if (!btnMsg) {
-                logTelegramAudit({
-                    action: "NO_RESULTS",
-                    bot: "ProSearchY11Bot",
-                    query: queryText,
-                    caller: "download_series",
-                    details: { reason: "No buttons message received within timeout" }
-                });
-                return { btnMsg: null, results: [] };
-            }
-
-            const buttons = (await btnMsg.getButtons())!;
-            const res: { text: string; sizeMB: number; btnMsg: any; btnMsgId: number; season: number; episode: number }[] = [];
-            for (const row of buttons) {
-                for (const btn of row) {
-                    const text = (btn as any).text || "";
-                    if (!text) continue;
-                    const lower = text.toLowerCase();
-                    if (lower.includes("srt") || lower.includes("sub")) continue;
-                    const sizeMB = extractSizeMB(text);
-                    if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
-                    res.push({
-                        text,
-                        sizeMB,
-                        btnMsg,
-                        btnMsgId: btnMsg.id,
-                        season: seasonCtx,
-                        episode: episodeCtx
-                    });
-                }
-            }
-
-            logTelegramAudit({
-                action: "RECEIVE_RESPONSE",
-                bot: "ProSearchY11Bot",
-                query: queryText,
-                responseMsgId: btnMsg.id,
-                resultsCount: res.length,
-                resultsPreview: res.map(r => r.text),
-                caller: "download_series"
-            });
-
-            return { btnMsg, results: res };
-        } catch (e: any) {
-            logTelegramAudit({
-                action: "ERROR",
-                bot: "ProSearchY11Bot",
-                query: queryText,
-                caller: "download_series",
-                details: { error: e.message }
-            });
-            harness.logError(`[TOOL download_series] Error for "${queryText}": ${e.message}`);
-            return { btnMsg: null, results: [] };
-        }
-    };
-
-    const allFound: { text: string; sizeMB: number; season: number; episode: number }[] = [];
-    const queuedEpisodes: { requestId: string; epLabel: string; buttonText: string; fileSize: string }[] = [];
-    let primaryBtnMsg: any = null;
-
-    const queueEpisodeDownload = async (s: number, e: number, epResults: any[]) => {
-        if (epResults.length === 0) return null;
-        const epLabel = e > 0 
-            ? `${baseTitle} S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}`
-            : `${baseTitle} S${String(s).padStart(2, "0")} (COMBINED)`;
-
-        const prefer720 = epResults.find(r => r.text.toLowerCase().includes("720p") && !r.text.toLowerCase().includes("srt"));
-        const prefer1080 = epResults.find(r => r.text.toLowerCase().includes("1080p") && !r.text.toLowerCase().includes("srt"));
-        const bestBtn = prefer1080 || prefer720 || epResults[0];
-
-        const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const sizeMatch = bestBtn.text.match(/\[([\d.]+)\s*(GB|MB)\]/i);
-        const fileSize = sizeMatch ? sizeMatch[1] + " " + sizeMatch[2].toUpperCase() : (bestBtn.sizeMB > 0 ? `${bestBtn.sizeMB.toFixed(0)} MB` : "500 MB");
-
-        try {
-            await db.insert(schema.downloads).values({
-                requestId,
-                title: epLabel,
-                type: "series",
-                status: "queued",
-                season: s,
-                episode: e > 0 ? e : null,
-                fileSize,
-            });
-
-            downloadQueue.addJob({
-                requestId,
-                bot: "ProSearchY11Bot",
-                btnMsgId: bestBtn.btnMsgId,
-                type: "series",
-                title: epLabel,
-                season: s,
-                episode: e > 0 ? e : undefined,
-                fileSize,
-                buttonText: bestBtn.text,
-            });
-
-            logTelegramAudit({
-                action: "QUEUE_DOWNLOAD",
-                bot: "ProSearchY11Bot",
-                query: epLabel,
-                selectedButton: bestBtn.text,
-                caller: "download_series",
-                details: { requestId, fileSize, isCombined: e === 0 }
-            });
-
-            try { broadcastNewDownload({ jobId: requestId, title: epLabel, type: "series", requestedBy: "ai" }); } catch {}
-            harness.logActivity(`[QUEUE] Auto-queued "${epLabel}" (${bestBtn.text})`);
-            return { requestId, epLabel, buttonText: bestBtn.text, fileSize };
-        } catch (err: any) {
-            harness.logError(`[QUEUE] Error auto-queuing "${epLabel}": ${err.message}`);
-            return null;
-        }
-    };
-
-    harness.logActivity(`[TOOL download_series] Target seasons for "${baseTitle}": [${targetSeasons.join(", ")}]`);
-
-    for (const s of targetSeasons) {
-        const epCount = seriesInfo.episodesPerSeason?.[s - 1] || 10;
-        const seasonTag = `S${String(s).padStart(2, "0")}`;
-
-        if (targetEpisode) {
-            const sTag = `${seasonTag}E${String(targetEpisode).padStart(2, "0")}`;
-            const queryText = `${baseTitle} ${sTag}`;
-            const res = await queryBot(queryText, s, targetEpisode);
-            if (res.results.length > 0) {
-                allFound.push(...res.results.map(r => ({ text: r.text, sizeMB: r.sizeMB, season: s, episode: targetEpisode! })));
-                if (!primaryBtnMsg) primaryBtnMsg = res.btnMsg;
-                // Pacing delay: wait 2.5s after bot replies before queuing/clicking
-                await new Promise(r => setTimeout(r, 2500));
-                const q = await queueEpisodeDownload(s, targetEpisode, res.results);
-                if (q) queuedEpisodes.push(q);
-            }
-        } else {
-            // ─── CHECK FOR COMBINED SEASON PACK FIRST ───
-            const seasonQuery = `${baseTitle} ${seasonTag}`;
-            harness.logActivity(`[TOOL download_series] Checking for COMBINED season pack for "${seasonQuery}"...`);
-            const seasonRes = await queryBot(seasonQuery, s, 0);
-
-            const combinedOptions = seasonRes.results.filter(r => {
-                const tLower = r.text.toLowerCase();
-                return tLower.includes("combined") || (tLower.includes(seasonTag.toLowerCase()) && !/e\d{1,2}/i.test(tLower));
-            });
-
-            if (combinedOptions.length > 0) {
-                const prefer1080 = combinedOptions.find(r => r.text.toLowerCase().includes("1080p") && !r.text.toLowerCase().includes("srt"));
-                const prefer720 = combinedOptions.find(r => r.text.toLowerCase().includes("720p") && !r.text.toLowerCase().includes("srt"));
-                const bestCombined = prefer1080 || prefer720 || combinedOptions[0];
-
-                allFound.push({ text: bestCombined.text, sizeMB: bestCombined.sizeMB, season: s, episode: 0 });
-                if (!primaryBtnMsg) primaryBtnMsg = seasonRes.btnMsg;
-
-                await new Promise(r => setTimeout(r, 2500));
-                const q = await queueEpisodeDownload(s, 0, [bestCombined]);
-                if (q) queuedEpisodes.push(q);
-
-                harness.logActivity(`[COMBINED PACK] Season ${s} found combined pack ("${bestCombined.text}"). Queued entire season in 1 file!`);
-                // Safe pacing delay before next season (4 seconds)
-                await new Promise(r => setTimeout(r, 4000));
-                continue; // Skip individual episode downloads for this season
-            }
-
-            // ─── NO COMBINED PACK FOUND: DOWNLOAD EPISODE-BY-EPISODE ───
-            for (let e = 1; e <= epCount; e++) {
-                const sTag = `${seasonTag}E${String(e).padStart(2, "0")}`;
-                const queryText = `${baseTitle} ${sTag}`;
-                const res = await queryBot(queryText, s, e);
-                if (res.results.length > 0) {
-                    allFound.push(...res.results.map(r => ({ text: r.text, sizeMB: r.sizeMB, season: s, episode: e })));
-                    if (!primaryBtnMsg) primaryBtnMsg = res.btnMsg;
-                    // Pacing delay: wait 2.5s after bot replies before queuing/clicking
-                    await new Promise(r => setTimeout(r, 2500));
-                    const q = await queueEpisodeDownload(s, e, res.results);
-                    if (q) queuedEpisodes.push(q);
-                } else {
-                    // Fallback query format: "Title Season X Episode Y"
-                    const altQuery = `${baseTitle} Season ${s} Episode ${e}`;
-                    const altRes = await queryBot(altQuery, s, e);
-                    if (altRes.results.length > 0) {
-                        allFound.push(...altRes.results.map(r => ({ text: r.text, sizeMB: r.sizeMB, season: s, episode: e })));
-                        if (!primaryBtnMsg) primaryBtnMsg = altRes.btnMsg;
-                        await new Promise(r => setTimeout(r, 2500));
-                        const q = await queueEpisodeDownload(s, e, altRes.results);
-                        if (q) queuedEpisodes.push(q);
-                    }
-                }
-                // Safe pacing delay between consecutive episode searches (4 seconds)
-                harness.logActivity(`[PACING] Waiting 4s before searching next episode...`);
-                await new Promise(r => setTimeout(r, 4000));
-            }
-        }
-    }
-
-    if (allFound.length === 0 || !primaryBtnMsg) {
-        return { success: true, message: `NO_RESULTS:${title}`, data: { results: [], queuedEpisodes: [] } };
-    }
-
-    const sessionKey = `series_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    searchSessions.set(sessionKey, {
-        bot: "ProSearchY11Bot",
-        btnMsgId: primaryBtnMsg.id,
-        btnMsg: primaryBtnMsg,
-        results: allFound,
-        grouped: groupByEpisode(allFound),
-        title: baseTitle,
-        type: "series",
-        year: "",
-        createdAt: Date.now()
-    });
-
-    setWorkflow(sessionId, { step: "downloading", type: "series", title: baseTitle });
-
+    const { title } = args;
     return {
-        success: true,
-        message: `SERIES_DOWNLOAD_QUEUED:${allFound.length} releases found, ${queuedEpisodes.length} episodes queued for download.`,
-        data: {
-            title: baseTitle,
-            targetSeasons,
-            totalFound: allFound.length,
-            queuedEpisodes,
-            sessionKey
-        }
+        success: false,
+        message: `TV_SHOWS_NOT_SUPPORTED: TV Shows & Series ("${title || "series"}") are currently not supported. Only Movies are available for download.`,
+        data: { supported: false }
+    };
+}
+
+export async function toolDownloadEpisode(args: Record<string, any>, sessionId: string): Promise<ToolResult> {
+    return {
+        success: false,
+        message: "TV_SHOWS_NOT_SUPPORTED: TV Shows & Series are currently not supported. Only Movies are available for download.",
+        data: { supported: false }
     };
 }
 
@@ -592,6 +212,16 @@ export async function toolSearchMovie(args: Record<string, any>, sessionId: stri
 
     const query = `${cleanTitle} ${cleanYear}`.trim();
     harness.logActivity(`[TOOL search_movie] Querying @ProSearchM11Bot for: "${query}"`);
+
+    // Auto-record to requested media
+    db.insert(schema.requestedMedia).values({
+        title: cleanTitle,
+        type: "movie",
+        year: cleanYear || null,
+        status: "requested",
+        requestedBy: sessionId
+    }).catch(() => {});
+
     const botClient = (await import("../bot/bot.js")).default;
 
     const sent = await botClient.sendMessage("ProSearchM11Bot", { message: query });
@@ -664,10 +294,13 @@ export async function toolSearchMovie(args: Record<string, any>, sessionId: stri
     });
 
     const sessionKey = `movie_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    searchSessions.set(sessionKey, {
+    const sessionData = {
         bot: "ProSearchM11Bot", btnMsgId: btnMsg.id, btnMsg, results, grouped: [],
         title: cleanTitle, type: "movie", year: cleanYear, createdAt: Date.now()
-    });
+    };
+    searchSessions.set(sessionKey, sessionData);
+    if (sessionId) searchSessions.set(`session_${sessionId}`, sessionData);
+    searchSessions.set(`title_${cleanTitle.toLowerCase().trim()}`, sessionData);
 
     const best = await pickBestResult(cleanTitle, "movie", results);
     setWorkflow(sessionId, { step: "telegram_searched", type: "movie", title: cleanTitle, year: cleanYear });
@@ -690,18 +323,58 @@ export async function toolSearchMovie(args: Record<string, any>, sessionId: stri
  * 4. DOWNLOAD MOVIE
  */
 export async function toolDownloadMovie(args: Record<string, any>, sessionId: string): Promise<ToolResult> {
-    const { title, year, buttonText, sessionKey } = args;
-    const sKey = sessionKey || args.sessionId;
-    const session = sKey ? searchSessions.get(sKey) : null;
-    const targetTitle = title || session?.title;
+    const { title, year, sessionKey } = args;
+    let buttonText = args.buttonText;
+    let optionIndex = args.optionIndex ?? args.option ?? args.index ?? args.choice;
 
+    if (optionIndex === undefined && typeof buttonText === "string") {
+        const numMatch = buttonText.trim().match(/^(?:option\s*)?(\d+)$/i);
+        if (numMatch) {
+            optionIndex = parseInt(numMatch[1], 10);
+            buttonText = undefined;
+        }
+    }
+
+    let session = sessionKey ? searchSessions.get(sessionKey) : null;
+    if (!session && sessionId) session = searchSessions.get(`session_${sessionId}`);
+    if (!session && title) session = searchSessions.get(`title_${title.toLowerCase().trim()}`);
+
+    const targetTitle = title || session?.title;
     if (!targetTitle) return { success: false, message: "Title is required for download" };
 
     const harness = safeHarness();
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    const sizeMatch = buttonText ? buttonText.match(/\[([\d.]+)\s*(GB|MB)\]/i) : null;
-    const fileSize = sizeMatch ? `${sizeMatch[1]} ${sizeMatch[2].toUpperCase()}` : "2.0 GB";
+    let targetBtnText = buttonText || "";
+    let exactFileSize = "";
+    let resolvedOptIdx = typeof optionIndex === "number" ? optionIndex : undefined;
+
+    if (session && session.results && session.results.length > 0) {
+        if (typeof optionIndex === "number" && optionIndex >= 1 && optionIndex <= session.results.length) {
+            const chosen = session.results[optionIndex - 1];
+            targetBtnText = chosen.text;
+            exactFileSize = chosen.sizeMB >= 1024
+                ? `${(chosen.sizeMB / 1024).toFixed(2)} GB`
+                : `${chosen.sizeMB.toFixed(0)} MB`;
+        } else if (!targetBtnText) {
+            const best = await pickBestResult(targetTitle, "movie", session.results);
+            const chosen = session.results[best.index];
+            if (chosen) {
+                targetBtnText = chosen.text;
+                resolvedOptIdx = best.index + 1;
+                exactFileSize = chosen.sizeMB >= 1024
+                    ? `${(chosen.sizeMB / 1024).toFixed(2)} GB`
+                    : `${chosen.sizeMB.toFixed(0)} MB`;
+            }
+        }
+    }
+
+    if (!exactFileSize && targetBtnText) {
+        const sizeMatch = targetBtnText.match(/\[([\d.]+)\s*(GB|MB)\]/i);
+        if (sizeMatch) exactFileSize = `${sizeMatch[1]} ${sizeMatch[2].toUpperCase()}`;
+    }
+
+    const fileSize = exactFileSize || "720p WEB-DL";
 
     try {
         await db.insert(schema.downloads).values({
@@ -721,77 +394,23 @@ export async function toolDownloadMovie(args: Record<string, any>, sessionId: st
             title: targetTitle,
             year: year || session?.year || "",
             fileSize,
-            buttonText,
+            buttonText: targetBtnText,
+            optionIndex: resolvedOptIdx,
         });
 
         try { broadcastNewDownload({ jobId: requestId, title: targetTitle, type: "movie", requestedBy: "ai" }); } catch {}
-        harness.logActivity(`[QUEUE] Queued movie "${targetTitle}" (${buttonText || "best option"})`);
+        harness.logActivity(`[QUEUE] Queued movie "${targetTitle}" (Option #${resolvedOptIdx || "auto"}: ${targetBtnText || fileSize})`);
 
         return {
             success: true,
-            message: `MOVIE_DOWNLOAD_QUEUED: "${targetTitle}" added to download queue`,
-            data: { requestId, title: targetTitle, fileSize }
+            message: `MOVIE_DOWNLOAD_QUEUED: "${targetTitle}" (${fileSize}) added to download queue`,
+            data: { requestId, title: targetTitle, fileSize, optionIndex: resolvedOptIdx, buttonText: targetBtnText }
         };
     } catch (err: any) {
         return { success: false, message: `DOWNLOAD_ERROR: ${err.message}` };
     }
 }
 
-/**
- * 5. DOWNLOAD EPISODE (Single Episode Download)
- */
-export async function toolDownloadEpisode(args: Record<string, any>, sessionId: string): Promise<ToolResult> {
-    const { title, season, episode, buttonText, sessionKey } = args;
-    const sKey = sessionKey || args.sessionId;
-    const session = sKey ? searchSessions.get(sKey) : null;
-    const targetTitle = title || session?.title;
-
-    if (!targetTitle) return { success: false, message: "Title is required" };
-
-    const harness = safeHarness();
-    const s = Number(season) || 1;
-    const e = Number(episode) || 1;
-    const epLabel = `${targetTitle} S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}`;
-    const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-    const sizeMatch = buttonText ? buttonText.match(/\[([\d.]+)\s*(GB|MB)\]/i) : null;
-    const fileSize = sizeMatch ? `${sizeMatch[1]} ${sizeMatch[2].toUpperCase()}` : "700 MB";
-
-    try {
-        await db.insert(schema.downloads).values({
-            requestId,
-            title: epLabel,
-            type: "series",
-            status: "queued",
-            season: s,
-            episode: e,
-            fileSize,
-        });
-
-        downloadQueue.addJob({
-            requestId,
-            bot: session?.bot || "ProSearchY11Bot",
-            btnMsgId: session?.btnMsgId || 0,
-            type: "series",
-            title: epLabel,
-            season: s,
-            episode: e,
-            fileSize,
-            buttonText,
-        });
-
-        try { broadcastNewDownload({ jobId: requestId, title: epLabel, type: "series", requestedBy: "ai" }); } catch {}
-        harness.logActivity(`[QUEUE] Queued episode "${epLabel}" (${buttonText || "default"})`);
-
-        return {
-            success: true,
-            message: `EPISODE_DOWNLOAD_QUEUED: "${epLabel}" added to download queue`,
-            data: { requestId, title: epLabel, season: s, episode: e, fileSize }
-        };
-    } catch (err: any) {
-        return { success: false, message: `DOWNLOAD_ERROR: ${err.message}` };
-    }
-}
 
 /**
  * 6. DIRECT TMDB SEARCH TOOL
@@ -901,7 +520,42 @@ export async function toolListDownloads(): Promise<ToolResult> {
 }
 
 /**
- * 11. BOT AUTHENTICATION TOOLS
+ * 11. REQUEST MEDIA TOOL
+ */
+export async function toolRequestMedia(args: Record<string, any>, sessionId: string): Promise<ToolResult> {
+    const { title, type, year, season, episode } = args;
+    if (!title) return { success: false, message: "Title is required" };
+
+    const harness = safeHarness();
+    const cleaned = cleanMediaTitle(title);
+    const cleanTitle = cleaned.title || title.trim();
+    const cleanYear = year || cleaned.year || "";
+    const mediaType = type === "series" ? "series" : "movie";
+
+    try {
+        await db.insert(schema.requestedMedia).values({
+            title: cleanTitle,
+            type: mediaType,
+            year: cleanYear || null,
+            season: season ? Number(season) : null,
+            episode: episode ? Number(episode) : null,
+            status: "requested",
+            requestedBy: sessionId,
+        });
+
+        harness.logActivity(`[REQUEST] Added to requested media: "${cleanTitle}" (${mediaType})`);
+        return {
+            success: true,
+            message: `MEDIA_REQUESTED: Added "${cleanTitle}" to requested media list.`,
+            data: { title: cleanTitle, type: mediaType, year: cleanYear }
+        };
+    } catch (e: any) {
+        return { success: false, message: `Failed to record request: ${e.message}` };
+    }
+}
+
+/**
+ * 12. BOT AUTHENTICATION TOOLS
  */
 export async function toolBotReconnect(): Promise<ToolResult> {
     const harness = safeHarness();
@@ -978,6 +632,9 @@ export async function executeTool(toolName: string, args: Record<string, any>, s
 
             case "list_downloads":
                 return await toolListDownloads();
+
+            case "request_media":
+                return await toolRequestMedia(args, sessionId);
 
             case "bot_reconnect":
                 return await toolBotReconnect();

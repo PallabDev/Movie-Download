@@ -64,6 +64,19 @@ try {
             role VARCHAR(20) NOT NULL,
             content TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT NOW() NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS requested_media (
+            id SERIAL PRIMARY KEY,
+            title VARCHAR(500) NOT NULL,
+            type VARCHAR(20) NOT NULL DEFAULT 'movie',
+            year VARCHAR(10),
+            status VARCHAR(50) NOT NULL DEFAULT 'requested',
+            season INTEGER,
+            episode INTEGER,
+            metadata JSONB,
+            requested_by VARCHAR(255),
+            created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+            updated_at TIMESTAMP DEFAULT NOW() NOT NULL
         )
     `);
     console.log("[INIT] Database tables ready");

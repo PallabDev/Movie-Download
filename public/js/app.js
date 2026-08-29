@@ -66,6 +66,87 @@ function escapeHtml(str) {
 }
 
 // ==========================================================================
+// BEAUTIFUL MODAL & CONFIRMATION DIALOGS
+// ==========================================================================
+function showConfirmModal({
+    title = 'Confirm Action',
+    message = 'Are you sure you want to proceed?',
+    confirmText = 'Confirm',
+    cancelText = 'Cancel',
+    type = 'danger'
+} = {}) {
+    return new Promise((resolve) => {
+        const existing = document.getElementById('appConfirmModal');
+        if (existing) existing.remove();
+
+        const iconSvg = type === 'danger'
+            ? `<svg class="tabler-icon" style="width:22px;height:22px;" viewBox="0 0 24 24"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>`
+            : type === 'warning'
+            ? `<svg class="tabler-icon" style="width:22px;height:22px;" viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M5 19h14a2 2 0 0 0 1.84 -2.75l-7.1 -12.25a2 2 0 0 0 -3.5 0l-7.1 12.25a2 2 0 0 0 1.75 2.75"/></svg>`
+            : `<svg class="tabler-icon" style="width:22px;height:22px;" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12.01" y2="8"/><polyline points="11 12 12 12 12 16 13 16"/></svg>`;
+
+        const backdrop = document.createElement('div');
+        backdrop.id = 'appConfirmModal';
+        backdrop.className = 'modal-backdrop';
+        backdrop.innerHTML = `
+            <div class="modal-card" role="dialog" aria-modal="true">
+                <div class="modal-icon-badge ${type}">
+                    ${iconSvg}
+                </div>
+                <div class="modal-title">${escapeHtml(title)}</div>
+                <div class="modal-message">${escapeHtml(message)}</div>
+                <div class="modal-actions">
+                    ${cancelText ? `<button type="button" class="btn-modal-cancel" id="btnModalCancel">${escapeHtml(cancelText)}</button>` : ''}
+                    <button type="button" class="btn-modal-confirm ${type === 'danger' ? 'danger' : 'primary'}" id="btnModalConfirm">${escapeHtml(confirmText)}</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(backdrop);
+
+        requestAnimationFrame(() => {
+            backdrop.classList.add('active');
+            document.getElementById('btnModalConfirm')?.focus();
+        });
+
+        const cleanup = (result) => {
+            backdrop.classList.remove('active');
+            window.removeEventListener('keydown', handleKey);
+            setTimeout(() => backdrop.remove(), 200);
+            resolve(result);
+        };
+
+        const handleKey = (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                cleanup(false);
+            }
+        };
+        window.addEventListener('keydown', handleKey);
+
+        document.getElementById('btnModalCancel')?.addEventListener('click', () => cleanup(false));
+        document.getElementById('btnModalConfirm')?.addEventListener('click', () => cleanup(true));
+        backdrop.addEventListener('click', (e) => {
+            if (e.target === backdrop) cleanup(false);
+        });
+    });
+}
+
+function showAlertModal({
+    title = 'Notice',
+    message = '',
+    confirmText = 'Got It',
+    type = 'info'
+} = {}) {
+    return showConfirmModal({
+        title,
+        message,
+        confirmText,
+        cancelText: '',
+        type
+    });
+}
+
+// ==========================================================================
 // NAVIGATION CONTROLLER
 // ==========================================================================
 function switchView(viewName) {
@@ -83,8 +164,8 @@ function switchView(viewName) {
     if (titleEl) {
         const titles = {
             chat: 'AI Copilot Assistant',
-            studio: 'Search & Discover',
             downloads: 'Download Station',
+            requested: 'Requested Media Hub',
             jellyfin: 'Jellyfin Media Hub',
             bot: 'Telegram Bot',
             admin: 'User Management'
@@ -93,6 +174,7 @@ function switchView(viewName) {
     }
 
     if (viewName === 'downloads') loadDownloadHistory();
+    if (viewName === 'requested') loadRequestedMedia();
     if (viewName === 'jellyfin') loadJellyfinStats();
     if (viewName === 'admin') loadAdminUsers();
     if (viewName === 'bot') checkBotStatus();
@@ -224,41 +306,82 @@ function renderActiveDownloads() {
 
     if (emptyState) emptyState.style.display = 'none';
 
-    container.innerHTML = list.map(dl => {
-        const circ = 125.6;
-        const offset = circ * (1 - (dl.percent || 0) / 100);
-        const isComplete = dl.status === 'completed';
-        const isFailed = dl.status === 'failed';
-        const ringClass = isComplete ? 'completed' : isFailed ? 'failed' : '';
+    // If card count changed or layout mismatch, do full template render
+    const existingCards = container.querySelectorAll('.live-progress-card');
+    const needsFullRender = existingCards.length !== list.length || 
+        Array.from(existingCards).some((c, i) => c.id !== `lpc-${list[i]?.jobId}`);
 
-        return `
-            <div class="live-progress-card" id="lpc-${dl.jobId}">
-                <div class="lpc-header">
-                    <div class="lpc-ring-wrap">
-                        <svg viewBox="0 0 44 44">
-                            <circle class="lpc-ring-bg" cx="22" cy="22" r="20"></circle>
-                            <circle class="lpc-ring-fill ${ringClass}" cx="22" cy="22" r="20" style="stroke-dashoffset: ${offset}"></circle>
-                        </svg>
-                        <div class="lpc-percent-text">${isComplete ? '✓' : isFailed ? '✕' : (dl.percent || 0) + '%'}</div>
-                    </div>
-                    <div class="lpc-info">
-                        <div class="lpc-title" title="${escapeHtml(dl.title)}">${escapeHtml(dl.title)}</div>
-                        <div class="lpc-status-tag">
-                            <span class="status-dot ${isComplete ? 'online' : isFailed ? 'offline' : 'connecting'}"></span>
-                            ${isComplete ? 'Completed' : isFailed ? 'Failed' : 'Downloading'}
+    if (needsFullRender) {
+        container.innerHTML = list.map(dl => {
+            const circ = 125.6;
+            const offset = circ * (1 - (dl.percent || 0) / 100);
+            const isComplete = dl.status === 'completed';
+            const isFailed = dl.status === 'failed';
+            const ringClass = isComplete ? 'completed' : isFailed ? 'failed' : '';
+
+            return `
+                <div class="live-progress-card" id="lpc-${dl.jobId}">
+                    <div class="lpc-header">
+                        <div class="lpc-ring-wrap">
+                            <svg viewBox="0 0 44 44">
+                                <circle class="lpc-ring-bg" cx="22" cy="22" r="20"></circle>
+                                <circle class="lpc-ring-fill ${ringClass}" cx="22" cy="22" r="20" style="stroke-dashoffset: ${offset}"></circle>
+                            </svg>
+                            <div class="lpc-percent-text">${isComplete ? '✓' : isFailed ? '✕' : (dl.percent || 0) + '%'}</div>
+                        </div>
+                        <div class="lpc-info">
+                            <div class="lpc-title" title="${escapeHtml(dl.title)}">${escapeHtml(dl.title)}</div>
+                            <div class="lpc-status-tag">
+                                <span class="status-dot ${isComplete ? 'online' : isFailed ? 'offline' : 'connecting'}"></span>
+                                <span class="lpc-status-label">${isComplete ? 'Completed' : isFailed ? 'Failed' : (dl.status === 'connecting' ? 'Preparing...' : 'Downloading')}</span>
+                            </div>
                         </div>
                     </div>
+                    <div class="lpc-linear-progress">
+                        <div class="lpc-linear-bar" style="width: ${dl.percent || 0}%;"></div>
+                    </div>
+                    <div class="lpc-stats-row">
+                        <span class="lpc-size-label">${dl.downloaded || '0 MB'} / ${dl.total || '0 MB'}</span>
+                        <span class="tabular-nums lpc-speed-label">${dl.speed || ''} ${dl.eta ? '· ETA ' + dl.eta : ''}</span>
+                    </div>
                 </div>
-                <div class="lpc-linear-progress">
-                    <div class="lpc-linear-bar" style="width: ${dl.percent || 0}%;"></div>
-                </div>
-                <div class="lpc-stats-row">
-                    <span>${dl.downloaded || '0 MB'} / ${dl.total || '0 MB'}</span>
-                    <span class="tabular-nums">${dl.speed || ''} ${dl.eta ? '· ETA ' + dl.eta : ''}</span>
-                </div>
-            </div>
-        `;
-    }).join('');
+            `;
+        }).join('');
+    } else {
+        // Butter-smooth direct DOM mutation for 60fps real-time updates
+        list.forEach(dl => {
+            const card = document.getElementById(`lpc-${dl.jobId}`);
+            if (!card) return;
+            const circ = 125.6;
+            const offset = circ * (1 - (dl.percent || 0) / 100);
+            const isComplete = dl.status === 'completed';
+            const isFailed = dl.status === 'failed';
+
+            const fill = card.querySelector('.lpc-ring-fill');
+            if (fill) {
+                fill.className = `lpc-ring-fill ${isComplete ? 'completed' : isFailed ? 'failed' : ''}`;
+                fill.style.strokeDashoffset = offset;
+            }
+
+            const pctText = card.querySelector('.lpc-percent-text');
+            if (pctText) pctText.textContent = isComplete ? '✓' : isFailed ? '✕' : (dl.percent || 0) + '%';
+
+            const bar = card.querySelector('.lpc-linear-bar');
+            if (bar) bar.style.width = `${dl.percent || 0}%`;
+
+            const statusDot = card.querySelector('.status-dot');
+            if (statusDot) statusDot.className = `status-dot ${isComplete ? 'online' : isFailed ? 'offline' : 'connecting'}`;
+
+            const statusLabel = card.querySelector('.lpc-status-label');
+            if (statusLabel) statusLabel.textContent = isComplete ? 'Completed' : isFailed ? 'Failed' : (dl.status === 'connecting' ? 'Preparing...' : 'Downloading');
+
+            const sizeLabel = card.querySelector('.lpc-size-label');
+            if (sizeLabel) sizeLabel.textContent = `${dl.downloaded || '0 MB'} / ${dl.total || '0 MB'}`;
+
+            const speedLabel = card.querySelector('.lpc-speed-label');
+            if (speedLabel) speedLabel.textContent = `${dl.speed || ''} ${dl.eta ? '· ETA ' + dl.eta : ''}`;
+        });
+    }
 }
 
 // ==========================================================================
@@ -471,26 +594,10 @@ function startNewChat() {
         chatBox.innerHTML = `
             <div class="chat-welcome-card">
                 <div class="welcome-icon-box">
-                    ${ICONS.ai}
+                    ${ICONS.movie}
                 </div>
-                <h2>Media Search & Downloader</h2>
-                <p>Find movies, full TV series seasons, episodes, or inspect Jellyfin libraries.</p>
-                <div class="quick-prompts-grid">
-                    <button class="quick-prompt-btn" onclick="handleQuickPrompt('Search Inception 2010 movie')">
-                        ${ICONS.movie}
-                        <div>
-                            <strong>Inception (2010)</strong>
-                            <div class="text-muted" style="font-size: 11px;">Search movie releases</div>
-                        </div>
-                    </button>
-                    <button class="quick-prompt-btn" onclick="handleQuickPrompt('Check bot connection status')">
-                        ${ICONS.bot}
-                        <div>
-                            <strong>Telegram Bot Status</strong>
-                            <div class="text-muted" style="font-size: 11px;">View link & 2FA state</div>
-                        </div>
-                    </button>
-                </div>
+                <h2>Search Movies to add on movie.pallabdev.in</h2>
+                <p>Type any movie title to check releases and download directly to your streaming server.</p>
             </div>
         `;
     }
@@ -791,7 +898,7 @@ async function triggerStudioBulkSeasonDownload(season) {
 }
 
 // ==========================================================================
-// DOWNLOAD STATION & HISTORY
+// DOWNLOAD STATION & CONTROLS
 // ==========================================================================
 async function loadDownloadHistory(page = 1) {
     const tableBody = document.getElementById('downloadHistoryTableBody');
@@ -799,33 +906,304 @@ async function loadDownloadHistory(page = 1) {
     if (!tableBody) return;
 
     try {
-        const res = await fetch(`/api/downloads?page=${page}&limit=15&search=${encodeURIComponent(searchFilter)}`, {
+        const res = await fetch(`/api/downloads?page=${page}&limit=20&search=${encodeURIComponent(searchFilter)}`, {
             credentials: 'include'
         });
         const data = await res.json();
         fetchQueueStats();
 
         if (!data.downloads || data.downloads.length === 0) {
-            tableBody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--text-muted);">No records found</td></tr>`;
+            tableBody.innerHTML = `
+                <tr>
+                    <td colspan="6" style="text-align:center; padding: 48px 20px;">
+                        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;">
+                            <div style="width: 52px; height: 52px; border-radius: 50%; background: var(--bg-surface-elevated); border: 1px solid var(--border-medium); display: flex; align-items: center; justify-content: center; color: var(--accent-cyan);">
+                                <svg class="tabler-icon" style="width:26px;height:26px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                            </div>
+                            <div>
+                                <div style="font-size: 15px; font-weight: 600; color: #fff;">No Download History</div>
+                                <div style="font-size: 12.5px; color: var(--text-secondary); max-width: 380px; margin: 4px auto 14px; line-height: 1.5;">
+                                    You have not started any downloads yet. Ask Copilot to find a movie or TV season pack.
+                                </div>
+                                <button class="btn-primary-action" onclick="switchView('chat')" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 12.5px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
+                                    Search with Copilot
+                                </button>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            `;
             return;
         }
 
-        tableBody.innerHTML = data.downloads.map(item => `
+        tableBody.innerHTML = data.downloads.map(item => {
+            const isDownloading = item.status === 'downloading' || item.status === 'clicking';
+            const isPaused = item.status === 'paused';
+            const isFailed = item.status === 'failed';
+            const isCompleted = item.status === 'completed';
+
+            let actionButtons = '';
+            if (isDownloading) {
+                actionButtons = `
+                    <button class="btn-header" style="color: var(--accent-amber); padding: 3px 7px;" onclick="pauseDownload('${item.requestId}')" title="Pause Download">
+                        Pause
+                    </button>
+                    <button class="btn-header" style="color: var(--accent-rose); padding: 3px 7px;" onclick="cancelDownload('${item.requestId}')" title="Cancel & Delete">
+                        Cancel
+                    </button>
+                `;
+            } else if (isPaused) {
+                actionButtons = `
+                    <button class="btn-header" style="color: var(--accent-emerald); padding: 3px 7px;" onclick="resumeDownload('${item.requestId}')" title="Resume Download">
+                        Resume
+                    </button>
+                    <button class="btn-header" style="color: var(--accent-rose); padding: 3px 7px;" onclick="cancelDownload('${item.requestId}')" title="Cancel & Delete">
+                        Delete
+                    </button>
+                `;
+            } else if (isFailed) {
+                actionButtons = `
+                    <button class="btn-header" style="color: var(--accent-blue); padding: 3px 7px;" onclick="retryDownload('${item.requestId}')" title="Retry Download">
+                        Retry
+                    </button>
+                    <button class="btn-header" style="color: var(--accent-rose); padding: 3px 7px;" onclick="cancelDownload('${item.requestId}')" title="Delete">
+                        Delete
+                    </button>
+                `;
+            } else {
+                actionButtons = `
+                    <button class="btn-header" style="color: var(--text-muted); padding: 3px 7px;" onclick="cancelDownload('${item.requestId}')" title="Remove Entry">
+                        Delete
+                    </button>
+                `;
+            }
+
+            return `
+                <tr>
+                    <td style="font-weight: 600; color: #fff;">${escapeHtml(item.title)}</td>
+                    <td><span class="chip ${item.type === 'movie' ? 'quality' : 'best'}">${escapeHtml(item.type)}</span></td>
+                    <td>${escapeHtml(item.fileSize || 'N/A')}</td>
+                    <td>
+                        <span class="status-badge ${item.status}">
+                            <span class="status-dot ${isCompleted ? 'online' : isFailed ? 'offline' : isPaused ? 'paused' : 'connecting'}"></span>
+                            ${escapeHtml(item.status)}
+                        </span>
+                    </td>
+                    <td style="color: var(--text-secondary); font-size: 11.5px;">${new Date(item.createdAt).toLocaleDateString()} ${new Date(item.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</td>
+                    <td style="text-align: right; white-space: nowrap;">
+                        <div style="display: inline-flex; gap: 4px;">${actionButtons}</div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    } catch (err) {
+        tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color: var(--accent-rose);">Failed to load</td></tr>`;
+    }
+}
+
+async function pauseDownload(requestId) {
+    try {
+        const res = await fetch(`/api/downloads/${requestId}/pause`, { method: 'POST', credentials: 'include' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Download paused', 'info');
+            loadDownloadHistory();
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+async function resumeDownload(requestId) {
+    try {
+        const res = await fetch(`/api/downloads/${requestId}/resume`, { method: 'POST', credentials: 'include' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Download resumed', 'success');
+            loadDownloadHistory();
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+async function retryDownload(requestId) {
+    try {
+        const res = await fetch(`/api/downloads/${requestId}/retry`, { method: 'POST', credentials: 'include' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Download retry queued', 'info');
+            loadDownloadHistory();
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+async function cancelDownload(requestId) {
+    const confirmed = await showConfirmModal({
+        title: 'Remove Download Entry',
+        message: 'Are you sure you want to remove this download entry from the list?',
+        confirmText: 'Remove Entry',
+        type: 'danger'
+    });
+    if (!confirmed) return;
+    try {
+        const res = await fetch(`/api/downloads/${requestId}`, { method: 'DELETE', credentials: 'include' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Download removed', 'info');
+            loadDownloadHistory();
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+async function clearFailedDownloads() {
+    const confirmed = await showConfirmModal({
+        title: 'Clear Failed Downloads',
+        message: 'Are you sure you want to remove all failed download records?',
+        confirmText: 'Clear Failed',
+        type: 'warning'
+    });
+    if (!confirmed) return;
+    try {
+        const res = await fetch('/api/downloads/clear/failed', { method: 'DELETE', credentials: 'include' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Cleared failed downloads', 'info');
+            loadDownloadHistory();
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+async function clearAllDownloads() {
+    const confirmed = await showConfirmModal({
+        title: 'Clear Download History',
+        message: 'This will remove all completed, failed, and cancelled downloads from your history. Active downloads will not be affected.',
+        confirmText: 'Clear All',
+        type: 'danger'
+    });
+    if (!confirmed) return;
+    try {
+        const res = await fetch('/api/downloads/clear/all', { method: 'DELETE', credentials: 'include' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Cleared download history', 'info');
+            loadDownloadHistory();
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+// ==========================================================================
+// REQUESTED MEDIA LIST
+// ==========================================================================
+async function loadRequestedMedia() {
+    const tableBody = document.getElementById('requestedMediaTableBody');
+    const searchFilter = (document.getElementById('requestedSearchFilter')?.value || '').toLowerCase().trim();
+    if (!tableBody) return;
+
+    try {
+        const res = await fetch('/api/requested-media', { credentials: 'include' });
+        const data = await res.json();
+        let items = data.items || [];
+
+        if (searchFilter) {
+            items = items.filter(i => (i.title && i.title.toLowerCase().includes(searchFilter)) || (i.year && i.year.includes(searchFilter)) || (i.type && i.type.toLowerCase().includes(searchFilter)));
+        }
+
+        if (items.length === 0) {
+            tableBody.innerHTML = `
+                <tr>
+                    <td colspan="6" style="text-align:center; padding: 48px 20px;">
+                        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;">
+                            <div style="width: 52px; height: 52px; border-radius: 50%; background: var(--bg-surface-elevated); border: 1px solid var(--border-medium); display: flex; align-items: center; justify-content: center; color: var(--accent-blue);">
+                                <svg class="tabler-icon" style="width:26px;height:26px;" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M19 16h-12a2 2 0 0 0 -2 2"/><path d="M9 8h6"/></svg>
+                            </div>
+                            <div>
+                                <div style="font-size: 15px; font-weight: 600; color: #fff;">No Requested Media Yet</div>
+                                <div style="font-size: 12.5px; color: var(--text-secondary); max-width: 380px; margin: 4px auto 14px; line-height: 1.5;">
+                                    Search or ask AI Copilot for any movie or TV show, and your requests will automatically be tracked here.
+                                </div>
+                                <button class="btn-primary-action" onclick="switchView('chat')" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 12.5px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
+                                    Go to AI Copilot
+                                </button>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tableBody.innerHTML = items.map(item => `
             <tr>
                 <td style="font-weight: 600; color: #fff;">${escapeHtml(item.title)}</td>
                 <td><span class="chip ${item.type === 'movie' ? 'quality' : 'best'}">${escapeHtml(item.type)}</span></td>
-                <td>${escapeHtml(item.fileSize || 'N/A')}</td>
+                <td>${escapeHtml(item.year || 'N/A')}</td>
                 <td>
                     <span class="status-badge ${item.status}">
-                        <span class="status-dot ${item.status === 'completed' ? 'online' : item.status === 'failed' ? 'offline' : 'connecting'}"></span>
+                        <span class="status-dot online"></span>
                         ${escapeHtml(item.status)}
                     </span>
                 </td>
                 <td style="color: var(--text-secondary); font-size: 11.5px;">${new Date(item.createdAt).toLocaleDateString()} ${new Date(item.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</td>
+                <td style="text-align: right;">
+                    <button class="btn-header" style="color: var(--accent-rose); padding: 3px 8px;" onclick="deleteRequestedMedia(${item.id})">
+                        Delete
+                    </button>
+                </td>
             </tr>
         `).join('');
-    } catch (err) {
-        tableBody.innerHTML = `<tr><td colspan="5" style="text-align:center; color: var(--accent-rose);">Failed to load</td></tr>`;
+    } catch (e) {
+        tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color: var(--accent-rose);">Failed to load</td></tr>`;
+    }
+}
+
+async function deleteRequestedMedia(id) {
+    const confirmed = await showConfirmModal({
+        title: 'Remove Request',
+        message: 'Are you sure you want to remove this media request?',
+        confirmText: 'Remove',
+        type: 'danger'
+    });
+    if (!confirmed) return;
+    try {
+        const res = await fetch(`/api/requested-media/${id}`, { method: 'DELETE', credentials: 'include' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Entry removed', 'info');
+            loadRequestedMedia();
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+async function clearAllRequestedMedia() {
+    const confirmed = await showConfirmModal({
+        title: 'Clear Requested Media',
+        message: 'Are you sure you want to clear all tracked requested movies and series?',
+        confirmText: 'Clear Requests',
+        type: 'danger'
+    });
+    if (!confirmed) return;
+    try {
+        const res = await fetch('/api/requested-media/clear', { method: 'DELETE', credentials: 'include' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Cleared all requested media', 'info');
+            loadRequestedMedia();
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
     }
 }
 
@@ -899,22 +1277,32 @@ async function checkBotStatus() {
 
         const dot = document.getElementById('headerBotDot');
         const label = document.getElementById('headerBotStatusText');
+        const centerDot = document.getElementById('botCenterStatusDot');
+        const centerDetail = document.getElementById('botCenterStatusDetail');
         const wizardArea = document.getElementById('botAuthWizardArea');
 
         if (data.connected) {
             if (dot) dot.className = 'status-dot online';
             if (label) { label.textContent = 'Connected'; label.style.color = 'var(--accent-emerald)'; }
+            if (centerDot) centerDot.className = 'status-dot online';
+            if (centerDetail) centerDetail.innerHTML = '<span style="color:var(--accent-emerald); font-weight:600;">Active & Connected</span> (MTProto Client @codewithsoul)';
             if (wizardArea) wizardArea.style.display = 'none';
         } else if (data.auth && data.auth.step && data.auth.step !== 'idle' && data.auth.step !== 'done') {
             if (dot) dot.className = 'status-dot connecting';
             if (label) { label.textContent = `Auth: ${data.auth.step}`; label.style.color = 'var(--accent-amber)'; }
+            if (centerDot) centerDot.className = 'status-dot connecting';
+            if (centerDetail) centerDetail.innerHTML = `<span style="color:var(--accent-amber); font-weight:600;">Authenticating... (${data.auth.step})</span>`;
             renderBotAuthStep(data.auth);
         } else if (data.connecting) {
             if (dot) dot.className = 'status-dot connecting';
             if (label) { label.textContent = 'Connecting...'; label.style.color = 'var(--accent-amber)'; }
+            if (centerDot) centerDot.className = 'status-dot connecting';
+            if (centerDetail) centerDetail.innerHTML = '<span style="color:var(--accent-amber);">Connecting to Telegram...</span>';
         } else {
             if (dot) dot.className = 'status-dot offline';
             if (label) { label.textContent = 'Disconnected'; label.style.color = 'var(--accent-rose)'; }
+            if (centerDot) centerDot.className = 'status-dot offline';
+            if (centerDetail) centerDetail.innerHTML = '<span style="color:var(--accent-rose);">Disconnected. Click Reconnect to link session.</span>';
         }
     } catch {}
 }
@@ -1094,7 +1482,13 @@ async function addAdminUser() {
 }
 
 async function deleteAdminUser(id) {
-    if (!confirm('Delete this user?')) return;
+    const confirmed = await showConfirmModal({
+        title: 'Delete User Account',
+        message: 'Are you sure you want to permanently delete this user?',
+        confirmText: 'Delete User',
+        type: 'danger'
+    });
+    if (!confirmed) return;
     try {
         const res = await fetch(`/api/admin/users/${id}`, {
             method: 'DELETE',
@@ -1148,7 +1542,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    loadChatSessions();
     checkBotStatus();
     setInterval(checkBotStatus, 20000);
     initWebSocket();

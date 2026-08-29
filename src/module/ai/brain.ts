@@ -346,21 +346,36 @@ export async function pickBestResult(
         let score = 0;
         let reasons: string[] = [];
 
-        // 720p preferred
-        if (lower.includes("720p")) { score += 10; reasons.push("720p"); }
-        else if (lower.includes("1080p")) { score += 5; reasons.push("1080p"); }
-        else if (lower.includes("480p")) { score += 2; }
+        // 720p heavily prioritized for movies (best balance of size & quality)
+        if (lower.includes("720p")) {
+            score += 35;
+            reasons.push("720p HD");
+            if (lower.includes("265") || lower.includes("hevc")) {
+                score += 15;
+                reasons.push("H.265 efficient");
+            }
+        } else if (lower.includes("1080p")) {
+            score += 15;
+            reasons.push("1080p FHD");
+            if (lower.includes("265") || lower.includes("hevc")) {
+                score += 5;
+                reasons.push("H.265");
+            }
+        } else if (lower.includes("480p")) {
+            score += 5;
+            reasons.push("480p SD");
+        }
 
-        // Size check: movie 600MB-1.9GB, episode 50MB-1GB
+        // Size check: movie 500MB-1.8GB is sweet spot for 720p
         if (type === "movie") {
-            if (r.sizeMB >= 600 && r.sizeMB <= 1900) { score += 8; reasons.push("good size"); }
-            else if (r.sizeMB >= 400 && r.sizeMB <= 2500) { score += 4; }
+            if (r.sizeMB >= 450 && r.sizeMB <= 1600) { score += 10; reasons.push("optimal size"); }
+            else if (r.sizeMB > 1600 && r.sizeMB <= 3000) { score += 4; }
         } else {
             if (r.sizeMB >= 50 && r.sizeMB <= 1000) { score += 8; reasons.push("good size"); }
         }
 
         // Prefer mp4/mkv
-        if (lower.includes(".mp4") || lower.includes(".mkv")) { score += 3; reasons.push("good format"); }
+        if (lower.includes(".mp4") || lower.includes(".mkv")) { score += 3; reasons.push("video container"); }
 
         // Penalize subtitles-only
         if (lower.includes("srt") || lower.includes("sub") || lower.includes("subtitle")) { score -= 10; }

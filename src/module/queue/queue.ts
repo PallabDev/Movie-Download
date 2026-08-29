@@ -1,9 +1,10 @@
 import client from "../../module/bot/bot.js";
+import { Api } from "teleproto";
 import { db, schema } from "../../common/db/index.js";
 import { eq } from "drizzle-orm";
 import { getMoviePath, getSeriesPath } from "../../module/download/downloader.js";
 import { broadcastDownloadProgress, broadcastDownloadComplete } from "../web/ws.js";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, createWriteStream } from "node:fs";
 import { open } from "node:fs/promises";
 
 export interface DownloadJobData {
@@ -17,14 +18,17 @@ export interface DownloadJobData {
     episode?: number;
     fileSize?: string;
     buttonText?: string;
+    optionIndex?: number;
 }
 
-interface Job {
+export interface Job {
     id: string;
     data: DownloadJobData;
-    status: "waiting" | "active" | "completed" | "failed";
+    status: "waiting" | "active" | "paused" | "completed" | "failed" | "cancelled";
     createdAt: Date;
 }
+
+const activeJobSignals = new Map<string, { paused: boolean; cancelled: boolean }>();
 
 class MemoryQueue {
     private jobs: Map<string, Job> = new Map();
@@ -34,12 +38,90 @@ class MemoryQueue {
     setProcessor(fn: (job: Job) => Promise<void>) { this.processor = fn; }
 
     addJob(data: DownloadJobData): Job {
+        // If job with same requestId already exists, reuse or update
+        const existing = Array.from(this.jobs.values()).find(j => j.data.requestId === data.requestId);
+        if (existing) {
+            existing.status = "waiting";
+            existing.data = data;
+            activeJobSignals.set(data.requestId, { paused: false, cancelled: false });
+            setTimeout(() => this.runNext(), 0);
+            return existing;
+        }
+
         const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const job: Job = { id, data, status: "waiting", createdAt: new Date() };
         this.jobs.set(id, job);
+        activeJobSignals.set(data.requestId, { paused: false, cancelled: false });
         console.log(`[QUEUE] Job ${id} added: "${data.title}" (${data.type})`);
         setTimeout(() => this.runNext(), 0);
         return job;
+    }
+
+    pauseJob(requestId: string): boolean {
+        const job = Array.from(this.jobs.values()).find(j => j.data.requestId === requestId);
+        if (!job) return false;
+        job.status = "paused";
+        const signal = activeJobSignals.get(requestId) || { paused: false, cancelled: false };
+        signal.paused = true;
+        activeJobSignals.set(requestId, signal);
+        updateDB(requestId, { status: "paused" }).catch(() => {});
+        console.log(`[QUEUE] Job paused: "${job.data.title}"`);
+        return true;
+    }
+
+    resumeJob(requestId: string): boolean {
+        const job = Array.from(this.jobs.values()).find(j => j.data.requestId === requestId);
+        if (!job) return false;
+        job.status = "waiting";
+        const signal = activeJobSignals.get(requestId) || { paused: false, cancelled: false };
+        signal.paused = false;
+        activeJobSignals.set(requestId, signal);
+        updateDB(requestId, { status: "queued" }).catch(() => {});
+        console.log(`[QUEUE] Job resumed: "${job.data.title}"`);
+        setTimeout(() => this.runNext(), 0);
+        return true;
+    }
+
+    retryJob(requestId: string): boolean {
+        let job = Array.from(this.jobs.values()).find(j => j.data.requestId === requestId);
+        if (job) {
+            job.status = "waiting";
+            activeJobSignals.set(requestId, { paused: false, cancelled: false });
+            updateDB(requestId, { status: "queued", error: null }).catch(() => {});
+            console.log(`[QUEUE] Job retrying: "${job.data.title}"`);
+            setTimeout(() => this.runNext(), 0);
+            return true;
+        }
+        return false;
+    }
+
+    cancelJob(requestId: string): boolean {
+        const job = Array.from(this.jobs.values()).find(j => j.data.requestId === requestId);
+        if (job) {
+            job.status = "cancelled";
+        }
+        const signal = activeJobSignals.get(requestId) || { paused: false, cancelled: false };
+        signal.cancelled = true;
+        activeJobSignals.set(requestId, signal);
+        if (job) this.jobs.delete(job.id);
+        updateDB(requestId, { status: "cancelled" }).catch(() => {});
+        console.log(`[QUEUE] Job cancelled: "${job?.data.title || requestId}"`);
+        return true;
+    }
+
+    clearFailed(): number {
+        let count = 0;
+        for (const [k, v] of this.jobs) {
+            if (v.status === "failed" || v.status === "cancelled") {
+                this.jobs.delete(k);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    getJob(requestId: string): Job | undefined {
+        return Array.from(this.jobs.values()).find(j => j.data.requestId === requestId);
     }
 
     private async runNext() {
@@ -50,11 +132,15 @@ class MemoryQueue {
         waiting.status = "active";
         try {
             await this.processor(waiting);
-            waiting.status = "completed";
-            console.log(`[QUEUE] Job ${waiting.id} completed`);
+            if (waiting.status === "active") {
+                waiting.status = "completed";
+            }
         } catch (err) {
-            waiting.status = "failed";
-            console.error(`[QUEUE] Job ${waiting.id} failed:`, err);
+            const currentStatus = waiting.status as string;
+            if (currentStatus !== "paused" && currentStatus !== "cancelled") {
+                waiting.status = "failed";
+                console.error(`[QUEUE] Job ${waiting.id} failed:`, err);
+            }
         } finally {
             this.processing = false;
             setTimeout(() => this.runNext(), 100);
@@ -66,6 +152,7 @@ class MemoryQueue {
         return {
             waiting: all.filter((j) => j.status === "waiting").length,
             active: all.filter((j) => j.status === "active").length,
+            paused: all.filter((j) => j.status === "paused").length,
             completed: all.filter((j) => j.status === "completed").length,
             failed: all.filter((j) => j.status === "failed").length,
         };
@@ -122,6 +209,135 @@ function isInvalidNonVideo(text: string): boolean {
     return false;
 }
 
+/**
+ * Auto-joins or sends join request to Telegram channels/groups when a bot requires subscription
+ */
+export async function autoJoinTelegramChannel(linkOrUsername: string): Promise<boolean> {
+    try {
+        let clean = linkOrUsername.replace(/https?:\/\/t\.me\//i, "").replace(/^@/, "").trim();
+        clean = clean.split("?")[0].replace(/\/$/, "");
+
+        if (clean.startsWith("+") || clean.startsWith("joinchat/")) {
+            const hash = clean.replace(/^\+/, "").replace(/^joinchat\//, "");
+            try {
+                await client.invoke(new Api.messages.ImportChatInvite({ hash }));
+                console.log(`[TG FORCE-JOIN] Successfully joined private invite hash: "${hash}"`);
+                return true;
+            } catch (err: any) {
+                const msg = err.message || "";
+                if (msg.includes("USER_ALREADY_PARTICIPANT")) {
+                    console.log(`[TG FORCE-JOIN] Already a participant of private invite hash: "${hash}"`);
+                    return true;
+                }
+                if (msg.includes("INVITE_REQUEST_SENT")) {
+                    console.log(`[TG FORCE-JOIN] Join request sent for private invite hash: "${hash}"`);
+                    return true;
+                }
+                console.log(`[TG FORCE-JOIN] Private invite notice for "${hash}": ${msg}`);
+                try {
+                    await client.invoke(new Api.messages.CheckChatInvite({ hash }));
+                } catch {}
+            }
+        } else {
+            const username = clean.split("/")[0];
+            if (!username) return false;
+            try {
+                await client.invoke(new Api.channels.JoinChannel({ channel: username }));
+                console.log(`[TG FORCE-JOIN] Successfully joined public channel: "@${username}"`);
+                return true;
+            } catch (err: any) {
+                const msg = err.message || "";
+                if (msg.includes("USER_ALREADY_PARTICIPANT")) {
+                    console.log(`[TG FORCE-JOIN] Already in channel: "@${username}"`);
+                    return true;
+                }
+                console.log(`[TG FORCE-JOIN] JoinChannel notice for "@${username}": ${msg}`);
+            }
+        }
+    } catch (err: any) {
+        console.log(`[TG FORCE-JOIN] autoJoinTelegramChannel failed for "${linkOrUsername}": ${err.message}`);
+    }
+    return false;
+}
+
+/**
+ * Checks a bot message for force-sub channel join requirement and joins automatically
+ */
+export async function handleChannelJoinRequirement(botMsg: any): Promise<boolean> {
+    const text = (botMsg.message || botMsg.text || "").toLowerCase();
+    const isJoinPrompt =
+        text.includes("join") &&
+        (text.includes("channel") || text.includes("group") || text.includes("to use this bot") || text.includes("must join") || text.includes("subscribe"));
+
+    let buttons: any[][] | null = null;
+    try {
+        buttons = await botMsg.getButtons();
+    } catch {}
+
+    const hasJoinButtons = buttons && buttons.some((row: any[]) =>
+        row.some((b: any) => {
+            const bt = (b.text || "").toLowerCase();
+            return bt.includes("join") || bt.includes("channel") || bt.includes("group") || bt.includes("subscribe") || b.url;
+        })
+    );
+
+    if (!isJoinPrompt && !hasJoinButtons) return false;
+
+    console.log(`[TG FORCE-JOIN] Detected bot force-subscription prompt: "${(botMsg.message || "").substring(0, 80)}"`);
+    let joinedAny = false;
+
+    // 1. Extract and join channels from inline URL buttons
+    if (buttons) {
+        for (const row of buttons) {
+            for (const btn of row) {
+                const btnUrl = btn.url || (btn.button && (btn.button.url || btn.button.urlAuth));
+                if (btnUrl && typeof btnUrl === "string" && btnUrl.includes("t.me")) {
+                    console.log(`[TG FORCE-JOIN] Auto-joining from button: "${btn.text}" -> ${btnUrl}`);
+                    const ok = await autoJoinTelegramChannel(btnUrl);
+                    if (ok) joinedAny = true;
+                }
+            }
+        }
+    }
+
+    // 2. Extract and join channels from message text links & @mentions
+    const urlMatches = (botMsg.message || "").match(/(?:https?:\/\/t\.me\/(?:\+|joinchat\/)?[a-zA-Z0-9_-]+|@[a-zA-Z0-9_]{4,})/gi);
+    if (urlMatches) {
+        for (const match of urlMatches) {
+            if (match.toLowerCase().includes("bot") && !match.toLowerCase().includes("searchbot")) continue;
+            console.log(`[TG FORCE-JOIN] Auto-joining from message text: ${match}`);
+            const ok = await autoJoinTelegramChannel(match);
+            if (ok) joinedAny = true;
+        }
+    }
+
+    // 3. If there is a verification / refresh / try again button, click it
+    if (buttons) {
+        for (let r = 0; r < buttons.length; r++) {
+            for (let c = 0; c < buttons[r].length; c++) {
+                const btn = buttons[r][c];
+                const bText = (btn.text || "").toLowerCase();
+                if (bText.includes("joined") || bText.includes("try again") || bText.includes("done") || bText.includes("verify") || bText.includes("refresh")) {
+                    console.log(`[TG FORCE-JOIN] Clicking verification button: "${btn.text}"`);
+                    await sleep(1000);
+                    try {
+                        if (typeof btn.click === "function") {
+                            await btn.click({});
+                        } else {
+                            await botMsg.click({ i: r, j: c });
+                        }
+                    } catch {}
+                }
+            }
+        }
+    }
+
+    return joinedAny || true;
+}
+
+/**
+ * High-Speed Multi-Connection Parallel Downloader
+ */
 async function downloadFileWithResume(
     msg: any,
     downloadPath: string,
@@ -129,73 +345,109 @@ async function downloadFileWithResume(
     requestId: string,
     title: string
 ): Promise<boolean> {
-    const MAX_RETRIES = 5;
-    let downloadedBytes = 0;
-
-    if (existsSync(downloadPath)) {
-        downloadedBytes = statSync(downloadPath).size;
-        console.log(`[DL] Resuming from ${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB`);
-    }
+    const MAX_RETRIES = 8;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        const signal = activeJobSignals.get(requestId);
+        if (signal?.cancelled) {
+            console.log(`[DL] Download cancelled by user: "${title}"`);
+            return false;
+        }
+        if (signal?.paused) {
+            console.log(`[DL] Download paused by user: "${title}"`);
+            return false;
+        }
+
         try {
-            console.log(`[DL] Attempt ${attempt}/${MAX_RETRIES}`);
+            console.log(`[DL] Starting high-speed parallel download (Attempt ${attempt}/${MAX_RETRIES}) for "${title}"`);
             const startTime = Date.now();
             let lastBroadcast = 0;
-            const stream = await open(downloadPath, downloadedBytes > 0 ? "r+" : "w");
-            const fileHandle = stream;
+            let lastBytes = 0;
+            let lastSpeedCalcTime = Date.now();
+            let currentSpeedMB = "0.0";
 
-            try {
-                for await (const chunk of client.iterDownload(msg, {
-                    offset: downloadedBytes,
-                    requestSize: 1024 * 1024,
-                })) {
-                    await fileHandle.write(chunk, 0, chunk.length, downloadedBytes);
-                    downloadedBytes += chunk.length;
+            // Immediate initial broadcast so UI shows total size and 0% active streaming right away
+            const initTotMB = totalSize > 0 ? (totalSize / (1024 * 1024)).toFixed(0) : "0";
+            broadcastDownloadProgress(requestId, {
+                status: "downloading",
+                title,
+                percent: 0,
+                speed: "0.0 MB/s",
+                eta: "Starting...",
+                downloaded: "0.0 MB",
+                total: `${initTotMB} MB`,
+            });
 
-                    const now = Date.now();
-                    if (now - lastBroadcast >= 2000) {
-                        lastBroadcast = now;
-                        const pct = totalSize > 0 ? Math.min((downloadedBytes / totalSize) * 100, 100) : 0;
-                        const elapsed = (now - startTime) / 1000;
-                        const speed = elapsed > 0 ? downloadedBytes / elapsed : 0;
-                        const speedMB = (speed / (1024 * 1024)).toFixed(1);
-                        const remaining = speed > 0 ? (totalSize - downloadedBytes) / speed : 0;
-                        const etaMin = Math.floor(remaining / 60);
-                        const etaSec = Math.floor(remaining % 60);
-
-                        const dlMB = (downloadedBytes / (1024 * 1024)).toFixed(1);
-                        const totMB = (totalSize / (1024 * 1024)).toFixed(0);
-
-                        process.stdout.write(
-                            `\r[DL] ${pct.toFixed(1)}% | ${dlMB}/${totMB} MB | ${speedMB} MB/s | ETA ${etaMin}m ${etaSec}s   `
-                        );
-
-                        broadcastDownloadProgress(requestId, {
-                            status: "downloading",
-                            title,
-                            percent: Math.round(pct),
-                            speed: `${speedMB} MB/s`,
-                            eta: `${etaMin}m ${etaSec}s`,
-                            downloaded: `${dlMB} MB`,
-                            total: `${totMB} MB`,
-                        });
-                    }
+            const progressCb = (downloaded: any, total: any) => {
+                const sig = activeJobSignals.get(requestId);
+                if (sig?.cancelled || sig?.paused) {
+                    (progressCb as any).isCanceled = true;
+                    return;
                 }
-            } finally {
-                await fileHandle.close();
-            }
+
+                const dlBytes = typeof downloaded === "number" ? downloaded : ((downloaded?.toJSNumber?.() ?? Number(downloaded)) || 0);
+                const totBytes = totalSize > 0 ? totalSize : (typeof total === "number" ? total : ((total?.toJSNumber?.() ?? Number(total)) || 0));
+
+                const now = Date.now();
+
+                // Compute instantaneous rolling speed every 350ms
+                const speedTimeDelta = (now - lastSpeedCalcTime) / 1000;
+                if (speedTimeDelta >= 0.35) {
+                    const bytesDelta = dlBytes - lastBytes;
+                    const instSpeed = speedTimeDelta > 0 ? bytesDelta / speedTimeDelta : 0;
+                    currentSpeedMB = (instSpeed / (1024 * 1024)).toFixed(1);
+                    lastBytes = dlBytes;
+                    lastSpeedCalcTime = now;
+                }
+
+                // Realtime high-frequency broadcast every 250ms (Chrome-like realtime updates)
+                if (now - lastBroadcast >= 250 || (totBytes > 0 && dlBytes >= totBytes)) {
+                    lastBroadcast = now;
+                    const pct = totBytes > 0 ? Math.min((dlBytes / totBytes) * 100, 100) : 0;
+                    const speedBytes = Number(currentSpeedMB) * 1024 * 1024;
+                    const remaining = speedBytes > 0 ? (totBytes - dlBytes) / speedBytes : 0;
+                    const etaMin = Math.floor(remaining / 60);
+                    const etaSec = Math.floor(remaining % 60);
+
+                    const dlMB = (dlBytes / (1024 * 1024)).toFixed(1);
+                    const totMB = (totBytes / (1024 * 1024)).toFixed(0);
+
+                    process.stdout.write(
+                        `\r[DL] ${pct.toFixed(1)}% | ${dlMB}/${totMB} MB | ${currentSpeedMB} MB/s | ETA ${etaMin}m ${etaSec}s   `
+                    );
+
+                    broadcastDownloadProgress(requestId, {
+                        status: "downloading",
+                        title,
+                        percent: Math.round(pct),
+                        speed: `${currentSpeedMB} MB/s`,
+                        eta: `${etaMin}m ${etaSec}s`,
+                        downloaded: `${dlMB} MB`,
+                        total: `${totMB} MB`,
+                    });
+                }
+            };
+
+            const writeStream = createWriteStream(downloadPath, { highWaterMark: 4 * 1024 * 1024 });
+            await client.downloadMedia(msg, {
+                outputFile: writeStream,
+                progressCallback: progressCb,
+            });
 
             process.stdout.write("\n");
-            console.log(`[DL] Complete: ${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB`);
+            console.log(`[DL] Download Complete: "${title}" -> ${downloadPath}`);
             return true;
 
-        } catch (dlErr) {
+        } catch (dlErr: any) {
             process.stdout.write("\n");
-            console.error(`[DL] Error (attempt ${attempt}):`, dlErr instanceof Error ? dlErr.message : dlErr);
+            console.error(`[DL] Download Error (attempt ${attempt}):`, dlErr?.message || dlErr);
+
+            const sig = activeJobSignals.get(requestId);
+            if (sig?.cancelled || sig?.paused) return false;
+
             if (attempt < MAX_RETRIES) {
-                const waitSec = attempt * 4;
-                console.log(`[DL] Retrying in ${waitSec}s from ${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB...`);
+                const waitSec = Math.min(attempt * 3, 20);
+                console.log(`[DL] Internet/Network error. Reconnecting in ${waitSec}s...`);
                 await sleep(waitSec * 1000);
             }
         }
@@ -281,102 +533,190 @@ export function createDownloadWorker() {
             const epMatch = data.title.match(/S(\d+)E(\d+)/i);
             const epTag = epMatch ? `s${epMatch[1].padStart(2, "0")}e${epMatch[2].padStart(2, "0")}` : "";
 
-            // 1. Try matching specified buttonText (excluding subtitles / non-video)
-            if (data.buttonText) {
+            // Collect all valid video buttons (skip subtitles, samples, navigations)
+            const validVideoButtons: { r: number; c: number; text: string; sizeMB: number }[] = [];
+            for (let r = 0; r < buttons.length; r++) {
+                for (let c = 0; c < buttons[r].length; c++) {
+                    const btn = buttons[r][c] as any;
+                    const text = btn.text || "";
+                    if (!isInvalidNonVideo(text)) {
+                        validVideoButtons.push({ r, c, text, sizeMB: parseSizeMB(text) });
+                    }
+                }
+            }
+
+            // 1. If optionIndex is provided (1-based index matching user's numbered choice)
+            if (data.optionIndex && typeof data.optionIndex === "number" && data.optionIndex >= 1 && data.optionIndex <= validVideoButtons.length) {
+                const chosen = validVideoButtons[data.optionIndex - 1];
+                targetRow = chosen.r;
+                targetCol = chosen.c;
+                targetBtnText = chosen.text;
+                console.log(`[WORKER] Selecting release by Option #${data.optionIndex}: "${targetBtnText}"`);
+            }
+
+            // 2. Try exact & smart token matching on data.buttonText (size, resolution, codec)
+            if (targetRow < 0 && data.buttonText) {
                 const bLower = data.buttonText.toLowerCase();
-                for (let r = 0; r < buttons.length; r++) {
-                    for (let c = 0; c < buttons[r].length; c++) {
-                        const btn = buttons[r][c] as any;
-                        const text = btn.text || "";
-                        if (isInvalidNonVideo(text)) continue;
+                const bSize = parseSizeMB(data.buttonText);
+                const want265 = bLower.includes("265") || bLower.includes("hevc");
+                const want264 = bLower.includes("264") || bLower.includes("avc");
+                const want1080 = bLower.includes("1080");
+                const want720 = bLower.includes("720");
+                const want480 = bLower.includes("480");
 
-                        if (text.toLowerCase().includes(bLower) || bLower.includes(text.toLowerCase().slice(0, 15))) {
-                            targetRow = r;
-                            targetCol = c;
-                            targetBtnText = btn.text;
-                            break;
-                        }
+                let bestScore = -1;
+                let bestMatch: typeof validVideoButtons[0] | null = null;
+
+                for (const vb of validVideoButtons) {
+                    const vLower = vb.text.toLowerCase();
+                    let score = 0;
+
+                    // Match exact or close file size
+                    if (bSize > 0 && Math.abs(vb.sizeMB - bSize) < 5) score += 50;
+
+                    // Match resolution
+                    if (want1080 && vLower.includes("1080")) score += 20;
+                    if (want720 && vLower.includes("720")) score += 20;
+                    if (want480 && vLower.includes("480")) score += 20;
+
+                    // Match codec
+                    if (want265 && (vLower.includes("265") || vLower.includes("hevc"))) score += 15;
+                    if (want264 && (vLower.includes("264") || vLower.includes("avc"))) score += 15;
+
+                    // Substring match (only for long strings >= 6 chars)
+                    if (bLower.length >= 6 && vLower.includes(bLower)) score += 30;
+
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestMatch = vb;
                     }
-                    if (targetRow >= 0) break;
+                }
+
+                if (bestMatch && bestScore > 0) {
+                    targetRow = bestMatch.r;
+                    targetCol = bestMatch.c;
+                    targetBtnText = bestMatch.text;
+                    console.log(`[WORKER] Matched button by attributes (Score: ${bestScore}): "${targetBtnText}"`);
                 }
             }
 
-            // 2. Try episode tag match for series
+            // 3. Try episode tag match for series
             if (targetRow < 0 && epTag) {
-                for (let r = 0; r < buttons.length; r++) {
-                    for (let c = 0; c < buttons[r].length; c++) {
-                        const btn = buttons[r][c] as any;
-                        const text = (btn.text || "").toLowerCase();
-                        if (isInvalidNonVideo(btn.text || "")) continue;
-
-                        if (text.includes(`[${epTag}]`) || text.includes(epTag)) {
-                            targetRow = r;
-                            targetCol = c;
-                            targetBtnText = btn.text;
-                            break;
-                        }
+                for (const vb of validVideoButtons) {
+                    const text = vb.text.toLowerCase();
+                    if (text.includes(`[${epTag}]`) || text.includes(epTag)) {
+                        targetRow = vb.r;
+                        targetCol = vb.c;
+                        targetBtnText = vb.text;
+                        break;
                     }
-                    if (targetRow >= 0) break;
                 }
             }
 
-            // 3. Try quality-based match (720p preferred, then 1080p, then 480p)
+            // 4. Try quality-based match: 720p heavily prioritized, then 1080p, then 480p
             if (targetRow < 0) {
                 const want1080 = (data.buttonText || "").toLowerCase().includes("1080");
                 const want480 = (data.buttonText || "").toLowerCase().includes("480");
 
-                for (let r = 0; r < buttons.length; r++) {
-                    for (let c = 0; c < buttons[r].length; c++) {
-                        const btn = buttons[r][c] as any;
-                        const text = (btn.text || "").toLowerCase();
-                        if (isInvalidNonVideo(btn.text || "")) continue;
+                if (!want1080 && !want480) {
+                    // Try 720p with H.265/x265 first
+                    const p720hevc = validVideoButtons.find(b => {
+                        const t = b.text.toLowerCase();
+                        return t.includes("720p") && (t.includes("265") || t.includes("hevc"));
+                    });
+                    const p720any = validVideoButtons.find(b => b.text.toLowerCase().includes("720p"));
+                    const chosen720 = p720hevc || p720any;
+                    if (chosen720) {
+                        targetRow = chosen720.r;
+                        targetCol = chosen720.c;
+                        targetBtnText = chosen720.text;
+                        console.log(`[WORKER] Prioritizing 720p video release: "${targetBtnText}"`);
+                    }
+                }
 
+                if (targetRow < 0) {
+                    for (const vb of validVideoButtons) {
+                        const text = vb.text.toLowerCase();
                         if (want1080 && text.includes("1080p")) {
-                            targetRow = r; targetCol = c; targetBtnText = btn.text; break;
+                            targetRow = vb.r; targetCol = vb.c; targetBtnText = vb.text; break;
                         } else if (want480 && text.includes("480p")) {
-                            targetRow = r; targetCol = c; targetBtnText = btn.text; break;
-                        } else if (!want1080 && !want480 && text.includes("720p")) {
-                            targetRow = r; targetCol = c; targetBtnText = btn.text; break;
+                            targetRow = vb.r; targetCol = vb.c; targetBtnText = vb.text; break;
+                        } else if (text.includes("1080p")) {
+                            targetRow = vb.r; targetCol = vb.c; targetBtnText = vb.text; break;
                         }
                     }
-                    if (targetRow >= 0) break;
                 }
             }
 
-            // 4. Fallback: First valid video button with size >= 100MB
-            if (targetRow < 0) {
-                for (let r = 0; r < buttons.length; r++) {
-                    for (let c = 0; c < buttons[r].length; c++) {
-                        const btn = buttons[r][c] as any;
-                        if (isInvalidNonVideo(btn.text || "")) continue;
-                        targetRow = r;
-                        targetCol = c;
-                        targetBtnText = btn.text;
-                        break;
-                    }
-                    if (targetRow >= 0) break;
-                }
+            // 5. Fallback: First valid video button
+            if (targetRow < 0 && validVideoButtons.length > 0) {
+                const chosen = validVideoButtons[0];
+                targetRow = chosen.r;
+                targetCol = chosen.c;
+                targetBtnText = chosen.text;
             }
 
             if (targetRow < 0) {
                 throw new Error(`Could not find a downloadable video release button on @${targetBot}`);
             }
 
+            // Collect initial recent message IDs before clicking
+            const initialRecent = await client.getMessages(targetBot, { limit: 20 });
+            const seenMessageIds = new Set<number>(initialRecent.map((m: any) => m.id));
+
             console.log(`[WORKER] Clicking verified video button [${targetRow}, ${targetCol}]: "${targetBtnText}"`);
-            const clickTriggerTime = Date.now();
-            await btnMsg.click(targetRow, targetCol);
-            await sleep(2000);
+            try {
+                if (buttons[targetRow] && buttons[targetRow][targetCol]) {
+                    await (buttons[targetRow][targetCol] as any).click({});
+                } else {
+                    await btnMsg.click({ i: targetRow, j: targetCol });
+                }
+            } catch (clickErr: any) {
+                console.log(`[WORKER] Button click fallback: ${clickErr.message}`);
+                try {
+                    await btnMsg.click({ text: targetBtnText });
+                } catch {
+                    await btnMsg.click({ i: targetRow, j: targetCol });
+                }
+            }
+            await sleep(2500);
 
             // Step 4: Wait for the file document to be delivered by the bot
             console.log(`[WORKER] Waiting for video document from @${targetBot}...`);
             let fileReceived = false;
+            let channelJoinHandled = false;
+            let retryClickCount = 0;
 
-            for (let attempt = 0; attempt < 40; attempt++) {
+            for (let attempt = 0; attempt < 60; attempt++) {
                 await sleep(2500);
-                const recent = await client.getMessages(targetBot, { limit: 12 });
+                const recent = await client.getMessages(targetBot, { limit: 15 });
 
                 for (const msg of recent) {
-                    if (msg.date && msg.date * 1000 < clickTriggerTime - 5000) continue;
+                    if (seenMessageIds.has(msg.id) && !msg.document && !msg.photo) continue;
+
+                    // Handle bot force-channel subscription prompt
+                    if (!msg.document && !msg.photo && !channelJoinHandled) {
+                        const requiredJoin = await handleChannelJoinRequirement(msg);
+                        if (requiredJoin) {
+                            channelJoinHandled = true;
+                            seenMessageIds.add(msg.id);
+                            console.log(`[WORKER] Channel join requested/completed. Waiting 6 seconds for Telegram & bot membership sync...`);
+                            await sleep(6000);
+                            console.log(`[WORKER] Re-clicking video release button after channel join sync...`);
+                            try {
+                                if (buttons[targetRow] && buttons[targetRow][targetCol]) {
+                                    await (buttons[targetRow][targetCol] as any).click({});
+                                } else {
+                                    await btnMsg.click({ i: targetRow, j: targetCol });
+                                }
+                            } catch {
+                                try { await btnMsg.click({ text: targetBtnText }); } catch {}
+                            }
+                            console.log(`[WORKER] Re-click sent. Now waiting for bot to upload/deliver the file...`);
+                            await sleep(3000);
+                            break;
+                        }
+                    }
 
                     if (msg.document || msg.photo) {
                         let fileName = "video.mp4";
@@ -402,11 +742,34 @@ export function createDownloadWorker() {
                                 totalSize < 20 * 1024 * 1024 // Subtitles/samples are < 20 MB
                             ) {
                                 console.log(`[WORKER] Skipped subtitle/non-video document: "${fileName}" (${(totalSize / 1024).toFixed(0)} KB)`);
+                                seenMessageIds.add(msg.id);
                                 continue;
                             }
                         }
 
-                        console.log(`[TG] Received Media Video: "${fileName}" (${(totalSize / (1024 * 1024)).toFixed(0)} MB)`);
+                        console.log(`[TG] Received Media Video from bot: "${fileName}" (${(totalSize / (1024 * 1024)).toFixed(0)} MB)`);
+
+                        // ─── PERSISTENCE SAFEGUARD: FORWARD TO SAVED MESSAGES FIRST ───
+                        // Bots often auto-delete messages after a short timeout; forwarding to "Saved Messages" ("me")
+                        // preserves the file indefinitely for uninterrupted high-speed multi-connection downloading.
+                        let mediaToDownload = msg;
+                        try {
+                            console.log(`[TG] Forwarding "${fileName}" to Saved Messages for download persistence...`);
+                            await client.forwardMessages("me", { messages: [msg.id], fromPeer: targetBot });
+                            await sleep(800);
+                            const savedMsgs = await client.getMessages("me", { limit: 5 });
+                            const match = savedMsgs.find((m: any) => m.document || m.media);
+                            if (match && (match.document || match.media)) {
+                                mediaToDownload = match;
+                                console.log(`[TG] Successfully secured video document in Saved Messages (ID: ${match.id}). Proceeding with download.`);
+                            } else {
+                                console.log(`[TG] Using original bot message for download.`);
+                                mediaToDownload = msg;
+                            }
+                        } catch (fwdErr: any) {
+                            console.log(`[TG] Forward to Saved Messages notice: ${fwdErr?.message || fwdErr}. Proceeding with direct download.`);
+                            mediaToDownload = msg;
+                        }
 
                         let downloadPath: string;
                         if (data.type === "movie") {
@@ -424,7 +787,7 @@ export function createDownloadWorker() {
                         }
 
                         const success = await downloadFileWithResume(
-                            msg, downloadPath, totalSize, data.requestId, data.title
+                            mediaToDownload, downloadPath, totalSize, data.requestId, data.title
                         );
 
                         if (success) {
@@ -450,7 +813,23 @@ export function createDownloadWorker() {
                         break;
                     }
                 }
+
                 if (fileReceived) break;
+
+                // Gentle re-trigger if bot is slow to respond after 20 seconds
+                if (!fileReceived && (attempt === 8 || attempt === 16) && retryClickCount < 2) {
+                    retryClickCount++;
+                    console.log(`[WORKER] Bot hasn't sent file yet after ${attempt * 2.5}s. Re-triggering release button click (Retry #${retryClickCount})...`);
+                    try {
+                        if (buttons[targetRow] && buttons[targetRow][targetCol]) {
+                            await (buttons[targetRow][targetCol] as any).click({});
+                        } else {
+                            await btnMsg.click({ i: targetRow, j: targetCol });
+                        }
+                    } catch {
+                        try { await btnMsg.click({ text: targetBtnText }); } catch {}
+                    }
+                }
             }
 
             if (!fileReceived) {

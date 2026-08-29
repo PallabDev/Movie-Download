@@ -62,3 +62,18 @@ export const activityLogs = pgTable("activity_logs", {
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+// Requested Media Tracking table
+export const requestedMedia = pgTable("requested_media", {
+    id: serial("id").primaryKey(),
+    title: varchar("title", { length: 500 }).notNull(),
+    type: varchar("type", { length: 20 }).notNull().default("movie"), // "movie" | "series"
+    year: varchar("year", { length: 10 }),
+    status: varchar("status", { length: 50 }).notNull().default("requested"), // "requested" | "downloading" | "completed" | "cancelled"
+    season: integer("season"),
+    episode: integer("episode"),
+    metadata: jsonb("metadata"),
+    requestedBy: varchar("requested_by", { length: 255 }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});

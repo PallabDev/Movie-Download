@@ -3,7 +3,7 @@ import cookieParser from "cookie-parser";
 import { db, schema } from "../../common/db/index.js";
 import { eq, desc, like, sql, count } from "drizzle-orm";
 import { register, login, extractUser, getAllUsers, deleteUser } from "../../common/auth/auth.js";
-import { checkMovieExists, checkSeriesExists, getLibraryStats } from "../../common/jellyfin/client.js";
+import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries } from "../../common/jellyfin/client.js";
 import { downloadQueue } from "../queue/queue.js";
 import { getHarness } from "../../../command/harness.js";
 import { broadcastNewDownload } from "./ws.js";
@@ -626,11 +626,151 @@ app.get("/api/downloads", requireAuth, async (req: any, res) => {
     });
 });
 
+// ─── DOWNLOAD ACTIONS ───
+
+app.post("/api/downloads/:id/pause", requireAuth, async (req: any, res) => {
+    const { id } = req.params;
+    downloadQueue.pauseJob(id);
+    await db.update(schema.downloads).set({ status: "paused" }).where(eq(schema.downloads.requestId, id));
+    res.json({ success: true, message: "Download paused" });
+});
+
+app.post("/api/downloads/:id/resume", requireAuth, async (req: any, res) => {
+    const { id } = req.params;
+    downloadQueue.resumeJob(id);
+    await db.update(schema.downloads).set({ status: "queued" }).where(eq(schema.downloads.requestId, id));
+    res.json({ success: true, message: "Download resumed" });
+});
+
+app.post("/api/downloads/:id/retry", requireAuth, async (req: any, res) => {
+    const { id } = req.params;
+    downloadQueue.retryJob(id);
+    await db.update(schema.downloads).set({ status: "queued", error: null }).where(eq(schema.downloads.requestId, id));
+    res.json({ success: true, message: "Download retry queued" });
+});
+
+app.delete("/api/downloads/:id", requireAuth, async (req: any, res) => {
+    const { id } = req.params;
+    downloadQueue.cancelJob(id);
+    await db.delete(schema.downloads).where(eq(schema.downloads.requestId, id));
+    res.json({ success: true, message: "Download cancelled and removed" });
+});
+
+app.delete("/api/downloads/clear/failed", requireAuth, async (_req: any, res) => {
+    downloadQueue.clearFailed();
+    await db.delete(schema.downloads).where(eq(schema.downloads.status, "failed"));
+    res.json({ success: true, message: "Failed downloads cleared" });
+});
+
+app.delete("/api/downloads/clear/all", requireAuth, async (_req: any, res) => {
+    downloadQueue.clearFailed();
+    await db.delete(schema.downloads).where(sql`status IN ('completed', 'failed', 'cancelled')`);
+    res.json({ success: true, message: "Download history cleared" });
+});
+
+// ─── REQUESTED MEDIA API ───
+
+app.get("/api/requested-media", requireAuth, async (_req, res) => {
+    try {
+        const items = await db.select().from(schema.requestedMedia).orderBy(desc(schema.requestedMedia.createdAt)).limit(100);
+        res.json({ items });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, items: [] });
+    }
+});
+
+app.post("/api/requested-media", requireAuth, async (req: any, res) => {
+    try {
+        const { title, type, year } = req.body;
+        if (!title) return res.status(400).json({ error: "Title required" });
+        await db.insert(schema.requestedMedia).values({
+            title: title.trim(),
+            type: type === "series" ? "series" : "movie",
+            year: year || null,
+            status: "requested",
+            requestedBy: req.user.email,
+        });
+        res.json({ success: true, message: `Added "${title}" to requested list` });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete("/api/requested-media/:id", requireAuth, async (req: any, res) => {
+    try {
+        const id = Number(req.params.id);
+        await db.delete(schema.requestedMedia).where(eq(schema.requestedMedia.id, id));
+        res.json({ success: true, message: "Entry removed" });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete("/api/requested-media/clear", requireAuth, async (_req: any, res) => {
+    try {
+        await db.delete(schema.requestedMedia);
+        res.json({ success: true, message: "All requested media cleared" });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── BOT STATUS & AUTH API ───
+
+app.get("/api/bot/status", requireAuth, (_req, res) => {
+    res.json({
+        connected: isBotConnected(),
+        connecting: isBotConnecting(),
+        auth: getAuthState(),
+    });
+});
+
+app.post("/api/bot/reconnect", requireAuth, async (_req, res) => {
+    const r = await startWebAuth();
+    res.json(r);
+});
+
+app.post("/api/bot/auth/phone", requireAuth, async (req, res) => {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ error: "Phone required" });
+    const r = await submitPhone(phone);
+    res.json(r);
+});
+
+app.post("/api/bot/auth/code", requireAuth, async (req, res) => {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ error: "Code required" });
+    const r = await submitCode(code);
+    res.json(r);
+});
+
+app.post("/api/bot/auth/password", requireAuth, async (req, res) => {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: "Password required" });
+    const r = await submitPassword(password);
+    res.json(r);
+});
+
 // ─── JELLYFIN API ───
 
 app.get("/api/jellyfin/stats", requireAuth, async (_req, res) => {
     const stats = await getLibraryStats();
     res.json(stats);
+});
+
+app.get("/api/jellyfin/movies", requireAuth, async (_req, res) => {
+    const items = await getAllMovies();
+    res.json({ items });
+});
+
+app.get("/api/jellyfin/series", requireAuth, async (_req, res) => {
+    const items = await getAllSeries();
+    res.json({ items });
+});
+
+app.get("/api/jellyfin/shows", requireAuth, async (_req, res) => {
+    const items = await getAllSeries();
+    res.json({ items });
 });
 
 app.get("/api/jellyfin/check", requireAuth, async (req, res) => {
@@ -885,14 +1025,14 @@ function getDashboardPage(user: any): string {
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
                             <span>AI Copilot</span>
                         </a>
-                        <a class="nav-link" data-view="studio" onclick="switchView('studio')">
-                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
-                            <span>Search & Discover</span>
-                        </a>
                         <a class="nav-link" data-view="downloads" onclick="switchView('downloads')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                             <span>Download Station</span>
                             <span class="nav-badge" id="activeDownloadsBadge" style="display:none">0</span>
+                        </a>
+                        <a class="nav-link" data-view="requested" onclick="switchView('requested')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M19 16h-12a2 2 0 0 0 -2 2"/><path d="M9 8h6"/></svg>
+                            <span>Requested Media</span>
                         </a>
                         <a class="nav-link" data-view="jellyfin" onclick="switchView('jellyfin')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
@@ -908,16 +1048,6 @@ function getDashboardPage(user: any): string {
                             <span>User Management</span>
                         </a>` : ""}
                     </nav>
-                </div>
-
-                <div>
-                    <div class="nav-group-title" style="display:flex; justify-content:space-between; align-items:center;">
-                        <span>Recent Chats</span>
-                        <button style="background:none; border:none; color:var(--accent-blue); cursor:pointer; font-size:11px; font-weight:600;" onclick="startNewChat()">+ New</button>
-                    </div>
-                    <div class="chat-sessions-list" id="chatSessionsList">
-                        <div style="font-size:11.5px; color:var(--text-muted); padding:4px 8px;">No chats yet</div>
-                    </div>
                 </div>
             </div>
 
@@ -983,30 +1113,14 @@ function getDashboardPage(user: any): string {
                         <div class="welcome-icon-box">
                             <svg class="tabler-icon" style="width:24px;height:24px;" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
                         </div>
-                        <h2>Media Search & Downloader</h2>
-                        <p>Find movies, full TV series seasons, episodes, or inspect Jellyfin libraries.</p>
-                        <div class="quick-prompts-grid">
-                            <button class="quick-prompt-btn" onclick="handleQuickPrompt('Search Inception 2010 movie')">
-                                <svg class="tabler-icon text-blue" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
-                                <div>
-                                    <strong>Inception (2010)</strong>
-                                    <div class="text-muted" style="font-size: 11px;">Search movie releases</div>
-                                </div>
-                            </button>
-                            <button class="quick-prompt-btn" onclick="handleQuickPrompt('Check bot connection status')">
-                                <svg class="tabler-icon text-blue" viewBox="0 0 24 24"><path d="M15 10l-4 4l6 6l4 -16l-18 7l4 2l2 6l3 -4"/></svg>
-                                <div>
-                                    <strong>Telegram Bot Status</strong>
-                                    <div class="text-muted" style="font-size: 11px;">View link & 2FA state</div>
-                                </div>
-                            </button>
-                        </div>
+                        <h2>Search Movies to add on movie.pallabdev.in</h2>
+                        <p>Type any movie title to check releases and download directly to your streaming server.</p>
                     </div>
                 </div>
 
                 <div class="chat-input-container">
                     <div class="chat-input-bar">
-                        <textarea id="chatInput" class="chat-textarea" placeholder="Search movie, full season, single episode, or query status..." rows="1"></textarea>
+                        <textarea id="chatInput" class="chat-textarea" placeholder="Search movies to add on movie.pallabdev.in (e.g. Inception 2010)..." rows="1"></textarea>
                         <button class="btn-chat-send" id="btnSendChat" onclick="sendChatMessage()" title="Send">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 14l11 -11"/><path d="M21 3l-6.5 18a.55 .55 0 0 1 -1 0l-3.5 -7l-7 -3.5a.55 .55 0 0 1 0 -1l18 -6.5"/></svg>
                         </button>
@@ -1106,8 +1220,15 @@ function getDashboardPage(user: any): string {
 
                     <div class="history-card">
                         <div class="history-toolbar">
-                            <h2 style="font-size: 15px;">Download History</h2>
-                            <input type="text" id="historySearchFilter" class="search-filter-input" placeholder="Filter downloads..." oninput="loadDownloadHistory(1)">
+                            <div>
+                                <h2 style="font-size: 15px;">Download History & Controls</h2>
+                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Manage active and completed Telegram file downloads.</p>
+                            </div>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <input type="text" id="historySearchFilter" class="search-filter-input" placeholder="Filter downloads..." oninput="loadDownloadHistory(1)">
+                                <button class="btn-header" style="color: var(--accent-amber);" onclick="clearFailedDownloads()" title="Remove failed jobs">Clear Failed</button>
+                                <button class="btn-header" style="color: var(--text-muted);" onclick="clearAllDownloads()" title="Clear completed and cancelled">Clear All</button>
+                            </div>
                         </div>
                         <div class="data-table-wrap">
                             <table class="data-table">
@@ -1118,10 +1239,55 @@ function getDashboardPage(user: any): string {
                                         <th>Size</th>
                                         <th>Status</th>
                                         <th>Date</th>
+                                        <th style="text-align:right;">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="downloadHistoryTableBody">
-                                    <tr><td colspan="5" style="text-align:center; padding: 20px;">Loading records...</td></tr>
+                                    <tr><td colspan="6" style="text-align:center; padding: 20px;">Loading records...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW: DEDICATED REQUESTED MEDIA HUB -->
+            <section class="view-container" id="view-requested">
+                <div class="download-station-wrap">
+                    <div class="jf-hero-card">
+                        <div>
+                            <span class="chip quality">Watchlist & Queue</span>
+                            <h1 style="font-size: 20px; margin: 6px 0 2px;">Requested Media Hub</h1>
+                            <p style="color: var(--text-secondary); font-size: 12.5px;">All movies and TV series requested through AI Copilot and search queries.</p>
+                        </div>
+                        <div class="metric-icon-box active" style="width: 44px; height: 44px;">
+                            <svg class="tabler-icon" style="width:24px;height:24px;" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M19 16h-12a2 2 0 0 0 -2 2"/><path d="M9 8h6"/></svg>
+                        </div>
+                    </div>
+
+                    <div class="history-card" style="margin-top: 16px;">
+                        <div class="history-toolbar">
+                            <div style="display: flex; gap: 8px; align-items: center; flex: 1;">
+                                <input type="text" id="requestedSearchFilter" class="search-filter-input" placeholder="Search requested titles..." oninput="loadRequestedMedia()">
+                            </div>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <button class="btn-header" style="color: var(--accent-rose);" onclick="clearAllRequestedMedia()">Clear All Requests</button>
+                            </div>
+                        </div>
+                        <div class="data-table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Title</th>
+                                        <th>Type</th>
+                                        <th>Year</th>
+                                        <th>Status</th>
+                                        <th>Requested Date</th>
+                                        <th style="text-align:right;">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="requestedMediaTableBody">
+                                    <tr><td colspan="6" style="text-align:center; padding: 20px;">Loading requested media...</td></tr>
                                 </tbody>
                             </table>
                         </div>

@@ -60,10 +60,11 @@ export async function searchMovies(query: string): Promise<JellyfinItem[]> {
 
 export async function searchSeries(query: string): Promise<JellyfinItem[]> {
     const data: JellyfinSearchResult | null = await jellyfinFetch("/Items", {
-        IncludeItemTypes: "Series",
+        IncludeItemTypes: "Series,BoxSet",
         Recursive: "true",
         SearchTerm: query,
-        Limit: "10",
+        Fields: "Overview,ChildCount,RecursiveItemCount,CommunityRating,PremiereDate",
+        Limit: "20",
     });
     return data?.Items || [];
 }
@@ -123,7 +124,7 @@ export async function getLibraryStats(): Promise<{ movies: number; series: numbe
     });
 
     const series = await jellyfinFetch("/Items", {
-        IncludeItemTypes: "Series",
+        IncludeItemTypes: "Series,BoxSet",
         Recursive: "true",
         Limit: "0",
     });
@@ -138,6 +139,7 @@ export async function getAllMovies(): Promise<JellyfinItem[]> {
     const data: JellyfinSearchResult | null = await jellyfinFetch("/Items", {
         IncludeItemTypes: "Movie",
         Recursive: "true",
+        Fields: "Overview,CommunityRating,PremiereDate",
         Limit: "10000",
         SortBy: "Name",
     });
@@ -146,8 +148,9 @@ export async function getAllMovies(): Promise<JellyfinItem[]> {
 
 export async function getAllSeries(): Promise<JellyfinItem[]> {
     const data: JellyfinSearchResult | null = await jellyfinFetch("/Items", {
-        IncludeItemTypes: "Series",
+        IncludeItemTypes: "Series,BoxSet",
         Recursive: "true",
+        Fields: "Overview,ChildCount,RecursiveItemCount,CommunityRating,PremiereDate",
         Limit: "10000",
         SortBy: "Name",
     });
