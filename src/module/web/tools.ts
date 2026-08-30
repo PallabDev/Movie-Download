@@ -2,9 +2,9 @@ import { getHarness } from "../../../command/harness.js";
 import { db, schema } from "../../common/db/index.js";
 import { desc, eq } from "drizzle-orm";
 import { checkMovieExists, checkSeriesExists } from "../../common/jellyfin/client.js";
-import { downloadQueue } from "../queue/queue.js";
-import { isBotConnected, getAuthState, submitPhone, submitCode, submitPassword, startWebAuth } from "../bot/bot.js";
-import { webSearch, pickBestResult, groupByEpisode, getSeriesInfo } from "../ai/brain.js";
+import { downloadQueue, secureBotFileToSavedMessages } from "../queue/queue.js";
+import { isBotConnected, ensureBotConnected, getAuthState, submitPhone, submitCode, submitPassword, startWebAuth } from "../bot/bot.js";
+import { webSearch, pickBestResult, groupByEpisode, getSeriesInfo, isAllowedDownloadLanguage, checkResolutionHarnessRule } from "../ai/brain.js";
 import {
     lookupMedia,
     getSeriesSeasonsAndEpisodes,
@@ -109,17 +109,20 @@ export const SYSTEM_PROMPT = `You are an expert movie download copilot connected
 1. ONLY MOVIES ARE SUPPORTED. TV Series, TV shows, and web series downloading is currently disabled.
 2. If the user searches for or asks to download a TV series, TV show, or web series, immediately inform them politely:
    "⚠️ **TV Shows & Series are currently not supported.** Only **Movies** are available for download. Please tell me which movie you would like to search or download! 🎬"
-3. When searching movies, ALWAYS prioritize and recommend the **720p** release (for optimal balance of video quality and file size). If 720p is not available, recommend the best 1080p release.
-4. When the user confirms with "yes", "download", "download recommend", or chooses an option number (e.g. "1", "2", "5", "15", "download 5"), call 'download_movie' with the corresponding optionIndex.
+3. **LANGUAGE RESTRICTIONS (CRITICAL)**: Only movies in **Hindi**, **Bengali**, and **English** (or Dual/Multi Audio containing any of these) are allowed for download! If the user tries to download a release in any other language (e.g. Malayalam, Telugu, Tamil, Kannada, Punjabi, Marathi, etc. without Hindi/Bengali/English), you MUST state:
+   "⚠️ **Download Not Allowed**: You can't download this movie release. Only **Hindi**, **Bengali**, and **English** (or Dual/Multi Audio) languages are supported for download."
+4. **HARNESS RESOLUTION RULE (>720p WARNING)**: Always prioritize and recommend the **720p** release. If the user chooses or downloads a release higher than 720p (such as **1080p** or **4K**), you MUST warn them:
+   "⚠️ *Warning: Downloading releases higher than 720p multiple times puts heavy load on server bandwidth and can lead to your account being banned.*"
+5. When the user confirms with "yes", "download", "download recommend", or chooses an option number (e.g. "1", "2", "5", "15", "download 5"), call 'download_movie' with the corresponding optionIndex.
 
 ## 2-STEP WORKFLOW:
 
 ### STEP 1: MOVIE SEARCH & PRESENTATION
-- When the user asks about a movie (e.g., "Miss You 2024", "Inception", "Interstellar"):
+- When the user asks about a movie (e.g., "Fidaa", "Miss You 2024", "Inception", "Interstellar"):
   - Call 'search_movie' with title and optional year.
   - In your response:
     - State how many total releases were found across all pages.
-    - Highlight your recommended 720p release (Option #X) and explain why it's optimal (quality/size balance).
+    - Highlight your recommended release (Option #X) and explicitly mention its language (e.g. "Hindi Dubbed" or "Dual Audio (Hindi + Telugu)" or "1080p FHD"), quality, and why it is recommended.
     - Inform the user that all available files are listed below with instant download buttons, and they can either click any button or type the option number (e.g. "5", "download 12", "yes").
 
 ### STEP 2: DOWNLOAD EXECUTION
@@ -129,6 +132,8 @@ export const SYSTEM_PROMPT = `You are an expert movie download copilot connected
 ## RULES:
 1. NEVER display raw JSON in your final conversational response. Use clean, beautiful Markdown.
 2. If you need to perform an action, output ONLY ONE JSON tool call in format: {"tool": "tool_name", "args": {"key": "value"}}.
+3. If any tool returns a message starting with "BOT_DISCONNECTED", immediately inform the user:
+   "⚠️ **Telegram Bot is currently disconnected.** Please navigate to the **Telegram Bot** tab in the left sidebar and click **Reconnect** to re-authenticate, then try your search again! 🤖"
 
 ## AVAILABLE TOOLS:
 
@@ -204,8 +209,15 @@ export async function toolSearchMovie(args: Record<string, any>, sessionId: stri
         return await toolSearchSeries({ title: cleanTitle }, sessionId);
     }
 
-    if (!isBotConnected()) {
-        return { success: false, message: "BOT_DISCONNECTED: Please connect the Telegram bot first." };
+    let connected = isBotConnected();
+    if (!connected) {
+        connected = await ensureBotConnected();
+    }
+    if (!connected) {
+        return {
+            success: false,
+            message: "BOT_DISCONNECTED: Telegram Bot is currently disconnected. Please navigate to the Telegram Bot tab in the sidebar and click Reconnect."
+        };
     }
 
     const jf = await checkMovieExists(cleanTitle, cleanYear);
@@ -497,6 +509,40 @@ export async function toolDownloadMovie(args: Record<string, any>, sessionId: st
 
     const fileSize = exactFileSize || "720p WEB-DL";
 
+    // ─── HARNESS RULE 1: LANGUAGE RESTRICTION CHECK (ONLY BENGALI, HINDI, ENGLISH ALLOWED) ───
+    const langCheck = isAllowedDownloadLanguage(targetBtnText || targetTitle);
+    if (!langCheck.allowed) {
+        harness.logActivity(`[HARNESS RULE BLOCKED] Disallowed language "${langCheck.detectedLanguage}" for movie "${targetTitle}"`);
+        return {
+            success: false,
+            message: `LANGUAGE_NOT_SUPPORTED: You can't download this movie release (${langCheck.detectedLanguage}). Only **Hindi**, **Bengali**, and **English** (or Dual/Multi Audio) languages are supported for download.`,
+            data: { allowed: false, language: langCheck.detectedLanguage }
+        };
+    }
+
+    // ─── HARNESS RULE 2: RESOLUTION CHECK (>720p BAN WARNING) ───
+    const resCheck = checkResolutionHarnessRule(targetBtnText || "");
+    if (resCheck.isHighRes) {
+        harness.logActivity(`[HARNESS RULE WARNING] High resolution download (${resCheck.resolution}) queued for "${targetTitle}" - Ban warning issued.`);
+    }
+
+    // Attempt to pre-secure the file into Saved Messages immediately
+    let securedInfo: { savedMsgId: number; fileName: string; totalSize: number } | null = null;
+    try {
+        const msgToClick = session?.btnMsg;
+        if (msgToClick) {
+            securedInfo = await secureBotFileToSavedMessages(
+                session?.bot || "ProSearchM11Bot",
+                msgToClick,
+                targetBtnText,
+                targetBtnRow,
+                targetBtnCol
+            );
+        }
+    } catch (secErr: any) {
+        console.log(`[QUEUE] Pre-secure notice: ${secErr?.message || secErr}`);
+    }
+
     try {
         await db.insert(schema.downloads).values({
             requestId,
@@ -520,15 +566,23 @@ export async function toolDownloadMovie(args: Record<string, any>, sessionId: st
             page: targetPage,
             buttonRow: targetBtnRow,
             buttonCol: targetBtnCol,
+            savedMsgId: securedInfo?.savedMsgId,
+            fileName: securedInfo?.fileName,
+            fileSizeBytes: securedInfo?.totalSize,
         });
 
         try { broadcastNewDownload({ jobId: requestId, title: targetTitle, type: "movie", requestedBy: "ai" }); } catch {}
-        harness.logActivity(`[QUEUE] Queued movie "${targetTitle}" (Option #${resolvedOptIdx || "auto"} P${targetPage}: ${targetBtnText || fileSize})`);
+        harness.logActivity(`[QUEUE] Queued movie "${targetTitle}" (Option #${resolvedOptIdx || "auto"} P${targetPage}: ${targetBtnText || fileSize}) [SavedMsgId: ${securedInfo?.savedMsgId || "pending"}]`);
+
+        let responseMsg = `MOVIE_DOWNLOAD_QUEUED: "${targetTitle}" (${fileSize}) added to download queue`;
+        if (resCheck.isHighRes && resCheck.warningMessage) {
+            responseMsg += `\n\n${resCheck.warningMessage}`;
+        }
 
         return {
             success: true,
-            message: `MOVIE_DOWNLOAD_QUEUED: "${targetTitle}" (${fileSize}) added to download queue`,
-            data: { requestId, title: targetTitle, fileSize, optionIndex: resolvedOptIdx, page: targetPage, buttonText: targetBtnText }
+            message: responseMsg,
+            data: { requestId, title: targetTitle, fileSize, optionIndex: resolvedOptIdx, page: targetPage, buttonText: targetBtnText, warning: resCheck.isHighRes ? resCheck.warningMessage : null }
         };
     } catch (err: any) {
         return { success: false, message: `DOWNLOAD_ERROR: ${err.message}` };

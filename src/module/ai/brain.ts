@@ -327,6 +327,147 @@ export async function getEpisodeDetails(
     }
 }
 
+export function detectReleaseLanguage(text: string): {
+    isHindi: boolean;
+    isBengali: boolean;
+    isEnglish: boolean;
+    isDualOrMulti: boolean;
+    isDisallowedLanguage: boolean;
+    language: string;
+} {
+    const lower = text.toLowerCase();
+
+    // 1. Explicit Hindi patterns
+    const isExplicitHindi = /\b(hindi|hin|hindi-dubbed|dubbed\s*in\s*hindi|hindi\s*dub|hindi\s*clean|clean\s*hindi|org\s*hindi|hindi\s*org|dd5\.1\s*hindi|hindi\s*dd5\.1|hq\s*hindi|hindi\s*hq)\b/i.test(lower) ||
+        /\[(?:hin|hindi)[-+_\s/][^\]]+\]/i.test(lower) ||
+        /\[[^\]]+[-+_\s/](?:hin|hindi)\]/i.test(lower) ||
+        /\b(hin-eng|eng-hin|hin-tam|tam-hin|hin-tel|tel-hin|hin-kan|kan-hin|hin-ben|ben-hin|hin-mal|mal-hin)\b/i.test(lower);
+
+    // 2. Explicit Bengali / Bangla patterns
+    const isExplicitBengali = /\b(bengali|bangla|ben|beng)\b/i.test(lower) ||
+        /\[(?:ben|bengali|bangla)[-+_\s/][^\]]+\]/i.test(lower) ||
+        /\[[^\]]+[-+_\s/](?:ben|bengali|bangla)\]/i.test(lower) ||
+        /\b(ben-eng|eng-ben|hin-ben|ben-hin)\b/i.test(lower);
+
+    // 3. Explicit English patterns
+    const isExplicitEnglish = /\b(english|eng)\b/i.test(lower) ||
+        /\[(?:eng|english)[-+_\s/][^\]]+\]/i.test(lower) ||
+        /\[[^\]]+[-+_\s/](?:eng|english)\]/i.test(lower);
+
+    // 4. Dual / Multi Audio patterns (In Indian Telegram release naming, DUAL/Multi almost always includes Hindi/Bengali/English)
+    const isDualOrMulti = /\b(dual|dual-audio|dual\s*audio|multi|multi-audio|multi\s*audio|tri-audio|tri\s*audio|quad-audio)\b/i.test(lower) ||
+        /\[(?:dual|multi)[^\]]*\]/i.test(lower);
+
+    // 5. Other regional or foreign single languages (without Hindi/Bengali/English/Dual)
+    const isMalayalam = /\b(malayalam|malay|mal)\b/i.test(lower);
+    const isTelugu = /\b(telugu|tel)\b/i.test(lower);
+    const isTamil = /\b(tamil|tam)\b/i.test(lower);
+    const isKannada = /\b(kannada|kan)\b/i.test(lower);
+    const isPunjabi = /\b(punjabi|panjabi)\b/i.test(lower);
+    const isMarathi = /\b(marathi|mar)\b/i.test(lower);
+    const isGujarati = /\b(gujarati|guj)\b/i.test(lower);
+    const isOdia = /\b(odia|oriya)\b/i.test(lower);
+    const isBhojpuri = /\b(bhojpuri|bhoj)\b/i.test(lower);
+    const isKorean = /\b(korean|kor)\b/i.test(lower);
+    const isJapanese = /\b(japanese|jap)\b/i.test(lower);
+    const isChinese = /\b(chinese|chi)\b/i.test(lower);
+    const isSpanish = /\b(spanish|spa)\b/i.test(lower);
+    const isFrench = /\b(french|fre)\b/i.test(lower);
+    const isRussian = /\b(russian|rus)\b/i.test(lower);
+    const isGerman = /\b(german|ger)\b/i.test(lower);
+    const isItalian = /\b(italian|ita)\b/i.test(lower);
+    const isThai = /\b(thai)\b/i.test(lower);
+    const isTurkish = /\b(turkish|turk)\b/i.test(lower);
+
+    let otherLangName = "";
+    if (isMalayalam) otherLangName = "Malayalam";
+    else if (isTelugu) otherLangName = "Telugu";
+    else if (isTamil) otherLangName = "Tamil";
+    else if (isKannada) otherLangName = "Kannada";
+    else if (isPunjabi) otherLangName = "Punjabi";
+    else if (isMarathi) otherLangName = "Marathi";
+    else if (isGujarati) otherLangName = "Gujarati";
+    else if (isOdia) otherLangName = "Odia";
+    else if (isBhojpuri) otherLangName = "Bhojpuri";
+    else if (isKorean) otherLangName = "Korean";
+    else if (isJapanese) otherLangName = "Japanese";
+    else if (isChinese) otherLangName = "Chinese";
+    else if (isSpanish) otherLangName = "Spanish";
+    else if (isFrench) otherLangName = "French";
+    else if (isRussian) otherLangName = "Russian";
+    else if (isGerman) otherLangName = "German";
+    else if (isItalian) otherLangName = "Italian";
+    else if (isThai) otherLangName = "Thai";
+    else if (isTurkish) otherLangName = "Turkish";
+
+    const isDisallowedLanguage = Boolean(otherLangName) && !isExplicitHindi && !isExplicitBengali && !isExplicitEnglish && !isDualOrMulti;
+
+    let language = "Original / English";
+    if (isExplicitHindi) language = "Hindi";
+    else if (isExplicitBengali) language = "Bengali";
+    else if (isExplicitEnglish) language = "English";
+    else if (isDualOrMulti) language = "Dual Audio";
+    else if (otherLangName) language = otherLangName;
+
+    return {
+        isHindi: isExplicitHindi,
+        isBengali: isExplicitBengali,
+        isEnglish: isExplicitEnglish,
+        isDualOrMulti,
+        isDisallowedLanguage,
+        language
+    };
+}
+
+export function isAllowedDownloadLanguage(text: string): {
+    allowed: boolean;
+    detectedLanguage: string;
+    reason?: string;
+} {
+    const langInfo = detectReleaseLanguage(text);
+
+    // If it has Hindi, Bengali, English, or Dual/Multi Audio -> ALLOWED
+    if (langInfo.isHindi || langInfo.isBengali || langInfo.isEnglish || langInfo.isDualOrMulti) {
+        return { allowed: true, detectedLanguage: langInfo.language };
+    }
+
+    // If it has an explicit disallowed language (e.g. Malayalam, Telugu, Tamil, etc.)
+    if (langInfo.isDisallowedLanguage) {
+        return {
+            allowed: false,
+            detectedLanguage: langInfo.language,
+            reason: `⚠️ You can't download this movie release. Only **Hindi**, **Bengali**, and **English** (or Dual/Multi Audio) languages are supported. The selected release is in **${langInfo.language}**.`
+        };
+    }
+
+    // Standard English/original release
+    return { allowed: true, detectedLanguage: "English / Original" };
+}
+
+export function checkResolutionHarnessRule(text: string): {
+    isHighRes: boolean;
+    resolution: string;
+    warningMessage?: string;
+} {
+    const lower = text.toLowerCase();
+    let res = "";
+    if (lower.includes("2160p") || lower.includes("4k") || lower.includes("uhd")) {
+        res = "4K UHD";
+    } else if (lower.includes("1080p") || lower.includes("fhd")) {
+        res = "1080p FHD";
+    }
+
+    if (res) {
+        return {
+            isHighRes: true,
+            resolution: res,
+            warningMessage: `⚠️ **Warning: High Resolution (${res}) Download Detected!**\n> ⚠️ *Downloading releases higher than 720p multiple times puts heavy load on the server and bandwidth. Doing this multiple times can result in your account being banned.*`
+        };
+    }
+
+    return { isHighRes: false, resolution: "720p or standard" };
+}
+
 export async function pickBestResult(
     title: string,
     type: "movie" | "series",
@@ -337,7 +478,7 @@ export async function pickBestResult(
     if (results.length === 1) return { index: 0, reason: "Only result" };
 
     let bestIdx = 0;
-    let bestScore = -1;
+    let bestScore = -99999;
     let bestReason = "";
 
     for (let i = 0; i < results.length; i++) {
@@ -346,47 +487,79 @@ export async function pickBestResult(
         let score = 0;
         let reasons: string[] = [];
 
-        // 720p heavily prioritized for movies (best balance of size & quality)
-        if (lower.includes("720p")) {
+        // ── 1. Language Priority (TOP PRIORITY: HINDI / BENGALI / ENGLISH FIRST) ──
+        const langInfo = detectReleaseLanguage(r.text);
+        if (langInfo.isHindi) {
+            score += 220;
+            reasons.push("Hindi Audio");
+        } else if (langInfo.isBengali) {
+            score += 210;
+            reasons.push("Bengali Audio");
+        } else if (langInfo.isDualOrMulti) {
+            score += 180;
+            reasons.push("Dual Audio (Hindi/Ben/Eng)");
+        } else if (langInfo.isDisallowedLanguage) {
+            // Disallowed regional/foreign language (Malayalam, Telugu, Tamil, etc.) -> heavily penalize
+            score -= 1000;
+        } else {
+            // Standard English/original release
+            score += 15;
+        }
+
+        // ── 2. Resolution & Efficiency ──
+        if (lower.includes("1080p")) {
+            score += 40;
+            reasons.push("1080p FHD");
+            if (lower.includes("265") || lower.includes("hevc")) {
+                score += 20;
+                reasons.push("H.265 efficient");
+            }
+        } else if (lower.includes("720p")) {
             score += 35;
             reasons.push("720p HD");
             if (lower.includes("265") || lower.includes("hevc")) {
-                score += 15;
+                score += 20;
                 reasons.push("H.265 efficient");
             }
-        } else if (lower.includes("1080p")) {
-            score += 15;
-            reasons.push("1080p FHD");
-            if (lower.includes("265") || lower.includes("hevc")) {
-                score += 5;
-                reasons.push("H.265");
-            }
+        } else if (lower.includes("2160p") || lower.includes("4k")) {
+            score += 25;
+            reasons.push("4K UHD");
         } else if (lower.includes("480p")) {
-            score += 5;
+            score += 10;
             reasons.push("480p SD");
         }
 
-        // Size check: movie 500MB-1.8GB is sweet spot for 720p
+        // ── 3. Size Check ──
         if (type === "movie") {
-            if (r.sizeMB >= 450 && r.sizeMB <= 1600) { score += 10; reasons.push("optimal size"); }
-            else if (r.sizeMB > 1600 && r.sizeMB <= 3000) { score += 4; }
+            if (r.sizeMB >= 700 && r.sizeMB <= 3500) {
+                score += 15;
+                reasons.push("optimal size");
+            } else if (r.sizeMB > 3500 && r.sizeMB <= 6000) {
+                score += 8;
+            } else if (r.sizeMB >= 400 && r.sizeMB < 700) {
+                score += 5;
+            }
         } else {
-            if (r.sizeMB >= 50 && r.sizeMB <= 1000) { score += 8; reasons.push("good size"); }
+            if (r.sizeMB >= 150 && r.sizeMB <= 1500) {
+                score += 10;
+                reasons.push("good size");
+            }
         }
 
-        // Prefer mp4/mkv
-        if (lower.includes(".mp4") || lower.includes(".mkv")) { score += 3; reasons.push("video container"); }
+        // ── 4. Container / Codec ──
+        if (lower.includes(".mkv") || lower.includes(".mp4")) {
+            score += 5;
+        }
 
-        // Penalize subtitles-only
-        if (lower.includes("srt") || lower.includes("sub") || lower.includes("subtitle")) { score -= 10; }
+        // ── 5. Quality Penalties ──
+        if (lower.includes("sample")) score -= 100;
+        if (lower.includes("srt") || lower.includes("sub") || lower.includes("subtitle")) score -= 100;
+        if (lower.includes("camrip") || lower.includes("hdcam") || lower.includes("telesync") || lower.includes("predvd")) score -= 150;
 
-        // Penalize sample
-        if (lower.includes("sample")) { score -= 5; }
-
-        // Prefer results with the title in them
-        const titleWords = title.toLowerCase().split(/\s+/);
+        // ── 6. Title Match ──
+        const titleWords = title.toLowerCase().split(/\s+/).filter(w => w.length > 1);
         const matchCount = titleWords.filter(w => lower.includes(w)).length;
-        score += matchCount * 2;
+        score += matchCount * 5;
         if (matchCount === titleWords.length) reasons.push("title match");
 
         if (score > bestScore) {
@@ -397,7 +570,7 @@ export async function pickBestResult(
     }
 
     harness.logActivity(
-        `[AI] Best result for "${title}": #${bestIdx + 1} "${results[bestIdx].text.substring(0, 50)}" (${bestReason})`
+        `[AI] Best result for "${title}": #${bestIdx + 1} "${results[bestIdx].text.substring(0, 50)}" (${bestReason}) [Score: ${bestScore}]`
     );
 
     return { index: bestIdx, reason: bestReason };

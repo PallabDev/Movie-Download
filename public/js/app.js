@@ -147,9 +147,41 @@ function showAlertModal({
 }
 
 // ==========================================================================
-// NAVIGATION CONTROLLER
 // ==========================================================================
-function switchView(viewName) {
+// NAVIGATION & ROUTING CONTROLLER
+// ==========================================================================
+const VIEW_ROUTES = {
+    chat: '/',
+    downloads: '/download',
+    requested: '/request',
+    jellyfin: '/jellyfin',
+    bot: '/telegram',
+    admin: '/user',
+    studio: '/studio'
+};
+
+const VIEW_TITLES = {
+    chat: 'AI Copilot Assistant',
+    downloads: 'Download Station',
+    requested: 'Requested Media Hub',
+    jellyfin: 'Jellyfin Media Hub',
+    bot: 'Telegram Bot',
+    admin: 'User Management',
+    studio: 'Search & Discover Studio'
+};
+
+function getViewForPath(pathname) {
+    const p = (pathname || window.location.pathname || '/').toLowerCase();
+    if (p.startsWith('/download') || p.startsWith('/downlaod')) return 'downloads';
+    if (p.startsWith('/request')) return 'requested';
+    if (p.startsWith('/jellyfin')) return 'jellyfin';
+    if (p.startsWith('/telegram') || p.startsWith('/bot')) return 'bot';
+    if (p.startsWith('/user') || p.startsWith('/users') || p.startsWith('/admin')) return 'admin';
+    if (p.startsWith('/studio') || p.startsWith('/search')) return 'studio';
+    return 'chat';
+}
+
+function switchView(viewName, updateHistory = true) {
     state.currentView = viewName;
 
     document.querySelectorAll('.nav-link').forEach(link => {
@@ -162,15 +194,15 @@ function switchView(viewName) {
 
     const titleEl = document.getElementById('headerViewTitle');
     if (titleEl) {
-        const titles = {
-            chat: 'AI Copilot Assistant',
-            downloads: 'Download Station',
-            requested: 'Requested Media Hub',
-            jellyfin: 'Jellyfin Media Hub',
-            bot: 'Telegram Bot',
-            admin: 'User Management'
-        };
-        titleEl.textContent = titles[viewName] || 'Dashboard';
+        titleEl.textContent = VIEW_TITLES[viewName] || 'Dashboard';
+    }
+    document.title = `CineGrab - ${VIEW_TITLES[viewName] || 'Studio'}`;
+
+    if (updateHistory) {
+        const targetPath = VIEW_ROUTES[viewName] || '/';
+        if (window.location.pathname !== targetPath) {
+            history.pushState({ view: viewName }, '', targetPath);
+        }
     }
 
     if (viewName === 'downloads') loadDownloadHistory();
@@ -182,8 +214,25 @@ function switchView(viewName) {
     document.getElementById('appSidebar')?.classList.remove('open');
 }
 
+function navigateRoute(e, viewName) {
+    if (e) {
+        if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+        if (e.preventDefault) e.preventDefault();
+    }
+    switchView(viewName, true);
+}
+
+window.addEventListener('popstate', (e) => {
+    const view = (e.state && e.state.view) || getViewForPath(window.location.pathname);
+    switchView(view, false);
+});
+
 function toggleSidebar() {
     document.getElementById('appSidebar')?.classList.toggle('open');
+}
+
+function closeSidebar() {
+    document.getElementById('appSidebar')?.classList.remove('open');
 }
 
 function toggleUserMenu() {
@@ -428,6 +477,37 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
         `;
     }
 
+function getLanguageTag(text) {
+    if (!text) return null;
+    const lower = text.toLowerCase();
+    if (/\b(hindi|hin|hindi-dubbed|dubbed\s*in\s*hindi|hindi\s*dub|hindi\s*clean|clean\s*hindi|org\s*hindi|hindi\s*org|dd5\.1\s*hindi|hq\s*hindi)\b/i.test(lower) ||
+        /\[(?:hin|hindi)[-+_\s/][^\]]+\]/i.test(lower) ||
+        /\[[^\]]+[-+_\s/](?:hin|hindi)\]/i.test(lower) ||
+        /\b(hin-eng|eng-hin|hin-tam|tam-hin|hin-tel|tel-hin|hin-kan|kan-hin)\b/i.test(lower)) {
+        return { type: 'lang-hindi', label: '🇮🇳 HINDI' };
+    }
+    if (/\b(bengali|bangla|ben|beng)\b/i.test(lower) || /\[(?:ben|bengali|bangla)[-+_\s/][^\]]+\]/i.test(lower) || /\b(ben-eng|eng-ben|hin-ben|ben-hin)\b/i.test(lower)) {
+        return { type: 'lang-bengali', label: '🇧🇩 BENGALI' };
+    }
+    if (/\b(dual|dual-audio|dual\s*audio|multi|multi-audio|multi\s*audio|tri-audio)\b/i.test(lower) || /\[(?:dual|multi)[^\]]*\]/i.test(lower)) {
+        return { type: 'lang-dual', label: '🌐 DUAL AUDIO' };
+    }
+    if (/\b(malayalam|malay|mal)\b/i.test(lower)) return { type: 'lang-other', label: 'MALAYALAM' };
+    if (/\b(telugu|tel)\b/i.test(lower)) return { type: 'lang-other', label: 'TELUGU' };
+    if (/\b(tamil|tam)\b/i.test(lower)) return { type: 'lang-other', label: 'TAMIL' };
+    if (/\b(kannada|kan)\b/i.test(lower)) return { type: 'lang-other', label: 'KANNADA' };
+    if (/\b(punjabi|panjabi)\b/i.test(lower)) return { type: 'lang-other', label: 'PUNJABI' };
+    if (/\b(marathi|mar)\b/i.test(lower)) return { type: 'lang-other', label: 'MARATHI' };
+    if (/\b(korean|kor)\b/i.test(lower)) return { type: 'lang-other', label: 'KOREAN' };
+    if (/\b(japanese|jap)\b/i.test(lower)) return { type: 'lang-other', label: 'JAPANESE' };
+    if (/\b(chinese|chi)\b/i.test(lower)) return { type: 'lang-other', label: 'CHINESE' };
+    if (/\b(spanish|spa)\b/i.test(lower)) return { type: 'lang-other', label: 'SPANISH' };
+    if (/\b(french|fre)\b/i.test(lower)) return { type: 'lang-other', label: 'FRENCH' };
+    if (/\b(russian|rus)\b/i.test(lower)) return { type: 'lang-other', label: 'RUSSIAN' };
+    if (/\b(english|eng)\b/i.test(lower)) return { type: 'lang-eng', label: 'ENGLISH' };
+    return null;
+}
+
     let searchResultsHtml = '';
     if (meta.searchResults && Array.isArray(meta.searchResults.results) && meta.searchResults.results.length > 0) {
         const results = meta.searchResults.results;
@@ -448,6 +528,7 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                         const sizeStr = r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${r.sizeMB} MB`;
                         const res = (r.text.match(/\\b(480p|720p|1080p|2160p|4k|400p)\\b/i) || [])[1] || 'HD';
                         const codec = (r.text.match(/\\b(hevc|x265|h265|x264|h264|avc)\\b/i) || [])[1] || '';
+                        const langTag = getLanguageTag(r.text);
 
                         return `
                             <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="handleQuickPrompt('download ${r.index}')">
@@ -456,6 +537,7 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                                     <div class="chat-release-meta">
                                         <div class="chat-release-title" title="${escapeHtml(r.text)}">${escapeHtml(r.text)}</div>
                                         <div class="chat-release-tags">
+                                            ${langTag ? `<span class="badge ${langTag.type}">${langTag.label}</span>` : ''}
                                             <span class="badge res">${escapeHtml(res.toUpperCase())}</span>
                                             <span class="badge size">${sizeStr}</span>
                                             ${codec ? `<span class="badge codec">${escapeHtml(codec.toUpperCase())}</span>` : ''}
@@ -464,8 +546,8 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                                         </div>
                                     </div>
                                 </div>
-                                <button class="btn-download-release ${isRecommended ? 'primary' : ''}">
-                                    <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); handleQuickPrompt('download ${r.index}')">
+                                    <svg class="tabler-icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                     Download #${r.index}
                                 </button>
                             </div>
@@ -811,11 +893,13 @@ function renderMovieStudioResults(data, container) {
                 if (res.text.includes('1080p')) quality = '1080p';
                 else if (res.text.includes('2160p') || res.text.includes('4K')) quality = '4K';
                 else if (res.text.includes('480p')) quality = '480p';
+                const langTag = getLanguageTag(res.text);
 
                 return `
                     <div class="media-result-card ${isBest ? 'best-pick' : ''}">
                         <div class="card-title">${escapeHtml(res.text)}</div>
                         <div class="card-badge-row">
+                            ${langTag ? `<span class="chip ${langTag.type}">${langTag.label}</span>` : ''}
                             <span class="chip quality">${quality}</span>
                             <span class="chip size">${sizeLabel}</span>
                             ${isBest ? `<span class="chip best">Recommended</span>` : ''}
@@ -916,10 +1000,14 @@ async function triggerStudioMovieDownload(buttonText) {
         });
         const data = await res.json();
         if (data.success) {
-            showToast('Download started', 'success');
+            if (data.warning) {
+                showToast(data.warning, 'warning', 6000);
+            } else {
+                showToast('Download started', 'success');
+            }
             switchView('downloads');
         } else {
-            showToast(data.error || 'Failed to start download', 'error');
+            showToast(data.error || 'Failed to start download', 'error', 6000);
         }
     } catch (err) {
         showToast(err.message, 'error');
@@ -1342,8 +1430,8 @@ async function checkBotStatus() {
             if (dot) dot.className = 'status-dot online';
             if (label) { label.textContent = 'Connected'; label.style.color = 'var(--accent-emerald)'; }
             if (centerDot) centerDot.className = 'status-dot online';
-            if (centerDetail) centerDetail.innerHTML = '<span style="color:var(--accent-emerald); font-weight:600;">Active & Connected</span> (MTProto Client @codewithsoul)';
-            if (wizardArea) wizardArea.style.display = 'none';
+            if (centerDetail) centerDetail.innerHTML = '<span style="color:var(--accent-emerald); font-weight:600;">Active & Connected</span> (MTProto Client)';
+            if (wizardArea) { wizardArea.style.display = 'none'; wizardArea.innerHTML = ''; }
         } else if (data.auth && data.auth.step && data.auth.step !== 'idle' && data.auth.step !== 'done') {
             if (dot) dot.className = 'status-dot connecting';
             if (label) { label.textContent = `Auth: ${data.auth.step}`; label.style.color = 'var(--accent-amber)'; }
@@ -1355,11 +1443,13 @@ async function checkBotStatus() {
             if (label) { label.textContent = 'Connecting...'; label.style.color = 'var(--accent-amber)'; }
             if (centerDot) centerDot.className = 'status-dot connecting';
             if (centerDetail) centerDetail.innerHTML = '<span style="color:var(--accent-amber);">Connecting to Telegram...</span>';
+            if (wizardArea) { wizardArea.style.display = 'none'; }
         } else {
             if (dot) dot.className = 'status-dot offline';
             if (label) { label.textContent = 'Disconnected'; label.style.color = 'var(--accent-rose)'; }
             if (centerDot) centerDot.className = 'status-dot offline';
             if (centerDetail) centerDetail.innerHTML = '<span style="color:var(--accent-rose);">Disconnected. Click Reconnect to link session.</span>';
+            if (wizardArea) { wizardArea.style.display = 'none'; }
         }
     } catch {}
 }
@@ -1377,30 +1467,50 @@ function renderBotAuthStep(auth) {
                 <h3>Phone Number</h3>
                 <p style="font-size: 12px; color: var(--text-secondary);">Enter international format (+1234567890)</p>
                 <div style="display: flex; gap: 8px; margin-top: 8px;">
-                    <input type="text" id="botPhoneInput" class="form-input" placeholder="+1234567890" style="flex: 1;">
+                    <input type="text" id="botPhoneInput" class="form-input" placeholder="+1234567890" style="flex: 1;" onkeydown="if(event.key==='Enter') submitBotPhone()">
                     <button class="btn-primary-action" onclick="submitBotPhone()">Next</button>
                 </div>
             </div>
         `;
+        setTimeout(() => document.getElementById('botPhoneInput')?.focus(), 100);
     } else if (step === 'need_code') {
         wizardArea.innerHTML = `
             <div class="auth-wizard-card">
                 <h3>Telegram Code</h3>
-                <p style="font-size: 12px; color: var(--text-secondary);">Enter the code from your Telegram app</p>
+                <p style="font-size: 12px; color: var(--text-secondary);">Enter the verification code received on your Telegram app</p>
                 <div style="display: flex; gap: 8px; margin-top: 8px;">
-                    <input type="text" id="botCodeInput" class="form-input" placeholder="12345" style="flex: 1;">
+                    <input type="text" id="botCodeInput" class="form-input" placeholder="12345" style="flex: 1;" onkeydown="if(event.key==='Enter') submitBotCode()">
                     <button class="btn-primary-action" onclick="submitBotCode()">Verify</button>
                 </div>
             </div>
         `;
+        setTimeout(() => document.getElementById('botCodeInput')?.focus(), 100);
     } else if (step === 'need_password') {
         wizardArea.innerHTML = `
             <div class="auth-wizard-card">
-                <h3>2FA Password</h3>
-                <p style="font-size: 12px; color: var(--text-secondary);">Enter your Telegram 2FA cloud password</p>
+                <h3>2FA Cloud Password</h3>
+                <p style="font-size: 12px; color: var(--text-secondary);">Enter your Telegram Two-Step Verification cloud password</p>
                 <div style="display: flex; gap: 8px; margin-top: 8px;">
-                    <input type="password" id="botPasswordInput" class="form-input" placeholder="Password" style="flex: 1;">
+                    <input type="password" id="botPasswordInput" class="form-input" placeholder="Password" style="flex: 1;" onkeydown="if(event.key==='Enter') submitBotPassword()">
                     <button class="btn-primary-action" onclick="submitBotPassword()">Sign In</button>
+                </div>
+            </div>
+        `;
+        setTimeout(() => document.getElementById('botPasswordInput')?.focus(), 100);
+    } else if (step === 'authenticating') {
+        wizardArea.innerHTML = `
+            <div class="auth-wizard-card">
+                <h3 style="color: var(--accent-amber);">Authenticating...</h3>
+                <p style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">Communicating with Telegram servers...</p>
+            </div>
+        `;
+    } else if (step === 'error') {
+        wizardArea.innerHTML = `
+            <div class="auth-wizard-card" style="border: 1px solid var(--accent-rose);">
+                <h3 style="color: var(--accent-rose);">Authentication Error</h3>
+                <p style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">${escapeHtml(auth.error || 'Connection or authentication failed')}</p>
+                <div style="margin-top: 10px;">
+                    <button class="btn-primary-action" onclick="startBotReconnect()">Retry Reconnect</button>
                 </div>
             </div>
         `;
@@ -1408,15 +1518,26 @@ function renderBotAuthStep(auth) {
 }
 
 async function startBotReconnect() {
-    showToast('Starting reconnect...', 'info');
+    showToast('Starting bot reconnect...', 'info');
     try {
         const res = await fetch('/api/bot/reconnect', { method: 'POST', credentials: 'include' });
         const data = await res.json();
-        if (data.success && data.message === 'Already connected') {
-            showToast('Bot already connected', 'success');
+        if (data.connected || (data.success && data.message === 'Already connected')) {
+            showToast('Telegram Bot connected successfully!', 'success');
+        } else if (data.error) {
+            showToast(data.error, 'error');
         } else {
-            checkBotStatus();
+            showToast('Connecting to Telegram...', 'info');
         }
+        await checkBotStatus();
+
+        // Rapid polling for 15 seconds to catch connection / auth updates smoothly
+        let count = 0;
+        const poller = setInterval(async () => {
+            count++;
+            await checkBotStatus();
+            if (count >= 10) clearInterval(poller);
+        }, 1500);
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1426,13 +1547,15 @@ async function submitBotPhone() {
     const input = document.getElementById('botPhoneInput');
     if (!input || !input.value.trim()) return;
     try {
-        await fetch('/api/bot/auth/phone', {
+        const res = await fetch('/api/bot/auth/phone', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({ phone: input.value.trim() })
         });
-        checkBotStatus();
+        const data = await res.json();
+        if (data.error) showToast(data.error, 'error');
+        await checkBotStatus();
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1442,13 +1565,15 @@ async function submitBotCode() {
     const input = document.getElementById('botCodeInput');
     if (!input || !input.value.trim()) return;
     try {
-        await fetch('/api/bot/auth/code', {
+        const res = await fetch('/api/bot/auth/code', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({ code: input.value.trim() })
         });
-        checkBotStatus();
+        const data = await res.json();
+        if (data.error) showToast(data.error, 'error');
+        await checkBotStatus();
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1458,13 +1583,15 @@ async function submitBotPassword() {
     const input = document.getElementById('botPasswordInput');
     if (!input || !input.value.trim()) return;
     try {
-        await fetch('/api/bot/auth/password', {
+        const res = await fetch('/api/bot/auth/password', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({ password: input.value.trim() })
         });
-        checkBotStatus();
+        const data = await res.json();
+        if (data.error) showToast(data.error, 'error');
+        await checkBotStatus();
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1598,6 +1725,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (e.key === 'Enter') performStudioSearch();
         });
     }
+
+    const initialView = window.__INITIAL_VIEW__ || getViewForPath(window.location.pathname);
+    switchView(initialView, false);
 
     checkBotStatus();
     setInterval(checkBotStatus, 20000);

@@ -23,6 +23,9 @@ export interface DownloadJobData {
     page?: number;
     buttonRow?: number;
     buttonCol?: number;
+    savedMsgId?: number;
+    fileName?: string;
+    fileSizeBytes?: number;
 }
 
 export interface Job {
@@ -570,6 +573,107 @@ async function downloadFileWithResume(
     return false;
 }
 
+export async function findInSavedMessages(title: string, wantSizeMB?: number): Promise<any | null> {
+    try {
+        const messages = await client.getMessages("me", { limit: 50 });
+        const cleanTitle = title.replace(/\s*\(\d{4}\).*$/, "").toLowerCase().trim();
+        const titleWords = cleanTitle.split(/\s+/).filter(w => w.length > 2 && !/^\d{4}$/.test(w));
+
+        for (const msg of messages) {
+            if (!msg.document) continue;
+            const fnameAttr = msg.document.attributes?.find(
+                (a: any) => a.className === "DocumentAttributeFilename"
+            ) as any;
+            const fileName = (fnameAttr?.fileName || "").toLowerCase();
+            const docSizeMB = Number(msg.document.size) / (1024 * 1024);
+
+            if (wantSizeMB && wantSizeMB > 0 && Math.abs(docSizeMB - wantSizeMB) > 50) {
+                continue;
+            }
+
+            if (titleWords.length > 0) {
+                const matched = titleWords.filter(w => fileName.includes(w)).length;
+                if (matched >= Math.ceil(titleWords.length * 0.6)) {
+                    return msg;
+                }
+            }
+        }
+    } catch (err: any) {
+        console.log(`[SAVED_MSG] Search error: ${err?.message || err}`);
+    }
+    return null;
+}
+
+export async function secureBotFileToSavedMessages(
+    targetBot: string,
+    btnMsg?: any,
+    buttonText?: string,
+    buttonRow?: number,
+    buttonCol?: number
+): Promise<{ savedMsgId: number; fileName: string; totalSize: number } | null> {
+    try {
+        if (!btnMsg) return null;
+
+        const initialRecent = await client.getMessages(targetBot, { limit: 15 });
+        const seenIds = new Set<number>(initialRecent.map((m: any) => m.id));
+
+        console.log(`[SECURE_FILE] Clicking release button on @${targetBot} to trigger and secure file...`);
+        const buttons = await btnMsg.getButtons();
+        if (buttonRow !== undefined && buttonCol !== undefined && buttons?.[buttonRow]?.[buttonCol]) {
+            await (buttons[buttonRow][buttonCol] as any).click({});
+        } else if (buttonText) {
+            try { await btnMsg.click({ text: buttonText }); } catch {
+                if (buttonRow !== undefined && buttonCol !== undefined) {
+                    await btnMsg.click({ i: buttonRow, j: buttonCol });
+                }
+            }
+        } else if (buttonRow !== undefined && buttonCol !== undefined) {
+            await btnMsg.click({ i: buttonRow, j: buttonCol });
+        }
+
+        // Poll for document message from bot (up to 15 seconds)
+        for (let i = 0; i < 7; i++) {
+            await sleep(2000);
+            const recent = await client.getMessages(targetBot, { limit: 10 });
+            for (const msg of recent) {
+                if (seenIds.has(msg.id) && !msg.document) continue;
+
+                if (msg.document) {
+                    const fnameAttr = msg.document.attributes?.find(
+                        (a: any) => a.className === "DocumentAttributeFilename"
+                    ) as any;
+                    const fileName = fnameAttr?.fileName || "video.mp4";
+                    const totalSize = Number(msg.document.size) || 0;
+
+                    // Skip subtitles
+                    if (fileName.toLowerCase().endsWith(".srt") || totalSize < 20 * 1024 * 1024) {
+                        seenIds.add(msg.id);
+                        continue;
+                    }
+
+                    console.log(`[SECURE_FILE] Bot delivered "${fileName}" (${(totalSize / (1024 * 1024)).toFixed(0)} MB). Forwarding to Saved Messages...`);
+                    await client.forwardMessages("me", { messages: [msg.id], fromPeer: targetBot });
+                    await sleep(800);
+
+                    const savedMsgs = await client.getMessages("me", { limit: 5 });
+                    const savedMatch = savedMsgs.find((m: any) => m.document);
+                    if (savedMatch) {
+                        console.log(`[SECURE_FILE] Successfully secured in Saved Messages (ID: ${savedMatch.id})!`);
+                        return {
+                            savedMsgId: savedMatch.id,
+                            fileName,
+                            totalSize
+                        };
+                    }
+                }
+            }
+        }
+    } catch (err: any) {
+        console.log(`[SECURE_FILE] Notice: ${err?.message || err}`);
+    }
+    return null;
+}
+
 export function createDownloadWorker() {
     console.log("[QUEUE] Worker initialized");
 
@@ -581,49 +685,134 @@ export function createDownloadWorker() {
             console.log(`[WORKER] Starting job: "${data.title}" via @${targetBot}`);
             await updateDB(data.requestId, { status: "downloading" });
 
+            let mediaToDownload: any = null;
+            let fileName = data.fileName || "video.mp4";
+            let totalSize = data.fileSizeBytes || 0;
+
+            // ─── STEP 0: CHECK SAVED MESSAGES FIRST (PRE-SECURED FILES) ───
+            if (data.savedMsgId) {
+                console.log(`[WORKER] Checking Saved Messages for pre-secured file (ID: ${data.savedMsgId})...`);
+                try {
+                    const msgs = await client.getMessages("me", { ids: [data.savedMsgId] });
+                    if (msgs && msgs[0] && (msgs[0].document || msgs[0].media)) {
+                        mediaToDownload = msgs[0];
+                        if (msgs[0].document) {
+                            totalSize = Number(msgs[0].document.size) || totalSize;
+                            const fnameAttr = msgs[0].document.attributes?.find(
+                                (a: any) => a.className === "DocumentAttributeFilename"
+                            ) as any;
+                            if (fnameAttr?.fileName) fileName = fnameAttr.fileName;
+                        }
+                        console.log(`[WORKER] Direct grab from Saved Messages succeeded: "${fileName}" (${(totalSize / (1024 * 1024)).toFixed(0)} MB). Skipping bot search!`);
+                    }
+                } catch (e: any) {
+                    console.log(`[WORKER] Saved message ID lookup notice: ${e?.message || e}`);
+                }
+            }
+
+            if (!mediaToDownload) {
+                // Check recent messages in Saved Messages ("me") by title/size match
+                const matchedSaved = await findInSavedMessages(data.title, parseSizeMB(data.fileSize || ""));
+                if (matchedSaved) {
+                    mediaToDownload = matchedSaved;
+                    if (matchedSaved.document) {
+                        totalSize = Number(matchedSaved.document.size) || totalSize;
+                        const fnameAttr = matchedSaved.document.attributes?.find(
+                            (a: any) => a.className === "DocumentAttributeFilename"
+                        ) as any;
+                        if (fnameAttr?.fileName) fileName = fnameAttr.fileName;
+                    }
+                    console.log(`[WORKER] Matched existing file in Saved Messages for "${data.title}": "${fileName}" (${(totalSize / (1024 * 1024)).toFixed(0)} MB). Skipping bot search!`);
+                }
+            }
+
+            // ─── DIRECT DOWNLOAD FROM SAVED MESSAGES IF AVAILABLE ───
+            if (mediaToDownload) {
+                let downloadPath: string;
+                if (data.type === "movie") {
+                    downloadPath = getMoviePath(data.title, data.year || "unknown", fileName);
+                } else {
+                    const m = data.title.match(/^(.*?)\s*S(\d+)E(\d+)/i);
+                    if (m) {
+                        const baseTitle = m[1].trim();
+                        const s = parseInt(m[2]);
+                        const e = parseInt(m[3]);
+                        downloadPath = getSeriesPath(baseTitle, s, e, fileName);
+                    } else {
+                        downloadPath = getSeriesPath(data.title, 1, 1, fileName);
+                    }
+                }
+
+                const success = await downloadFileWithResume(
+                    mediaToDownload, downloadPath, totalSize, data.requestId, data.title
+                );
+
+                if (success) {
+                    await updateDB(data.requestId, { status: "completed", downloadPath });
+                    broadcastDownloadComplete(data.requestId, {
+                        title: data.title,
+                        type: data.type,
+                        path: downloadPath,
+                        success: true,
+                    });
+                } else {
+                    await updateDB(data.requestId, { status: "failed", error: "Download failed after retries" });
+                    broadcastDownloadComplete(data.requestId, {
+                        title: data.title,
+                        type: data.type,
+                        path: "",
+                        success: false,
+                        error: "Download failed after retries",
+                    });
+                }
+                console.log(`[WORKER] Pre-secured job finished: "${data.title}"`);
+                return;
+            }
+
+            // If file was NOT pre-secured in Saved Messages, query the bot and click the button
             let btnMsg: any = null;
             const epMatch = data.title.match(/S(\d+)E(\d+)/i);
             const epTag = epMatch ? `s${epMatch[1].padStart(2, "0")}e${epMatch[2].padStart(2, "0")}` : "";
 
-            // Step 1: Always perform a fresh query to ensure we start cleanly on Page 1
-            let searchQuery = data.title.trim();
-            if (data.type === "series" || targetBot === "ProSearchY11Bot") {
-                const epMatch = data.title.match(/S(\d+)E(\d+)/i);
-                if (epMatch) {
-                    const cleanT = data.title.replace(/\s*S\d+E\d+.*$/i, "").trim();
-                    const sTag = `S${epMatch[1].padStart(2, "0")}E${epMatch[2].padStart(2, "0")}`;
-                    searchQuery = `${cleanT} ${sTag}`;
-                } else if (data.season && data.episode) {
-                    const cleanT = data.title.replace(/\s*S\d+.*$/i, "").trim();
-                    const sTag = `S${String(data.season).padStart(2, "0")}E${String(data.episode).padStart(2, "0")}`;
-                    searchQuery = `${cleanT} ${sTag}`;
-                }
-            } else {
-                searchQuery = data.title.replace(/\s*\(\d{4}\).*$/, "").trim();
-                if (data.year) searchQuery = `${searchQuery} ${data.year}`.trim();
-            }
-
-            console.log(`[WORKER] Querying @${targetBot} for fresh Page 1 start: "${searchQuery}"`);
-            const sent = await client.sendMessage(targetBot, { message: searchQuery });
-            await sleep(2000);
-
-            for (let attempt = 0; attempt < 4; attempt++) {
-                await sleep(1500);
-                const messages = await client.getMessages(targetBot, { limit: 10 });
-                for (const msg of messages) {
-                    if (msg.id <= sent.id) continue;
-                    const buttons = await msg.getButtons();
-                    if (buttons && buttons.length > 0) {
-                        btnMsg = msg;
-                        break;
+                // Step 1: Query bot for fresh Page 1 start
+                let searchQuery = data.title.trim();
+                if (data.type === "series" || targetBot === "ProSearchY11Bot") {
+                    const epMatch = data.title.match(/S(\d+)E(\d+)/i);
+                    if (epMatch) {
+                        const cleanT = data.title.replace(/\s*S\d+E\d+.*$/i, "").trim();
+                        const sTag = `S${epMatch[1].padStart(2, "0")}E${epMatch[2].padStart(2, "0")}`;
+                        searchQuery = `${cleanT} ${sTag}`;
+                    } else if (data.season && data.episode) {
+                        const cleanT = data.title.replace(/\s*S\d+.*$/i, "").trim();
+                        const sTag = `S${String(data.season).padStart(2, "0")}E${String(data.episode).padStart(2, "0")}`;
+                        searchQuery = `${cleanT} ${sTag}`;
                     }
+                } else {
+                    searchQuery = data.title.replace(/\s*\(\d{4}\).*$/, "").trim();
+                    if (data.year) searchQuery = `${searchQuery} ${data.year}`.trim();
                 }
-                if (btnMsg) break;
-            }
 
-            if (!btnMsg) {
-                throw new Error(`No buttons returned by @${targetBot} for "${data.title}"`);
-            }
+                console.log(`[WORKER] Querying @${targetBot} for fresh Page 1 start: "${searchQuery}"`);
+                const sent = await client.sendMessage(targetBot, { message: searchQuery });
+                await sleep(2000);
+
+                for (let attempt = 0; attempt < 4; attempt++) {
+                    await sleep(1500);
+                    const messages = await client.getMessages(targetBot, { limit: 10 });
+                    for (const msg of messages) {
+                        if (msg.id <= sent.id) continue;
+                        const buttons = await msg.getButtons();
+                        if (buttons && buttons.length > 0) {
+                            btnMsg = msg;
+                            break;
+                        }
+                    }
+                    if (btnMsg) break;
+                }
+
+                if (!btnMsg) {
+                    throw new Error(`No buttons returned by @${targetBot} for "${data.title}"`);
+                }
 
             // Step 2: Navigate forward if target release is on Page > 1
             const targetPage = data.page || 1;
@@ -683,16 +872,6 @@ export function createDownloadWorker() {
                     /^\s*(⬅️|➡️|◀️|▶️|<<|>>|\d+\/\d+)/i.test(lower) ||
                     /\[\d+\/\d+\]/.test(lower)
                 );
-            };
-
-            const parseSizeMB = (text: string) => {
-                const m = text.match(/\[([\d.]+)\s*(GB|MB|KB)\]/i);
-                if (!m) return 0;
-                const v = parseFloat(m[1]);
-                const u = m[2].toUpperCase();
-                if (u === "GB") return v * 1024;
-                if (u === "MB") return v;
-                return v / 1024;
             };
 
             // Collect all valid video buttons on this page

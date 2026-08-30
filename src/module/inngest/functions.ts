@@ -101,12 +101,9 @@ export const mediaRequestWorkflow = inngest.createFunction(
                     }
                 }
 
-                if (results.length === 0) return { error: "NO_VALID_VIDEO_OPTIONS", queued: false };
-
-                // Pick best option (prefer 1080p / 720p)
-                const prefer1080 = results.find(r => r.text.toLowerCase().includes("1080p"));
-                const prefer720 = results.find(r => r.text.toLowerCase().includes("720p"));
-                const bestOption = prefer1080 || prefer720 || results[0];
+                // Pick best option prioritizing Hindi language
+                const bestResult = await pickBestResult(canonicalTitle, "movie", results);
+                const bestOption = results[bestResult.index] || results[0];
 
                 // Click button on Telegram to initiate download
                 await btnMsg.click({ text: bestOption.text });

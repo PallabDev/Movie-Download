@@ -4,11 +4,11 @@ import { db, schema } from "../../common/db/index.js";
 import { eq, desc, like, sql, count } from "drizzle-orm";
 import { register, login, extractUser, getAllUsers, deleteUser } from "../../common/auth/auth.js";
 import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries } from "../../common/jellyfin/client.js";
-import { downloadQueue } from "../queue/queue.js";
+import { downloadQueue, secureBotFileToSavedMessages } from "../queue/queue.js";
 import { getHarness } from "../../../command/harness.js";
 import { broadcastNewDownload } from "./ws.js";
-import { isBotConnected, isBotConnecting, setBotConnected, setBotConnecting, getAuthState, submitPhone, submitCode, submitPassword, startWebAuth } from "../bot/bot.js";
-import { getEpisodeDetails, pickBestResult, groupByEpisode, getSeriesInfo } from "../ai/brain.js";
+import { isBotConnected, isBotConnecting, ensureBotConnected, setBotConnected, setBotConnecting, getAuthState, submitPhone, submitCode, submitPassword, startWebAuth } from "../bot/bot.js";
+import { getEpisodeDetails, pickBestResult, groupByEpisode, getSeriesInfo, isAllowedDownloadLanguage, checkResolutionHarnessRule } from "../ai/brain.js";
 import {
     lookupMedia,
     getSeriesSeasonsAndEpisodes,
@@ -119,17 +119,35 @@ app.get("/api/bot/status", requireAuth, (_req, res) => {
     res.json({ connected: isBotConnected(), connecting: isBotConnecting(), auth });
 });
 
-app.post("/api/bot/reconnect", requireAdmin, async (_req, res) => {
+app.post("/api/bot/reconnect", requireAuth, async (_req, res) => {
     if (isBotConnecting()) return res.status(400).json({ error: "Already connecting" });
-    if (isBotConnected()) return res.json({ success: true, message: "Already connected" });
+    if (isBotConnected()) return res.json({ success: true, message: "Already connected", connected: true });
 
-    startWebAuth().catch(() => {});
-    await new Promise(r => setTimeout(r, 1500));
+    // Try session reconnect first
+    const reconnected = await ensureBotConnected();
+    if (reconnected) {
+        return res.json({ success: true, message: "Reconnected successfully", connected: true });
+    }
+
+    // If session reconnect failed, launch web auth flow
+    startWebAuth().catch((err) => console.error("[BOT RECONNECT] Auth error:", err));
+
+    // Wait briefly to see if auth step transitions
+    for (let i = 0; i < 6; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        if (isBotConnected()) {
+            return res.json({ success: true, connected: true, message: "Connected successfully" });
+        }
+        const state = getAuthState();
+        if (state.step !== "idle" && state.step !== "authenticating") {
+            return res.json({ success: isBotConnected(), connected: isBotConnected(), step: state.step, error: state.error });
+        }
+    }
     const state = getAuthState();
-    return res.json({ success: false, step: state.step });
+    return res.json({ success: isBotConnected(), connected: isBotConnected(), step: state.step, error: state.error });
 });
 
-app.post("/api/bot/auth/phone", requireAdmin, async (req, res) => {
+app.post("/api/bot/auth/phone", requireAuth, async (req, res) => {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: "Phone number required" });
     const result = submitPhone(phone);
@@ -145,7 +163,7 @@ app.post("/api/bot/auth/phone", requireAdmin, async (req, res) => {
     return res.json({ success: true, step: state.step, error: state.error });
 });
 
-app.post("/api/bot/auth/code", requireAdmin, async (req, res) => {
+app.post("/api/bot/auth/code", requireAuth, async (req, res) => {
     const { code } = req.body;
     if (!code) return res.status(400).json({ error: "Code required" });
     const result = submitCode(code);
@@ -161,7 +179,7 @@ app.post("/api/bot/auth/code", requireAdmin, async (req, res) => {
     return res.json({ success: true, step: state.step, error: state.error });
 });
 
-app.post("/api/bot/auth/password", requireAdmin, async (req, res) => {
+app.post("/api/bot/auth/password", requireAuth, async (req, res) => {
     const { password } = req.body;
     if (!password) return res.status(400).json({ error: "Password required" });
     const result = submitPassword(password);
@@ -177,7 +195,7 @@ app.post("/api/bot/auth/password", requireAdmin, async (req, res) => {
     return res.json({ success: true, step: state.step, error: state.error });
 });
 
-app.get("/api/bot/auth/status", requireAdmin, (_req, res) => {
+app.get("/api/bot/auth/status", requireAuth, (_req, res) => {
     const state = getAuthState();
     return res.json(state);
 });
@@ -462,13 +480,28 @@ app.post("/api/select", requireAuth, async (req: any, res) => {
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     try {
+        // ─── HARNESS RULE 1: LANGUAGE RESTRICTION (ONLY BENGALI, HINDI, ENGLISH) ───
+        const langCheck = isAllowedDownloadLanguage(buttonText || session.title);
+        if (!langCheck.allowed) {
+            return res.status(400).json({
+                error: `You can't download this movie release (${langCheck.detectedLanguage}). Only Hindi, Bengali, and English (or Dual/Multi Audio) languages are supported.`
+            });
+        }
+
+        // ─── HARNESS RULE 2: RESOLUTION CHECK (>720p BAN WARNING) ───
+        const resCheck = checkResolutionHarnessRule(buttonText);
+        if (resCheck.isHighRes) {
+            const harness = getHarness();
+            harness.logActivity(`[HARNESS RULE WARNING] High resolution download (${resCheck.resolution}) queued for "${session.title}" - Ban warning issued.`);
+        }
+
         const typeLabel = session.type === "movie" ? "movie" : "series";
         await db.insert(schema.downloads).values({
             requestId,
             title: session.title,
             year: session.year || null,
             type: typeLabel,
-            status: "clicking",
+            status: "queued",
             requestedBy: req.user.userId,
         });
 
@@ -479,25 +512,36 @@ app.post("/api/select", requireAuth, async (req: any, res) => {
             requestedBy: req.user.email,
         });
 
-        const botClient = (await import("../../module/bot/bot.js")).default;
-        const btnMsg = session.btnMsg;
-
-        console.log(`[SELECT] Clicking "${buttonText}" on @${session.bot}`);
-        await btnMsg.click({ text: buttonText });
-
         const sizeMatch = buttonText.match(/\[([\d.]+)\s*(GB|MB)\]/i);
         const fileSize = sizeMatch ? sizeMatch[1] + " " + sizeMatch[2].toUpperCase() : null;
 
-        await updateDB(requestId, { status: "downloading", fileSize });
+        await updateDB(requestId, { status: "queued", fileSize });
+
+        let securedInfo: { savedMsgId: number; fileName: string; totalSize: number } | null = null;
+        try {
+            if (session.btnMsg) {
+                securedInfo = await secureBotFileToSavedMessages(
+                    session.bot,
+                    session.btnMsg,
+                    buttonText
+                );
+            }
+        } catch (secErr: any) {
+            console.log(`[SELECT] Pre-secure notice: ${secErr?.message || secErr}`);
+        }
 
         downloadQueue.addJob({
             requestId,
             bot: session.bot,
-            btnMsgId: btnMsg.id,
+            btnMsgId: session.btnMsg?.id || 0,
             type: session.type,
             title: session.title,
             year: session.year,
             fileSize: fileSize || undefined,
+            buttonText,
+            savedMsgId: securedInfo?.savedMsgId,
+            fileName: securedInfo?.fileName,
+            fileSizeBytes: securedInfo?.totalSize,
         });
 
         searchSessions.delete(searchId);
@@ -505,7 +549,8 @@ app.post("/api/select", requireAuth, async (req: any, res) => {
         return res.json({
             success: true,
             requestId,
-            message: `Download started for "${session.title}"`,
+            message: `Download queued for "${session.title}"`,
+            warning: resCheck.isHighRes ? resCheck.warningMessage : null,
         });
 
     } catch (err: any) {
@@ -715,41 +760,6 @@ app.delete("/api/requested-media/clear", requireAuth, async (_req: any, res) => 
     }
 });
 
-// ─── BOT STATUS & AUTH API ───
-
-app.get("/api/bot/status", requireAuth, (_req, res) => {
-    res.json({
-        connected: isBotConnected(),
-        connecting: isBotConnecting(),
-        auth: getAuthState(),
-    });
-});
-
-app.post("/api/bot/reconnect", requireAuth, async (_req, res) => {
-    const r = await startWebAuth();
-    res.json(r);
-});
-
-app.post("/api/bot/auth/phone", requireAuth, async (req, res) => {
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ error: "Phone required" });
-    const r = await submitPhone(phone);
-    res.json(r);
-});
-
-app.post("/api/bot/auth/code", requireAuth, async (req, res) => {
-    const { code } = req.body;
-    if (!code) return res.status(400).json({ error: "Code required" });
-    const r = await submitCode(code);
-    res.json(r);
-});
-
-app.post("/api/bot/auth/password", requireAuth, async (req, res) => {
-    const { password } = req.body;
-    if (!password) return res.status(400).json({ error: "Password required" });
-    const r = await submitPassword(password);
-    res.json(r);
-});
 
 // ─── JELLYFIN API ───
 
@@ -835,12 +845,34 @@ const inngestApp = serve({
 });
 app.use("/api/inngest", inngestApp);
 
-// ─── PAGES ───
+// ─── PAGES & ROUTES ───
 
-app.get("/", (req, res) => {
+const pageRoutes = [
+    "/", "/ai",
+    "/download", "/downloads", "/downlaod",
+    "/request", "/requests", "/requested",
+    "/jellyfin",
+    "/telegram", "/bot",
+    "/user", "/users",
+    "/admin",
+    "/studio", "/search"
+];
+
+app.get(pageRoutes, (req, res) => {
     const user = extractUser(req);
     if (!user) return res.redirect("/login");
-    res.send(getDashboardPage(user));
+
+    const path = req.path.toLowerCase();
+    let initialView = "chat";
+    if (path.startsWith("/download") || path.startsWith("/downlaod")) initialView = "downloads";
+    else if (path.startsWith("/request")) initialView = "requested";
+    else if (path.startsWith("/jellyfin")) initialView = "jellyfin";
+    else if (path.startsWith("/telegram") || path.startsWith("/bot")) initialView = "bot";
+    else if (path.startsWith("/user") || path.startsWith("/admin")) initialView = "admin";
+    else if (path.startsWith("/studio") || path.startsWith("/search")) initialView = "studio";
+    else initialView = "chat";
+
+    res.send(getDashboardPage(user, initialView));
 });
 
 app.get("/login", (req, res) => {
@@ -851,10 +883,6 @@ app.get("/login", (req, res) => {
 app.get("/register", (req, res) => {
     if (extractUser(req)) return res.redirect("/");
     res.send(getRegisterPage());
-});
-
-app.get("/admin", requireAdmin, (req: any, res) => {
-    res.redirect("/?view=admin");
 });
 
 // ─── HELPERS ───
@@ -979,8 +1007,9 @@ function getRegisterPage(): string {
 </html>`;
 }
 
-function getDashboardPage(user: any): string {
+function getDashboardPage(user: any, initialView: string = "chat"): string {
     const isAdmin = user.role === "admin";
+    const activeView = initialView || "chat";
     const userJson = JSON.stringify({
         id: user.userId || user.id,
         name: user.name || (user.email ? user.email.split("@")[0] : "User"),
@@ -988,12 +1017,24 @@ function getDashboardPage(user: any): string {
         role: user.role || "user"
     });
 
+    const titles: Record<string, string> = {
+        chat: "AI Copilot Assistant",
+        downloads: "Download Station",
+        requested: "Requested Media Hub",
+        jellyfin: "Jellyfin Media Hub",
+        bot: "Telegram Bot",
+        admin: "User Management",
+        studio: "Search & Discover Studio"
+    };
+
+    const headerTitle = titles[activeView] || "AI Copilot Assistant";
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CineGrab - Media Studio</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CineGrab - ${headerTitle}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -1005,7 +1046,7 @@ function getDashboardPage(user: any): string {
         <!-- Sidebar Navigation -->
         <aside class="app-sidebar" id="appSidebar">
             <div class="sidebar-header">
-                <a href="#" class="brand-logo" onclick="switchView('chat')">
+                <a href="/" class="brand-logo" onclick="navigateRoute(event, 'chat')">
                     <div class="brand-icon-box">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
                     </div>
@@ -1021,29 +1062,29 @@ function getDashboardPage(user: any): string {
                 <div>
                     <div class="nav-group-title">Navigation</div>
                     <nav class="sidebar-nav">
-                        <a class="nav-link active" data-view="chat" onclick="switchView('chat')">
+                        <a class="nav-link ${activeView === 'chat' ? 'active' : ''}" href="/" data-view="chat" onclick="navigateRoute(event, 'chat')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
                             <span>AI Copilot</span>
                         </a>
-                        <a class="nav-link" data-view="downloads" onclick="switchView('downloads')">
+                        <a class="nav-link ${activeView === 'downloads' ? 'active' : ''}" href="/download" data-view="downloads" onclick="navigateRoute(event, 'downloads')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                             <span>Download Station</span>
                             <span class="nav-badge" id="activeDownloadsBadge" style="display:none">0</span>
                         </a>
-                        <a class="nav-link" data-view="requested" onclick="switchView('requested')">
+                        <a class="nav-link ${activeView === 'requested' ? 'active' : ''}" href="/request" data-view="requested" onclick="navigateRoute(event, 'requested')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M19 16h-12a2 2 0 0 0 -2 2"/><path d="M9 8h6"/></svg>
                             <span>Requested Media</span>
                         </a>
-                        <a class="nav-link" data-view="jellyfin" onclick="switchView('jellyfin')">
+                        <a class="nav-link ${activeView === 'jellyfin' ? 'active' : ''}" href="/jellyfin" data-view="jellyfin" onclick="navigateRoute(event, 'jellyfin')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
                             <span>Jellyfin Library</span>
                         </a>
-                        <a class="nav-link" data-view="bot" onclick="switchView('bot')">
+                        <a class="nav-link ${activeView === 'bot' ? 'active' : ''}" href="/telegram" data-view="bot" onclick="navigateRoute(event, 'bot')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M15 10l-4 4l6 6l4 -16l-18 7l4 2l2 6l3 -4"/></svg>
                             <span>Telegram Bot</span>
                         </a>
                         ${isAdmin ? `
-                        <a class="nav-link" data-view="admin" onclick="switchView('admin')">
+                        <a class="nav-link ${activeView === 'admin' ? 'active' : ''}" href="/user" data-view="admin" onclick="navigateRoute(event, 'admin')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
                             <span>User Management</span>
                         </a>` : ""}
@@ -1066,7 +1107,7 @@ function getDashboardPage(user: any): string {
                         New Chat Session
                     </button>
                     ${isAdmin ? `
-                    <button class="popover-item" onclick="switchView('admin')">
+                    <button class="popover-item" onclick="navigateRoute(event, 'admin')">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z"/><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/></svg>
                         Admin Panel
                     </button>` : ""}
@@ -1087,15 +1128,15 @@ function getDashboardPage(user: any): string {
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 6l16 0"/><path d="M4 12l16 0"/><path d="M4 18l16 0"/></svg>
                     </button>
                     <div class="header-title-wrap">
-                        <h2 class="header-view-title" id="headerViewTitle">AI Copilot Assistant</h2>
-                        <div class="bot-status-pill" onclick="switchView('bot')">
+                        <h2 class="header-view-title" id="headerViewTitle">${headerTitle}</h2>
+                        <div class="bot-status-pill" onclick="navigateRoute(event, 'bot')">
                             <span class="status-dot connecting" id="headerBotDot"></span>
                             <span id="headerBotStatusText" style="font-size:11.5px;">Checking bot...</span>
                         </div>
                     </div>
                 </div>
                 <div class="header-right">
-                    <button class="btn-header" onclick="switchView('studio')">
+                    <button class="btn-header" onclick="navigateRoute(event, 'studio')">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
                         Search
                     </button>
@@ -1107,7 +1148,7 @@ function getDashboardPage(user: any): string {
             </header>
 
             <!-- VIEW 1: AI COPILOT CHAT -->
-            <section class="view-container active" id="view-chat">
+            <section class="view-container ${activeView === 'chat' ? 'active' : ''}" id="view-chat">
                 <div class="chat-scroll-area" id="chatMessagesBox">
                     <div class="chat-welcome-card">
                         <div class="welcome-icon-box">
@@ -1129,7 +1170,7 @@ function getDashboardPage(user: any): string {
             </section>
 
             <!-- VIEW 2: SEARCH & DISCOVER STUDIO -->
-            <section class="view-container" id="view-studio">
+            <section class="view-container ${activeView === 'studio' ? 'active' : ''}" id="view-studio">
                 <div class="studio-wrap">
                     <div class="studio-header">
                         <h1>Search & Discover Studio</h1>
@@ -1167,7 +1208,7 @@ function getDashboardPage(user: any): string {
             </section>
 
             <!-- VIEW 3: LIVE DOWNLOAD STATION -->
-            <section class="view-container" id="view-downloads">
+            <section class="view-container ${activeView === 'downloads' ? 'active' : ''}" id="view-downloads">
                 <div class="download-station-wrap">
                     <div class="metrics-row">
                         <div class="metric-card">
@@ -1252,7 +1293,7 @@ function getDashboardPage(user: any): string {
             </section>
 
             <!-- VIEW: DEDICATED REQUESTED MEDIA HUB -->
-            <section class="view-container" id="view-requested">
+            <section class="view-container ${activeView === 'requested' ? 'active' : ''}" id="view-requested">
                 <div class="download-station-wrap">
                     <div class="jf-hero-card">
                         <div>
@@ -1296,7 +1337,7 @@ function getDashboardPage(user: any): string {
             </section>
 
             <!-- VIEW 4: JELLYFIN MEDIA HUB -->
-            <section class="view-container" id="view-jellyfin">
+            <section class="view-container ${activeView === 'jellyfin' ? 'active' : ''}" id="view-jellyfin">
                 <div class="jellyfin-wrap">
                     <div class="jf-hero-card">
                         <div>
@@ -1352,7 +1393,7 @@ function getDashboardPage(user: any): string {
             </section>
 
             <!-- VIEW 5: TELEGRAM BOT & 2FA CONTROL -->
-            <section class="view-container" id="view-bot">
+            <section class="view-container ${activeView === 'bot' ? 'active' : ''}" id="view-bot">
                 <div class="bot-center-wrap">
                     <div class="bot-connection-card">
                         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -1383,7 +1424,7 @@ function getDashboardPage(user: any): string {
 
             <!-- VIEW 6: ADMIN USER MANAGEMENT -->
             ${isAdmin ? `
-            <section class="view-container" id="view-admin">
+            <section class="view-container ${activeView === 'admin' ? 'active' : ''}" id="view-admin">
                 <div class="admin-wrap">
                     <div class="studio-search-card">
                         <h2 style="font-size: 15px;">Create New User</h2>
@@ -1425,6 +1466,7 @@ function getDashboardPage(user: any): string {
 
     <script>
         window.__APP_USER__ = ${userJson};
+        window.__INITIAL_VIEW__ = "${activeView}";
     </script>
     <script src="/js/app.js"></script>
 </body>

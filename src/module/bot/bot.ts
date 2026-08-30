@@ -11,7 +11,7 @@ const apiHash = env.TG_API_HASH;
 const session = new StoreSession("bot-session");
 
 const client = new TelegramClient(session, apiId, apiHash, {
-    connectionRetries: 10,
+    connectionRetries: 5,
     autoReconnect: true,
 });
 
@@ -19,7 +19,7 @@ let _connected = false;
 let _connecting = false;
 
 export function isBotConnected(): boolean {
-    return _connected;
+    return _connected && Boolean((client as any).connected);
 }
 
 export function isBotConnecting(): boolean {
@@ -32,6 +32,45 @@ export function setBotConnected(val: boolean) {
 
 export function setBotConnecting(val: boolean) {
     _connecting = val;
+}
+
+export async function ensureBotConnected(): Promise<boolean> {
+    if (isBotConnected()) return true;
+    if (_connecting) {
+        // Wait up to 5s if already connecting
+        for (let i = 0; i < 10; i++) {
+            await new Promise(r => setTimeout(r, 500));
+            if (isBotConnected()) return true;
+            if (!_connecting) break;
+        }
+        return isBotConnected();
+    }
+    try {
+        setBotConnecting(true);
+        console.log("[BOT] Checking/re-establishing Telegram connection...");
+        await Promise.race([
+            client.connect(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Telegram connection attempt timed out")), 8000))
+        ]);
+        const isAuth = await client.checkAuthorization();
+        if (isAuth) {
+            const me = await client.getMe();
+            setBotConnected(true);
+            setBotConnecting(false);
+            console.log(`[BOT] Connected as ${(me as any)?.username ?? (me as any)?.firstName ?? (me as any)?.id}`);
+            return true;
+        } else {
+            console.log("[BOT] Connected to MTProto, but session is not authorized.");
+            setBotConnected(false);
+            return false;
+        }
+    } catch (err: any) {
+        setBotConnected(false);
+        console.log("[BOT] Auto-reconnect not successful:", err.message);
+    } finally {
+        setBotConnecting(false);
+    }
+    return isBotConnected();
 }
 
 // ─── Web-based Auth State Machine ───
@@ -55,39 +94,53 @@ export function getAuthState() {
 }
 
 export function submitPhone(phone: string): { ok: boolean; error?: string } {
-    if (authState.step !== "need_phone") return { ok: false, error: "Not waiting for phone" };
+    if (authState.step !== "need_phone" && !authState.phoneResolver) {
+        return { ok: false, error: "Not waiting for phone" };
+    }
     authState.phone = phone;
-    authState.phoneResolver?.(phone);
-    authState.phoneResolver = undefined;
-    authState.step = "authenticating";
+    if (authState.phoneResolver) {
+        const resolver = authState.phoneResolver;
+        authState.phoneResolver = undefined;
+        authState.step = "authenticating";
+        resolver(phone);
+    }
     return { ok: true };
 }
 
 export function submitCode(code: string): { ok: boolean; error?: string } {
-    if (authState.step !== "need_code") return { ok: false, error: "Not waiting for code" };
+    if (authState.step !== "need_code" && !authState.codeResolver) {
+        return { ok: false, error: "Not waiting for code" };
+    }
     authState.code = code;
-    authState.codeResolver?.(code);
-    authState.codeResolver = undefined;
-    authState.step = "authenticating";
+    if (authState.codeResolver) {
+        const resolver = authState.codeResolver;
+        authState.codeResolver = undefined;
+        authState.step = "authenticating";
+        resolver(code);
+    }
     return { ok: true };
 }
 
 export function submitPassword(password: string): { ok: boolean; error?: string } {
-    if (authState.step !== "need_password") return { ok: false, error: "Not waiting for password" };
+    if (authState.step !== "need_password" && !authState.passwordResolver) {
+        return { ok: false, error: "Not waiting for password" };
+    }
     authState.password = password;
-    authState.passwordResolver?.(password);
-    authState.passwordResolver = undefined;
-    authState.step = "authenticating";
+    if (authState.passwordResolver) {
+        const resolver = authState.passwordResolver;
+        authState.passwordResolver = undefined;
+        authState.step = "authenticating";
+        resolver(password);
+    }
     return { ok: true };
 }
 
 export async function startWebAuth(): Promise<{ ok: boolean; step?: string; error?: string }> {
-    if (_connected) return { ok: true, step: "done" };
+    if (isBotConnected()) return { ok: true, step: "done" };
     if (_connecting) return { ok: false, error: "Already connecting" };
 
     // Reset state
-    authState = { step: "need_phone" };
-
+    authState = { step: "authenticating" };
     setBotConnecting(true);
 
     try {
@@ -125,9 +178,10 @@ export async function startWebAuth(): Promise<{ ok: boolean; step?: string; erro
         setBotConnected(true);
         setBotConnecting(false);
         authState.step = "done";
-        console.log(`[BOT AUTH] Connected as ${me.username ?? me.firstName}`);
+        console.log(`[BOT AUTH] Connected as ${(me as any)?.username ?? (me as any)?.firstName}`);
         return { ok: true, step: "done" };
     } catch (err: any) {
+        setBotConnected(false);
         setBotConnecting(false);
         authState.step = "error";
         authState.error = err.message;
@@ -137,3 +191,4 @@ export async function startWebAuth(): Promise<{ ok: boolean; step?: string; erro
 }
 
 export default client;
+

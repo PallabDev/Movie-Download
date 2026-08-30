@@ -1,6 +1,6 @@
 import { env } from "../utils/env.js";
 
-const TMDB_BASE_URL = "https://api.themoviedb.org/3";
+const TMDB_BASE_URL = "https://api.tmdb.org/3";
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 
 const READ_ACCESS_TOKEN = (env.TMDB_API_READ_ACCESS_TOKEN || "").trim();
