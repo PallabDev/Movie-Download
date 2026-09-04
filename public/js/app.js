@@ -204,18 +204,32 @@ const VIEW_TITLES = {
 };
 
 function getViewForPath(pathname) {
+    const userRole = state.user?.role || 'user';
+    if (userRole === 'user') return 'jellyfin';
+
     const p = (pathname || window.location.pathname || '/').toLowerCase();
     if (p.startsWith('/releases') || p.startsWith('/new-releases') || p.startsWith('/ott')) return 'releases';
     if (p.startsWith('/download') || p.startsWith('/downlaod')) return 'downloads';
     if (p.startsWith('/request')) return 'requested';
     if (p.startsWith('/jellyfin')) return 'jellyfin';
     if (p.startsWith('/telegram') || p.startsWith('/bot')) return 'bot';
-    if (p.startsWith('/user') || p.startsWith('/users') || p.startsWith('/admin')) return 'admin';
+    if (p.startsWith('/user') || p.startsWith('/users') || p.startsWith('/admin')) {
+        return userRole === 'admin' ? 'admin' : 'chat';
+    }
     if (p.startsWith('/studio') || p.startsWith('/search')) return 'studio';
     return 'chat';
 }
 
 function switchView(viewName, updateHistory = true) {
+    const userRole = state.user?.role || 'user';
+
+    // Role protection on client view switching:
+    if (userRole === 'user' && viewName !== 'jellyfin') {
+        viewName = 'jellyfin';
+    } else if (userRole === 'mod' && viewName === 'admin') {
+        viewName = 'chat';
+    }
+
     state.currentView = viewName;
 
     document.querySelectorAll('.nav-link').forEach(link => {
@@ -1737,6 +1751,8 @@ async function submitBotPassword() {
 // ==========================================================================
 // ADMIN USER MANAGEMENT
 // ==========================================================================
+let adminUsersList = [];
+
 async function loadAdminUsers() {
     const tableBody = document.getElementById('adminUsersTableBody');
     if (!tableBody) return;
@@ -1744,28 +1760,136 @@ async function loadAdminUsers() {
     try {
         const res = await fetch('/api/admin/users', { credentials: 'include' });
         const data = await res.json();
-        if (!data.users || data.users.length === 0) {
-            tableBody.innerHTML = `<tr><td colspan="5" style="text-align:center; color: var(--text-muted);">No users found</td></tr>`;
+        adminUsersList = data.users || [];
+        if (adminUsersList.length === 0) {
+            tableBody.innerHTML = `<tr><td colspan="5" style="text-align:center; color: var(--text-muted); padding: 24px;">No registered users found</td></tr>`;
             return;
         }
 
-        tableBody.innerHTML = data.users.map(u => `
+        tableBody.innerHTML = adminUsersList.map(u => {
+            const isSelf = u.id === state.user.id;
+            const roleBadgeClass = u.role === 'admin' ? 'best' : u.role === 'mod' ? 'quality' : 'source';
+            const roleLabel = u.role === 'admin' ? 'Admin' : u.role === 'mod' ? 'Mod' : 'User';
+
+            return `
             <tr>
-                <td style="font-weight: 600; color: #fff;">${escapeHtml(u.name)}</td>
-                <td>${escapeHtml(u.email)}</td>
-                <td><span class="chip ${u.role === 'admin' ? 'best' : 'quality'}">${escapeHtml(u.role)}</span></td>
-                <td style="color: var(--text-secondary); font-size: 11.5px;">${new Date(u.createdAt).toLocaleDateString()}</td>
-                <td>
-                    ${u.id !== state.user.id ? `
-                        <button class="btn-header" style="color: var(--accent-rose); padding: 3px 6px;" onclick="deleteAdminUser(${u.id})">
+                <td style="font-weight: 600; color: #fff;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <div class="user-avatar" style="width: 26px; height: 26px; font-size: 11px; flex-shrink: 0;">${escapeHtml((u.name || 'U').charAt(0).toUpperCase())}</div>
+                        <span>${escapeHtml(u.name)}</span>
+                        ${isSelf ? '<span class="chip" style="font-size: 9px; padding: 0 4px; background: rgba(56,139,253,0.15); color: #58a6ff;">You</span>' : ''}
+                    </div>
+                </td>
+                <td style="color: var(--text-secondary); font-size: 12.5px;">${escapeHtml(u.email)}</td>
+                <td><span class="chip ${roleBadgeClass}" style="font-weight: 600; font-size: 11px;">${roleLabel}</span></td>
+                <td style="color: var(--text-muted); font-size: 11.5px;">${new Date(u.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</td>
+                <td style="text-align: right;">
+                    <div style="display: inline-flex; gap: 6px; align-items: center; justify-content: flex-end;">
+                        <button class="btn-header" style="padding: 3px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px;" onclick="openEditUserModal(${u.id})">
+                            <svg class="tabler-icon" viewBox="0 0 24 24" style="width: 12px; height: 12px;"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4"/><path d="M13.5 6.5l4 4"/></svg>
+                            Edit
+                        </button>
+                        ${!isSelf ? `
+                        <button class="btn-header" style="color: var(--accent-rose); padding: 3px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px;" onclick="deleteAdminUser(${u.id})">
+                            <svg class="tabler-icon" viewBox="0 0 24 24" style="width: 12px; height: 12px;"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>
                             Delete
                         </button>
-                    ` : '<span style="font-size: 11px; color: var(--text-muted);">Self</span>'}
+                        ` : ''}
+                    </div>
                 </td>
             </tr>
-        `).join('');
+            `;
+        }).join('');
     } catch (err) {
-        tableBody.innerHTML = `<tr><td colspan="5" style="text-align:center; color: var(--accent-rose);">Failed to load</td></tr>`;
+        tableBody.innerHTML = `<tr><td colspan="5" style="text-align:center; color: var(--accent-rose); padding: 20px;">Failed to load users: ${escapeHtml(err.message)}</td></tr>`;
+    }
+}
+
+function openEditUserModal(userId) {
+    const user = adminUsersList.find(u => u.id === userId);
+    if (!user) return;
+
+    const idEl = document.getElementById('editUserId');
+    const nameEl = document.getElementById('editUserName');
+    const emailEl = document.getElementById('editUserEmail');
+    const roleEl = document.getElementById('editUserRole');
+    const passEl = document.getElementById('editUserPassword');
+
+    if (idEl) idEl.value = user.id;
+    if (nameEl) nameEl.value = user.name || '';
+    if (emailEl) emailEl.value = user.email || '';
+    if (roleEl) roleEl.value = user.role || 'user';
+    if (passEl) passEl.value = '';
+
+    const subtitle = document.getElementById('editUserSubtitle');
+    if (subtitle) subtitle.textContent = `Managing ${user.email}`;
+
+    const modal = document.getElementById('editUserModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        modal.classList.remove('hidden');
+    }
+}
+
+function closeEditUserModal() {
+    const modal = document.getElementById('editUserModal');
+    if (modal) {
+        modal.style.display = 'none';
+        modal.classList.add('hidden');
+    }
+}
+
+async function saveEditUser(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    const id = document.getElementById('editUserId')?.value;
+    const name = document.getElementById('editUserName')?.value.trim();
+    const email = document.getElementById('editUserEmail')?.value.trim();
+    const role = document.getElementById('editUserRole')?.value;
+    const password = document.getElementById('editUserPassword')?.value.trim();
+
+    if (!id || !name || !email || !role) {
+        showToast('Name, email, and role are required', 'error');
+        return;
+    }
+
+    const saveBtn = document.getElementById('btnSaveEditUser');
+    if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+    }
+
+    try {
+        const payload = { name, email, role };
+        if (password) payload.password = password;
+
+        const res = await fetch(`/api/admin/users/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('User updated successfully', 'success');
+            closeEditUserModal();
+            loadAdminUsers();
+            if (Number(id) === state.user.id) {
+                state.user.name = name;
+                state.user.email = email;
+                state.user.role = role;
+                document.querySelectorAll('.user-name').forEach(el => el.textContent = name);
+                document.querySelectorAll('.user-role-badge').forEach(el => el.textContent = role);
+            }
+        } else {
+            showToast(data.error || 'Failed to update user', 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save Changes';
+        }
     }
 }
 
@@ -1789,7 +1913,7 @@ async function addAdminUser() {
         });
         const data = await res.json();
         if (data.success) {
-            showToast('User created', 'success');
+            showToast(`User ${name} created (${role})`, 'success');
             document.getElementById('adminNewName').value = '';
             document.getElementById('adminNewEmail').value = '';
             document.getElementById('adminNewPass').value = '';
@@ -1819,6 +1943,8 @@ async function deleteAdminUser(id) {
         if (data.success) {
             showToast('User deleted', 'success');
             loadAdminUsers();
+        } else {
+            showToast(data.error || 'Failed to delete user', 'error');
         }
     } catch (err) {
         showToast(err.message, 'error');

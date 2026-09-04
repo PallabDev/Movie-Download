@@ -6,6 +6,8 @@ import { eq } from "drizzle-orm";
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 const SALT_ROUNDS = 10;
 
+export type UserRole = "user" | "mod" | "admin";
+
 export interface TokenPayload {
     userId: number;
     email: string;
@@ -16,7 +18,7 @@ export async function register(
     email: string,
     password: string,
     name: string,
-    role: "user" | "admin" = "user"
+    role: UserRole = "user"
 ) {
     // Check if user exists
     const existing = await db
@@ -93,7 +95,46 @@ export async function getUserById(id: number) {
 export async function getAllUsers() {
     return db
         .select({ id: schema.users.id, email: schema.users.email, name: schema.users.name, role: schema.users.role, createdAt: schema.users.createdAt })
-        .from(schema.users);
+        .from(schema.users)
+        .orderBy(schema.users.id);
+}
+
+export async function updateUser(
+    id: number,
+    data: { name?: string; email?: string; role?: UserRole; password?: string }
+) {
+    const existing = await getUserById(id);
+    if (!existing) {
+        throw new Error("User not found");
+    }
+
+    if (data.email && data.email !== existing.email) {
+        const emailCheck = await db
+            .select({ id: schema.users.id })
+            .from(schema.users)
+            .where(eq(schema.users.email, data.email))
+            .limit(1);
+        if (emailCheck.length > 0 && emailCheck[0].id !== id) {
+            throw new Error("Email already registered by another account");
+        }
+    }
+
+    const updates: Record<string, any> = {};
+    if (data.name && data.name.trim()) updates.name = data.name.trim();
+    if (data.email && data.email.trim()) updates.email = data.email.trim();
+    if (data.role && ["user", "mod", "admin"].includes(data.role)) updates.role = data.role;
+    if (data.password && data.password.trim().length > 0) {
+        updates.password = await bcrypt.hash(data.password, SALT_ROUNDS);
+    }
+
+    if (Object.keys(updates).length > 0) {
+        await db
+            .update(schema.users)
+            .set(updates)
+            .where(eq(schema.users.id, id));
+    }
+
+    return getUserById(id);
 }
 
 export async function deleteUser(id: number) {

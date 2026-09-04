@@ -2,7 +2,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import { db, schema } from "../../common/db/index.js";
 import { eq, desc, like, sql, count } from "drizzle-orm";
-import { register, login, extractUser, getAllUsers, deleteUser } from "../../common/auth/auth.js";
+import { register, login, extractUser, getAllUsers, updateUser, deleteUser, type UserRole } from "../../common/auth/auth.js";
 import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries } from "../../common/jellyfin/client.js";
 import { downloadQueue, secureBotFileToSavedMessages } from "../queue/queue.js";
 import { getHarness } from "../../../command/harness.js";
@@ -40,6 +40,18 @@ function requireAuth(req: any, res: any, next: any) {
     next();
 }
 
+function requireMod(req: any, res: any, next: any) {
+    const user = extractUser(req);
+    if (!user) {
+        return res.status(401).json({ error: "Not authenticated" });
+    }
+    if (user.role !== "admin" && user.role !== "mod") {
+        return res.status(403).json({ error: "Moderator or Admin access required" });
+    }
+    req.user = user;
+    next();
+}
+
 function requireAdmin(req: any, res: any, next: any) {
     const user = extractUser(req);
     if (!user) {
@@ -59,8 +71,10 @@ app.post("/api/auth/register", async (req, res) => {
         const { email, password, name } = req.body;
         if (!email || !password || !name) return res.status(400).json({ error: "Email, password, and name required" });
         const existingUsers = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
-        const role = existingUsers.length === 0 ? "admin" : "user";
-        const user = await register(email, password, name, role as "user" | "admin");
+        if (existingUsers.length > 0) {
+            return res.status(403).json({ error: "Public registration is disabled. Only administrators can create new accounts." });
+        }
+        const user = await register(email, password, name, "admin");
         const token = (await login(email, password)).token;
         res.cookie("token", token, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: "lax", path: "/" });
         res.json({ success: true, user, token });
@@ -99,29 +113,50 @@ app.get("/api/admin/users", requireAdmin, async (_req, res) => {
     res.json({ users });
 });
 
-app.delete("/api/admin/users/:id", requireAdmin, async (req, res) => {
-    await deleteUser(Number(req.params.id));
-    res.json({ success: true });
-});
-
 app.post("/api/admin/users", requireAdmin, async (req, res) => {
     try {
         const { email, password, name, role } = req.body;
-        const user = await register(email, password, name, role || "user");
+        if (!email || !password || !name) {
+            return res.status(400).json({ error: "Name, email, and password required" });
+        }
+        const userRole = (role === "admin" || role === "mod" || role === "user") ? role : "user";
+        const user = await register(email, password, name, userRole as UserRole);
         res.json({ success: true, user });
     } catch (err: any) {
         res.status(400).json({ error: err.message });
     }
 });
 
+app.put("/api/admin/users/:id", requireAdmin, async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid user ID" });
+        const { name, email, role, password } = req.body;
+        const user = await updateUser(id, { name, email, role, password });
+        res.json({ success: true, user });
+    } catch (err: any) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+app.delete("/api/admin/users/:id", requireAdmin, async (req: any, res) => {
+    const id = Number(req.params.id);
+    if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid user ID" });
+    if (req.user?.userId === id) {
+        return res.status(400).json({ error: "You cannot delete your own account" });
+    }
+    await deleteUser(id);
+    res.json({ success: true });
+});
+
 // ─── BOT STATUS & WEB AUTH ───
 
-app.get("/api/bot/status", requireAuth, (_req, res) => {
+app.get("/api/bot/status", requireMod, (_req, res) => {
     const auth = getAuthState();
     res.json({ connected: isBotConnected(), connecting: isBotConnecting(), auth });
 });
 
-app.post("/api/bot/reconnect", requireAuth, async (_req, res) => {
+app.post("/api/bot/reconnect", requireMod, async (_req, res) => {
     if (isBotConnecting()) return res.status(400).json({ error: "Already connecting" });
     if (isBotConnected()) return res.json({ success: true, message: "Already connected", connected: true });
 
@@ -149,7 +184,7 @@ app.post("/api/bot/reconnect", requireAuth, async (_req, res) => {
     return res.json({ success: isBotConnected(), connected: isBotConnected(), step: state.step, error: state.error });
 });
 
-app.post("/api/bot/auth/phone", requireAuth, async (req, res) => {
+app.post("/api/bot/auth/phone", requireMod, async (req, res) => {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: "Phone number required" });
     const result = submitPhone(phone);
@@ -165,7 +200,7 @@ app.post("/api/bot/auth/phone", requireAuth, async (req, res) => {
     return res.json({ success: true, step: state.step, error: state.error });
 });
 
-app.post("/api/bot/auth/code", requireAuth, async (req, res) => {
+app.post("/api/bot/auth/code", requireMod, async (req, res) => {
     const { code } = req.body;
     if (!code) return res.status(400).json({ error: "Code required" });
     const result = submitCode(code);
@@ -181,7 +216,7 @@ app.post("/api/bot/auth/code", requireAuth, async (req, res) => {
     return res.json({ success: true, step: state.step, error: state.error });
 });
 
-app.post("/api/bot/auth/password", requireAuth, async (req, res) => {
+app.post("/api/bot/auth/password", requireMod, async (req, res) => {
     const { password } = req.body;
     if (!password) return res.status(400).json({ error: "Password required" });
     const result = submitPassword(password);
@@ -197,14 +232,14 @@ app.post("/api/bot/auth/password", requireAuth, async (req, res) => {
     return res.json({ success: true, step: state.step, error: state.error });
 });
 
-app.get("/api/bot/auth/status", requireAuth, (_req, res) => {
+app.get("/api/bot/auth/status", requireMod, (_req, res) => {
     const state = getAuthState();
     return res.json(state);
 });
 
 // ─── TMDB DISCOVERY ENDPOINTS ───
 
-app.get("/api/tmdb/search", requireAuth, async (req: any, res) => {
+app.get("/api/tmdb/search", requireMod, async (req: any, res) => {
     try {
         const query = (req.query.query as string || "").trim();
         const type = (req.query.type as string || "").trim();
@@ -227,7 +262,7 @@ app.get("/api/tmdb/search", requireAuth, async (req: any, res) => {
     }
 });
 
-app.get("/api/tmdb/details", requireAuth, async (req: any, res) => {
+app.get("/api/tmdb/details", requireMod, async (req: any, res) => {
     try {
         const query = (req.query.query as string || req.query.title as string || "").trim();
         if (!query) return res.status(400).json({ error: "Query required" });
@@ -241,7 +276,7 @@ app.get("/api/tmdb/details", requireAuth, async (req: any, res) => {
     }
 });
 
-app.get("/api/tmdb/seasons", requireAuth, async (req: any, res) => {
+app.get("/api/tmdb/seasons", requireMod, async (req: any, res) => {
     try {
         const title = (req.query.title as string || "").trim();
         if (!title) return res.status(400).json({ error: "Title required" });
@@ -253,7 +288,7 @@ app.get("/api/tmdb/seasons", requireAuth, async (req: any, res) => {
     }
 });
 
-app.get("/api/tmdb/episodes", requireAuth, async (req: any, res) => {
+app.get("/api/tmdb/episodes", requireMod, async (req: any, res) => {
     try {
         const title = (req.query.title as string || "").trim();
         const season = parseInt(req.query.season as string || "1", 10);
@@ -324,7 +359,7 @@ function checkMovieInLibrary(title: string, year?: string | null, originalTitle?
     return false;
 }
 
-app.get("/api/new-releases", requireAuth, async (req: any, res) => {
+app.get("/api/new-releases", requireMod, async (req: any, res) => {
     try {
         const page = Math.max(1, Number(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 24));
@@ -400,7 +435,7 @@ const userRefreshTimestamps = new Map<number | string, number[]>();
 const REFRESH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const REFRESH_RATE_LIMIT_MAX = 2; // max 2 successful refreshes per 15 minutes
 
-app.post("/api/new-releases/refresh", requireAuth, async (req: any, res) => {
+app.post("/api/new-releases/refresh", requireMod, async (req: any, res) => {
     try {
         const userId = req.user?.userId || req.user?.id || req.user?.email || "anonymous";
         const now = Date.now();
@@ -447,7 +482,7 @@ app.post("/api/new-releases/refresh", requireAuth, async (req: any, res) => {
     }
 });
 
-app.get("/api/new-releases/stats", requireAuth, async (_req, res) => {
+app.get("/api/new-releases/stats", requireMod, async (_req, res) => {
     try {
         const totalRes = await db.select({ count: count() }).from(schema.ottReleases);
         const total = Number(totalRes[0]?.count || 0);
@@ -483,7 +518,7 @@ app.get("/api/new-releases/stats", requireAuth, async (_req, res) => {
 
 // ─── SEARCH (Direct Studio & AI Workflow) ───
 
-app.post("/api/search", requireAuth, async (req: any, res) => {
+app.post("/api/search", requireMod, async (req: any, res) => {
     let { title, type, year } = req.body;
     if (!title || !type) return res.status(400).json({ error: "Title and type required" });
     if (type !== "movie" && type !== "series") return res.status(400).json({ error: "Type must be movie or series" });
@@ -754,7 +789,7 @@ app.post("/api/search", requireAuth, async (req: any, res) => {
 
 // ─── SELECT & DOWNLOAD ───
 
-app.post("/api/select", requireAuth, async (req: any, res) => {
+app.post("/api/select", requireMod, async (req: any, res) => {
     const { searchId, buttonText } = req.body;
     if (!searchId || !buttonText) return res.status(400).json({ error: "searchId and buttonText required" });
 
@@ -852,7 +887,7 @@ app.post("/api/select", requireAuth, async (req: any, res) => {
 
 // ─── SERIES BULK DOWNLOAD ───
 
-app.post("/api/select-all-episodes", requireAuth, async (req: any, res) => {
+app.post("/api/select-all-episodes", requireMod, async (req: any, res) => {
     const { searchId, season } = req.body;
     if (!searchId) return res.status(400).json({ error: "searchId required" });
 
@@ -940,7 +975,7 @@ app.post("/api/select-all-episodes", requireAuth, async (req: any, res) => {
 
 // ─── DOWNLOADS API ───
 
-app.get("/api/downloads", requireAuth, async (req: any, res) => {
+app.get("/api/downloads", requireMod, async (req: any, res) => {
     try {
         const page = Number(req.query.page) || 1;
         const limit = Number(req.query.limit) || 20;
@@ -971,41 +1006,41 @@ app.get("/api/downloads", requireAuth, async (req: any, res) => {
 
 // ─── DOWNLOAD ACTIONS ───
 
-app.post("/api/downloads/:id/pause", requireAuth, async (req: any, res) => {
+app.post("/api/downloads/:id/pause", requireMod, async (req: any, res) => {
     const { id } = req.params;
     downloadQueue.pauseJob(id);
     await db.update(schema.downloads).set({ status: "paused" }).where(eq(schema.downloads.requestId, id));
     res.json({ success: true, message: "Download paused" });
 });
 
-app.post("/api/downloads/:id/resume", requireAuth, async (req: any, res) => {
+app.post("/api/downloads/:id/resume", requireMod, async (req: any, res) => {
     const { id } = req.params;
     downloadQueue.resumeJob(id);
     await db.update(schema.downloads).set({ status: "queued" }).where(eq(schema.downloads.requestId, id));
     res.json({ success: true, message: "Download resumed" });
 });
 
-app.post("/api/downloads/:id/retry", requireAuth, async (req: any, res) => {
+app.post("/api/downloads/:id/retry", requireMod, async (req: any, res) => {
     const { id } = req.params;
     downloadQueue.retryJob(id);
     await db.update(schema.downloads).set({ status: "queued", error: null }).where(eq(schema.downloads.requestId, id));
     res.json({ success: true, message: "Download retry queued" });
 });
 
-app.delete("/api/downloads/:id", requireAuth, async (req: any, res) => {
+app.delete("/api/downloads/:id", requireMod, async (req: any, res) => {
     const { id } = req.params;
     downloadQueue.cancelJob(id);
     await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(eq(schema.downloads.requestId, id));
     res.json({ success: true, message: "Download cancelled and removed" });
 });
 
-app.delete("/api/downloads/clear/failed", requireAuth, async (_req: any, res) => {
+app.delete("/api/downloads/clear/failed", requireMod, async (_req: any, res) => {
     downloadQueue.clearFailed();
     await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(eq(schema.downloads.status, "failed"));
     res.json({ success: true, message: "Failed downloads cleared" });
 });
 
-app.delete("/api/downloads/clear/all", requireAuth, async (_req: any, res) => {
+app.delete("/api/downloads/clear/all", requireMod, async (_req: any, res) => {
     downloadQueue.clearFailed();
     await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(sql`${schema.downloads.status} IN ('completed', 'failed', 'cancelled', 'paused')`);
     res.json({ success: true, message: "Download history cleared" });
@@ -1013,7 +1048,7 @@ app.delete("/api/downloads/clear/all", requireAuth, async (_req: any, res) => {
 
 // ─── REQUESTED MEDIA API ───
 
-app.get("/api/requested-media", requireAuth, async (_req, res) => {
+app.get("/api/requested-media", requireMod, async (_req, res) => {
     try {
         const items = await db.select().from(schema.requestedMedia).where(sql`${schema.requestedMedia.status} != 'deleted'`).orderBy(desc(schema.requestedMedia.createdAt)).limit(100);
         res.json({ items });
@@ -1022,7 +1057,7 @@ app.get("/api/requested-media", requireAuth, async (_req, res) => {
     }
 });
 
-app.post("/api/requested-media", requireAuth, async (req: any, res) => {
+app.post("/api/requested-media", requireMod, async (req: any, res) => {
     try {
         const { title, type, year } = req.body;
         if (!title) return res.status(400).json({ error: "Title required" });
@@ -1039,7 +1074,7 @@ app.post("/api/requested-media", requireAuth, async (req: any, res) => {
     }
 });
 
-app.delete("/api/requested-media/clear", requireAuth, async (_req: any, res) => {
+app.delete("/api/requested-media/clear", requireMod, async (_req: any, res) => {
     try {
         await db.update(schema.requestedMedia).set({ status: "deleted", updatedAt: new Date() }).where(sql`${schema.requestedMedia.status} != 'deleted'`);
         res.json({ success: true, message: "All requested media cleared" });
@@ -1048,7 +1083,7 @@ app.delete("/api/requested-media/clear", requireAuth, async (_req: any, res) => 
     }
 });
 
-app.delete("/api/requested-media/:id", requireAuth, async (req: any, res) => {
+app.delete("/api/requested-media/:id", requireMod, async (req: any, res) => {
     try {
         const id = Number(req.params.id);
         if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
@@ -1125,7 +1160,7 @@ app.get("/api/jellyfin/check", requireAuth, async (req, res) => {
 
 // ─── QUEUE STATUS ───
 
-app.get("/api/queue", requireAuth, (_req, res) => {
+app.get("/api/queue", requireMod, (_req, res) => {
     res.json({ stats: downloadQueue.getStats() });
 });
 
@@ -1133,7 +1168,7 @@ app.get("/api/queue", requireAuth, (_req, res) => {
 
 import { getRecentTelegramAuditLogs, getTelegramAuditLogFilePath } from "../../common/logger/telegram-audit.js";
 
-app.get("/api/telegram-logs", requireAuth, (req: any, res) => {
+app.get("/api/telegram-logs", requireMod, (req: any, res) => {
     const limit = Number(req.query.limit) || 50;
     const logs = getRecentTelegramAuditLogs(limit);
     res.json({
@@ -1145,7 +1180,7 @@ app.get("/api/telegram-logs", requireAuth, (req: any, res) => {
 
 // ─── CHAT AGENT ───
 
-app.post("/api/chat", requireAuth, async (req: any, res) => {
+app.post("/api/chat", requireMod, async (req: any, res) => {
     try {
         const { message, history, sessionId } = req.body;
         if (!message) return res.status(400).json({ error: "Message required" });
@@ -1191,14 +1226,35 @@ app.get(pageRoutes, (req, res) => {
     const user = extractUser(req);
     if (!user) return res.redirect("/login");
 
+    const role = user.role || "user";
     const path = req.path.toLowerCase();
+
+    // 1. Regular 'user' role is strictly restricted to Jellyfin
+    if (role === "user") {
+        if (!path.startsWith("/jellyfin")) {
+            return res.redirect("/jellyfin");
+        }
+        return res.send(getDashboardPage(user, "jellyfin"));
+    }
+
+    // 2. 'mod' role is restricted from user management
+    if (role === "mod") {
+        if (path.startsWith("/user") || path.startsWith("/users") || path.startsWith("/admin")) {
+            return res.redirect("/");
+        }
+    }
+
+    // 3. Resolve initial view for mod and admin
     let initialView = "chat";
     if (path.startsWith("/releases") || path.startsWith("/new-releases") || path.startsWith("/ott")) initialView = "releases";
     else if (path.startsWith("/download") || path.startsWith("/downlaod")) initialView = "downloads";
     else if (path.startsWith("/request")) initialView = "requested";
     else if (path.startsWith("/jellyfin")) initialView = "jellyfin";
     else if (path.startsWith("/telegram") || path.startsWith("/bot")) initialView = "bot";
-    else if (path.startsWith("/user") || path.startsWith("/admin")) initialView = "admin";
+    else if (path.startsWith("/user") || path.startsWith("/admin")) {
+        if (role === "admin") initialView = "admin";
+        else initialView = "chat";
+    }
     else if (path.startsWith("/studio") || path.startsWith("/search")) initialView = "studio";
     else initialView = "chat";
 
@@ -1210,8 +1266,12 @@ app.get("/login", (req, res) => {
     res.send(getLoginPage());
 });
 
-app.get("/register", (req, res) => {
+app.get("/register", async (req, res) => {
     if (extractUser(req)) return res.redirect("/");
+    const existingUsers = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
+    if (existingUsers.length > 0) {
+        return res.redirect("/login");
+    }
     res.send(getRegisterPage());
 });
 
@@ -1307,8 +1367,8 @@ function getRegisterPage(): string {
                     <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
                 </div>
                 <div>
-                    <h1 style="font-size: 20px; font-weight: 700;">Create an Account</h1>
-                    <p style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">Join CineGrab Media Manager</p>
+                    <h1 style="font-size: 20px; font-weight: 700;">Create Initial Admin Account</h1>
+                    <p style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">Set up the primary administrator for CineGrab</p>
                 </div>
             </div>
             <div class="auth-error-alert" id="authError"></div>
@@ -1326,7 +1386,7 @@ function getRegisterPage(): string {
                     <input type="password" id="password" class="form-input" required minlength="6" placeholder="Min 6 characters" autocomplete="new-password">
                 </div>
                 <button type="submit" id="btnAuthSubmit" class="btn-primary-action" style="width: 100%; padding: 10px; margin-top: 4px;">
-                    Create Account
+                    Create Admin Account
                 </button>
             </form>
             <div class="auth-links">
@@ -1341,7 +1401,9 @@ function getRegisterPage(): string {
 
 function getDashboardPage(user: any, initialView: string = "chat"): string {
     const isAdmin = user.role === "admin";
-    const activeView = initialView || "chat";
+    const isMod = user.role === "mod";
+    const isUser = user.role === "user";
+    const activeView = isUser ? "jellyfin" : (initialView || "chat");
     const userJson = JSON.stringify({
         id: user.userId || user.id,
         name: user.name || (user.email ? user.email.split("@")[0] : "User"),
@@ -1360,7 +1422,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
         studio: "Search Studio"
     };
 
-    const headerTitle = titles[activeView] || "AI Downloader";
+    const headerTitle = titles[activeView] || "Jellyfin Library";
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1380,12 +1442,12 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
         <!-- Sidebar Navigation -->
         <aside class="app-sidebar" id="appSidebar">
             <div class="sidebar-header">
-                <a href="/" class="brand-logo" onclick="navigateRoute(event, 'chat')">
+                <a href="${isUser ? '/jellyfin' : '/'}" class="brand-logo" onclick="navigateRoute(event, '${isUser ? 'jellyfin' : 'chat'}')">
                     <div class="brand-icon-box">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
                     </div>
                     <span class="brand-name">CineGrab</span>
-                    <span class="brand-tag">Studio</span>
+                    <span class="brand-tag">${isAdmin ? 'Admin' : isMod ? 'Mod' : 'Viewer'}</span>
                 </a>
                 <button class="sidebar-toggle-btn" onclick="toggleSidebar()">
                     <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>
@@ -1396,6 +1458,12 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                 <div>
                     <div class="nav-group-title">Navigation</div>
                     <nav class="sidebar-nav">
+                        ${isUser ? `
+                        <a class="nav-link active" href="/jellyfin" data-view="jellyfin" onclick="navigateRoute(event, 'jellyfin')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                            <span>Jellyfin Library</span>
+                        </a>
+                        ` : `
                         <a class="nav-link ${activeView === 'chat' ? 'active' : ''}" href="/" data-view="chat" onclick="navigateRoute(event, 'chat')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
                             <span>AI Copilot</span>
@@ -1430,7 +1498,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <a class="nav-link ${activeView === 'admin' ? 'active' : ''}" href="/user" data-view="admin" onclick="navigateRoute(event, 'admin')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
                             <span>User Management</span>
-                        </a>` : ""}
+                        </a>` : ""}`}
                     </nav>
                 </div>
             </div>
@@ -1440,19 +1508,20 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                     <div class="user-avatar">${(user.name || user.email || "U").charAt(0).toUpperCase()}</div>
                     <div class="user-info">
                         <div class="user-name">${user.name || (user.email ? user.email.split("@")[0] : "User")}</div>
-                        <div class="user-role-badge">${user.role || "user"}</div>
+                        <div class="user-role-badge" style="${isAdmin ? 'background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.3);' : isMod ? 'background: rgba(56, 139, 253, 0.15); color: #58a6ff; border: 1px solid rgba(56, 139, 253, 0.3);' : ''}">${user.role || "user"}</div>
                     </div>
                 </div>
 
                 <div class="user-popover hidden" id="userPopover">
+                    ${!isUser ? `
                     <button class="popover-item" onclick="startNewChat()">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
                         New Chat Session
-                    </button>
+                    </button>` : ""}
                     ${isAdmin ? `
                     <button class="popover-item" onclick="navigateRoute(event, 'admin')">
-                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z"/><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/></svg>
-                        Admin Panel
+                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
+                        User Management
                     </button>` : ""}
                     <button class="popover-item danger" onclick="logoutUser()">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M14 8v-2a2 2 0 0 0 -2 -2h-7a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2 -2v-2"/><path d="M9 12h12l-3 -3"/><path d="M18 15l3 -3"/></svg>
@@ -1472,13 +1541,15 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                     </button>
                     <div class="header-title-wrap">
                         <h2 class="header-view-title" id="headerViewTitle">${headerTitle}</h2>
+                        ${!isUser ? `
                         <div class="bot-status-pill" onclick="navigateRoute(event, 'bot')">
                             <span class="status-dot connecting" id="headerBotDot"></span>
                             <span id="headerBotStatusText" class="header-bot-status-text" style="font-size:11.5px;">Checking bot...</span>
-                        </div>
+                        </div>` : ""}
                     </div>
                 </div>
                 <div class="header-right">
+                    ${!isUser ? `
                     <button class="btn-header header-search-btn" onclick="navigateRoute(event, 'studio')">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
                         Search
@@ -1486,10 +1557,11 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                     <button class="btn-header primary" onclick="startNewChat()">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
                         New Chat
-                    </button>
+                    </button>` : ""}
                 </div>
             </header>
 
+            ${!isUser ? `
             <!-- VIEW 1: AI COPILOT CHAT -->
             <section class="view-container ${activeView === 'chat' ? 'active' : ''}" id="view-chat">
                 <div class="chat-scroll-area" id="chatMessagesBox">
@@ -1529,7 +1601,6 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                             </button>
                         </div>
                     </div>
-
 
                     <!-- Cards Grid -->
                     <div class="releases-grid" id="releasesGrid">
@@ -1689,6 +1760,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                     </div>
                 </div>
             </section>
+            ` : ""}
 
             <!-- VIEW 4: JELLYFIN MEDIA HUB -->
             <section class="view-container ${activeView === 'jellyfin' ? 'active' : ''}" id="view-jellyfin">
@@ -1749,6 +1821,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                 </div>
             </section>
 
+            ${!isUser ? `
             <!-- VIEW 5: TELEGRAM BOT & 2FA CONTROL -->
             <section class="view-container ${activeView === 'bot' ? 'active' : ''}" id="view-bot">
                 <div class="bot-center-wrap">
@@ -1778,27 +1851,38 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                     <div id="botAuthWizardArea" style="display:none;"></div>
                 </div>
             </section>
+            ` : ""}
 
             <!-- VIEW 6: ADMIN USER MANAGEMENT -->
             ${isAdmin ? `
             <section class="view-container ${activeView === 'admin' ? 'active' : ''}" id="view-admin">
                 <div class="admin-wrap">
                     <div class="studio-search-card">
-                        <h2 style="font-size: 15px;">Create New User</h2>
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                            <h2 style="font-size: 15px; margin: 0;">Create New User</h2>
+                            <span class="chip best" style="font-size: 11px;">Admin Only</span>
+                        </div>
                         <div class="admin-create-user-grid">
-                            <input type="text" id="adminNewName" class="form-input" placeholder="Name">
-                            <input type="email" id="adminNewEmail" class="form-input" placeholder="Email">
+                            <input type="text" id="adminNewName" class="form-input" placeholder="Full Name">
+                            <input type="email" id="adminNewEmail" class="form-input" placeholder="Email Address">
                             <input type="password" id="adminNewPass" class="form-input" placeholder="Password">
                             <select id="adminNewRole" class="form-input" style="background: var(--bg-input);">
-                                <option value="user">User</option>
-                                <option value="admin">Admin</option>
+                                <option value="user">User (Jellyfin Library Only)</option>
+                                <option value="mod">Mod (Full Access except Users)</option>
+                                <option value="admin">Admin (Full Access + Users)</option>
                             </select>
                             <button class="btn-primary-action" onclick="addAdminUser()">Add User</button>
                         </div>
                     </div>
 
                     <div class="history-card">
-                        <h2 style="font-size: 15px;">Registered Users</h2>
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                            <h2 style="font-size: 15px; margin: 0;">Registered Users</h2>
+                            <button class="btn-header" onclick="loadAdminUsers()" title="Refresh Users" style="display: inline-flex; align-items: center; gap: 4px;">
+                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                Refresh
+                            </button>
+                        </div>
                         <div class="data-table-wrap">
                             <table class="data-table">
                                 <thead>
@@ -1807,7 +1891,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                                         <th>Email</th>
                                         <th>Role</th>
                                         <th>Registered</th>
-                                        <th>Action</th>
+                                        <th style="text-align:right;">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="adminUsersTableBody">
@@ -1815,6 +1899,51 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                                 </tbody>
                             </table>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Edit User Modal Dialog -->
+                <div class="modal-backdrop" id="editUserModal" style="display: none;">
+                    <div class="modal-card" style="max-width: 440px;" role="dialog" aria-modal="true">
+                        <div class="modal-header">
+                            <div class="modal-header-icon" style="background: rgba(56, 139, 253, 0.15); color: #58a6ff;">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
+                            </div>
+                            <div>
+                                <h3 class="modal-title" style="font-size: 16px;">Edit User Account</h3>
+                                <p class="modal-subtitle" id="editUserSubtitle">Update credentials and role permissions</p>
+                            </div>
+                        </div>
+                        <form id="editUserForm" onsubmit="saveEditUser(event)">
+                            <input type="hidden" id="editUserId">
+                            <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 16px 0;">
+                                <div class="form-group">
+                                    <label class="form-label">Full Name</label>
+                                    <input type="text" id="editUserName" class="form-input" required placeholder="Full Name">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Email Address</label>
+                                    <input type="email" id="editUserEmail" class="form-input" required placeholder="user@example.com">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Role</label>
+                                    <select id="editUserRole" class="form-input" style="background: var(--bg-input);">
+                                        <option value="user">User (Jellyfin Library Only)</option>
+                                        <option value="mod">Mod (Full Access except Users)</option>
+                                        <option value="admin">Admin (Full Access + Users)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">New Password</label>
+                                    <input type="password" id="editUserPassword" class="form-input" placeholder="Leave empty to keep current password" autocomplete="new-password">
+                                    <span style="font-size: 11px; color: var(--text-muted); margin-top: 4px; display: block;">Leave blank if you do not want to change the password.</span>
+                                </div>
+                            </div>
+                            <div class="modal-actions" style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px;">
+                                <button type="button" class="btn-cancel" onclick="closeEditUserModal()">Cancel</button>
+                                <button type="submit" id="btnSaveEditUser" class="btn-primary-action">Save Changes</button>
+                            </div>
+                        </form>
                     </div>
                 </div>
             </section>` : ""}
