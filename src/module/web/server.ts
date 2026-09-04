@@ -1508,21 +1508,10 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                     <div class="user-avatar">${(user.name || user.email || "U").charAt(0).toUpperCase()}</div>
                     <div class="user-info">
                         <div class="user-name">${user.name || (user.email ? user.email.split("@")[0] : "User")}</div>
-                        <div class="user-role-badge" style="${isAdmin ? 'background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.3);' : isMod ? 'background: rgba(56, 139, 253, 0.15); color: #58a6ff; border: 1px solid rgba(56, 139, 253, 0.3);' : ''}">${user.role || "user"}</div>
                     </div>
                 </div>
 
                 <div class="user-popover hidden" id="userPopover">
-                    ${!isUser ? `
-                    <button class="popover-item" onclick="startNewChat()">
-                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
-                        New Chat Session
-                    </button>` : ""}
-                    ${isAdmin ? `
-                    <button class="popover-item" onclick="navigateRoute(event, 'admin')">
-                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
-                        User Management
-                    </button>` : ""}
                     <button class="popover-item danger" onclick="logoutUser()">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M14 8v-2a2 2 0 0 0 -2 -2h-7a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2 -2v-2"/><path d="M9 12h12l-3 -3"/><path d="M18 15l3 -3"/></svg>
                         Log Out
@@ -1902,50 +1891,6 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                     </div>
                 </div>
 
-                <!-- Edit User Modal Dialog -->
-                <div class="modal-backdrop" id="editUserModal" style="display: none;">
-                    <div class="modal-card" style="max-width: 440px;" role="dialog" aria-modal="true">
-                        <div class="modal-header">
-                            <div class="modal-header-icon" style="background: rgba(56, 139, 253, 0.15); color: #58a6ff;">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
-                            </div>
-                            <div>
-                                <h3 class="modal-title" style="font-size: 16px;">Edit User Account</h3>
-                                <p class="modal-subtitle" id="editUserSubtitle">Update credentials and role permissions</p>
-                            </div>
-                        </div>
-                        <form id="editUserForm" onsubmit="saveEditUser(event)">
-                            <input type="hidden" id="editUserId">
-                            <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 16px 0;">
-                                <div class="form-group">
-                                    <label class="form-label">Full Name</label>
-                                    <input type="text" id="editUserName" class="form-input" required placeholder="Full Name">
-                                </div>
-                                <div class="form-group">
-                                    <label class="form-label">Email Address</label>
-                                    <input type="email" id="editUserEmail" class="form-input" required placeholder="user@example.com">
-                                </div>
-                                <div class="form-group">
-                                    <label class="form-label">Role</label>
-                                    <select id="editUserRole" class="form-input" style="background: var(--bg-input);">
-                                        <option value="user">User (Jellyfin Library Only)</option>
-                                        <option value="mod">Mod (Full Access except Users)</option>
-                                        <option value="admin">Admin (Full Access + Users)</option>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label class="form-label">New Password</label>
-                                    <input type="password" id="editUserPassword" class="form-input" placeholder="Leave empty to keep current password" autocomplete="new-password">
-                                    <span style="font-size: 11px; color: var(--text-muted); margin-top: 4px; display: block;">Leave blank if you do not want to change the password.</span>
-                                </div>
-                            </div>
-                            <div class="modal-actions" style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px;">
-                                <button type="button" class="btn-cancel" onclick="closeEditUserModal()">Cancel</button>
-                                <button type="submit" id="btnSaveEditUser" class="btn-primary-action">Save Changes</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
             </section>` : ""}
         </main>
     </div>

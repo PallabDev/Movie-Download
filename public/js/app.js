@@ -1805,47 +1805,103 @@ async function loadAdminUsers() {
     }
 }
 
-function openEditUserModal(userId) {
-    const user = adminUsersList.find(u => u.id === userId);
-    if (!user) return;
-
-    const idEl = document.getElementById('editUserId');
-    const nameEl = document.getElementById('editUserName');
-    const emailEl = document.getElementById('editUserEmail');
-    const roleEl = document.getElementById('editUserRole');
-    const passEl = document.getElementById('editUserPassword');
-
-    if (idEl) idEl.value = user.id;
-    if (nameEl) nameEl.value = user.name || '';
-    if (emailEl) emailEl.value = user.email || '';
-    if (roleEl) roleEl.value = user.role || 'user';
-    if (passEl) passEl.value = '';
-
-    const subtitle = document.getElementById('editUserSubtitle');
-    if (subtitle) subtitle.textContent = `Managing ${user.email}`;
-
-    const modal = document.getElementById('editUserModal');
-    if (modal) {
-        modal.style.display = 'flex';
-        modal.classList.remove('hidden');
+async function openEditUserModal(userId) {
+    let user = adminUsersList.find(u => String(u.id) === String(userId));
+    if (!user) {
+        try {
+            const res = await fetch('/api/admin/users', { credentials: 'include' });
+            const data = await res.json();
+            adminUsersList = data.users || [];
+            user = adminUsersList.find(u => String(u.id) === String(userId));
+        } catch (e) {}
     }
+    if (!user) {
+        showToast('User not found', 'error');
+        return;
+    }
+
+    const existing = document.getElementById('editUserModalBackdrop');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'editUserModalBackdrop';
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML = `
+        <div class="modal-card" style="max-width: 440px;" role="dialog" aria-modal="true">
+            <div class="modal-header">
+                <div class="modal-header-icon" style="background: rgba(56, 139, 253, 0.15); color: #58a6ff;">
+                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
+                </div>
+                <div>
+                    <h3 class="modal-title" style="font-size: 16px;">Edit User Account</h3>
+                    <p class="modal-subtitle" style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">Managing ${escapeHtml(user.email)}</p>
+                </div>
+            </div>
+            <form id="dynamicEditUserForm" onsubmit="saveEditUser(event, ${user.id})">
+                <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 16px 0;">
+                    <div class="form-group">
+                        <label class="form-label" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;">Full Name</label>
+                        <input type="text" id="editUserNameInput" class="form-input" required value="${escapeHtml(user.name || '')}" placeholder="Full Name">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;">Email Address</label>
+                        <input type="email" id="editUserEmailInput" class="form-input" required value="${escapeHtml(user.email || '')}" placeholder="user@example.com">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;">Role</label>
+                        <select id="editUserRoleInput" class="form-input" style="background: var(--bg-input);">
+                            <option value="user" ${user.role === 'user' ? 'selected' : ''}>User (Jellyfin Library Only)</option>
+                            <option value="mod" ${user.role === 'mod' ? 'selected' : ''}>Mod (Full Access except Users)</option>
+                            <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Admin (Full Access + Users)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;">New Password</label>
+                        <input type="password" id="editUserPasswordInput" class="form-input" placeholder="Leave empty to keep current password" autocomplete="new-password">
+                        <span style="font-size: 11px; color: var(--text-muted); margin-top: 4px; display: block;">Leave blank if you do not want to change the password.</span>
+                    </div>
+                </div>
+                <div class="modal-actions" style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px;">
+                    <button type="button" class="btn-cancel" onclick="document.getElementById('editUserModalBackdrop')?.remove()">Cancel</button>
+                    <button type="submit" id="btnSaveEditUser" class="btn-primary-action">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    `;
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => {
+        backdrop.classList.add('active');
+        document.getElementById('editUserNameInput')?.focus();
+    });
+
+    const handleKey = (e) => {
+        if (e.key === 'Escape') {
+            backdrop.remove();
+            window.removeEventListener('keydown', handleKey);
+        }
+    };
+    window.addEventListener('keydown', handleKey);
+
+    backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) {
+            backdrop.remove();
+            window.removeEventListener('keydown', handleKey);
+        }
+    });
 }
 
 function closeEditUserModal() {
-    const modal = document.getElementById('editUserModal');
-    if (modal) {
-        modal.style.display = 'none';
-        modal.classList.add('hidden');
-    }
+    const modal = document.getElementById('editUserModalBackdrop');
+    if (modal) modal.remove();
 }
 
-async function saveEditUser(e) {
+async function saveEditUser(e, userId) {
     if (e && e.preventDefault) e.preventDefault();
-    const id = document.getElementById('editUserId')?.value;
-    const name = document.getElementById('editUserName')?.value.trim();
-    const email = document.getElementById('editUserEmail')?.value.trim();
-    const role = document.getElementById('editUserRole')?.value;
-    const password = document.getElementById('editUserPassword')?.value.trim();
+    const id = userId || document.getElementById('editUserId')?.value;
+    const name = document.getElementById('editUserNameInput')?.value.trim();
+    const email = document.getElementById('editUserEmailInput')?.value.trim();
+    const role = document.getElementById('editUserRoleInput')?.value;
+    const password = document.getElementById('editUserPasswordInput')?.value.trim();
 
     if (!id || !name || !email || !role) {
         showToast('Name, email, and role are required', 'error');
@@ -1871,14 +1927,13 @@ async function saveEditUser(e) {
         const data = await res.json();
         if (data.success) {
             showToast('User updated successfully', 'success');
-            closeEditUserModal();
+            document.getElementById('editUserModalBackdrop')?.remove();
             loadAdminUsers();
             if (Number(id) === state.user.id) {
                 state.user.name = name;
                 state.user.email = email;
                 state.user.role = role;
                 document.querySelectorAll('.user-name').forEach(el => el.textContent = name);
-                document.querySelectorAll('.user-role-badge').forEach(el => el.textContent = role);
             }
         } else {
             showToast(data.error || 'Failed to update user', 'error');
@@ -1892,6 +1947,10 @@ async function saveEditUser(e) {
         }
     }
 }
+
+window.openEditUserModal = openEditUserModal;
+window.closeEditUserModal = closeEditUserModal;
+window.saveEditUser = saveEditUser;
 
 async function addAdminUser() {
     const name = document.getElementById('adminNewName')?.value.trim();
