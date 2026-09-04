@@ -707,15 +707,12 @@ h1, h2, h3, h4, h5, h6 {
 .ai-thought-pill {
     display: inline-flex;
     align-items: center;
-    gap: 10px;
-    background: rgba(18, 24, 38, 0.85);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(56, 139, 253, 0.3);
-    border-radius: 9999px;
-    padding: 7px 16px 7px 12px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-    animation: fadeInThought 0.25s ease-out;
+    gap: 8px;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 4px 0;
+    animation: fadeInThought 0.2s ease-out;
 }
 
 @keyframes fadeInThought {
