@@ -67,7 +67,6 @@ export async function handleChat(
     try {
         const { title: cleanT } = cleanMediaTitle(userMessage);
         if (cleanT && cleanT.length > 2 && !/^(hi|hello|hey|help|status|reconnect)/i.test(cleanT)) {
-            broadcastAiStatus(sessionId, { step: "searching_tmdb", label: `Looking up "${cleanT}" on TMDB...` });
             const mediaFacts = await lookupMedia(cleanT);
             if (mediaFacts && mediaFacts.found) {
                 if (mediaFacts.type === "series") {

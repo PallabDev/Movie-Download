@@ -583,8 +583,6 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
     return row;
 }
 
-let typingProgressTimer = null;
-
 function showTypingIndicator(initialLabel = 'Thinking...') {
     removeTypingIndicator();
     const chatBox = document.getElementById('chatMessagesBox');
@@ -605,31 +603,6 @@ function showTypingIndicator(initialLabel = 'Thinking...') {
     `;
     chatBox.appendChild(row);
     chatBox.scrollTop = chatBox.scrollHeight;
-
-    // Smooth progressive step fallback in case network delay occurs
-    const progressiveSteps = [
-        { time: 2000, label: 'Searching Jellyfin library...' },
-        { time: 4200, label: 'Looking up metadata on TMDB...' },
-        { time: 7000, label: 'Searching Telegram bots for releases...' },
-        { time: 11000, label: 'Grabbing files & parsing qualities...' },
-        { time: 15000, label: 'Analyzing best audio & resolution...' },
-        { time: 19000, label: 'Finalizing response...' }
-    ];
-
-    let stepIdx = 0;
-    const startTime = Date.now();
-
-    typingProgressTimer = setInterval(() => {
-        const elapsed = Date.now() - startTime;
-        while (stepIdx < progressiveSteps.length && elapsed >= progressiveSteps[stepIdx].time) {
-            updateTypingIndicator(progressiveSteps[stepIdx].label);
-            stepIdx++;
-        }
-        if (stepIdx >= progressiveSteps.length) {
-            clearInterval(typingProgressTimer);
-            typingProgressTimer = null;
-        }
-    }, 500);
 }
 
 function updateTypingIndicator(label) {
@@ -640,10 +613,6 @@ function updateTypingIndicator(label) {
 }
 
 function removeTypingIndicator() {
-    if (typingProgressTimer) {
-        clearInterval(typingProgressTimer);
-        typingProgressTimer = null;
-    }
     document.getElementById('chatTypingIndicator')?.remove();
 }
 
