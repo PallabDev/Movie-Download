@@ -2238,31 +2238,6 @@ function renderReleaseCards(items) {
                         ${isExists ? `<span class="badge-jellyfin-in" title="Already available in your Jellyfin Movie Library"><svg class="tabler-icon" style="width:11px;height:11px;stroke-width:3;display:inline-block;vertical-align:middle;margin-right:2px;" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>In Library</span>` : ''}
                     </div>
                     <div class="card-industry-tag">${escapeHtml(item.industry || 'Cinema')}</div>
-                    
-                    <!-- Hover Quick Actions -->
-                    <div class="card-hover-actions">
-                        ${isExists ? `
-                            <button class="btn-card-action in-library" onclick="switchView('jellyfin')" title="Already in your Jellyfin Library">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
-                                In Library (Jellyfin)
-                            </button>
-                        ` : `
-                            <button class="btn-card-action primary" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Search & Download with Telegram Bot">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                Search & Download
-                            </button>
-                            <div style="display: flex; gap: 6px; width: 100%;">
-                                <button class="btn-card-action secondary" style="flex: 1;" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Ask AI Copilot to find movie">
-                                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
-                                    Copilot
-                                </button>
-                                <button class="btn-card-action secondary" style="flex: 1;" onclick="addReleaseToWatchlist('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Add to Watchlist">
-                                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M9 8h6"/></svg>
-                                    Request
-                                </button>
-                            </div>
-                        `}
-                    </div>
                 </div>
                 
                 <div class="card-body-content">
@@ -2282,22 +2257,26 @@ function renderReleaseCards(items) {
                         ${extraCount}
                     </div>
 
-                    <!-- Direct Action Button (Visible without hover for mobile & desktop) -->
-                    <div class="card-direct-action-wrap">
+                    ${item.overview ? `<p class="card-synopsis-text" title="${escapeHtml(item.overview)}">${escapeHtml(item.overview)}</p>` : ''}
+
+                    <!-- Card Bottom Actions (Always visible on desktop and mobile) -->
+                    <div class="card-bottom-actions">
                         ${isExists ? `
-                            <button class="btn-card-direct-library" onclick="switchView('jellyfin')" title="Already in Jellyfin Library">
-                                <svg class="tabler-icon" style="width:13px;height:13px;" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
+                            <button class="btn-card-action in-library" onclick="switchView('jellyfin')" title="Already in your Jellyfin Library">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
                                 <span>In Library</span>
                             </button>
                         ` : `
-                            <button class="btn-card-direct-download" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Download with Telegram Bot">
-                                <svg class="tabler-icon" style="width:13px;height:13px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                <span>Download</span>
+                            <button class="btn-card-action primary" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Search & Download with Telegram Bot">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                <span>Search & Download</span>
+                            </button>
+                            <button class="btn-card-action secondary" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Ask AI Copilot to find movie">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
+                                <span>Copilot</span>
                             </button>
                         `}
                     </div>
-
-                    ${item.overview ? `<p class="card-synopsis-text" title="${escapeHtml(item.overview)}">${escapeHtml(item.overview)}</p>` : ''}
                 </div>
             </div>
         `;

@@ -2830,75 +2830,6 @@ h1, h2, h3, h4, h5, h6 {
     border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
-/* Hover Quick Actions Overlay (Desktop) */
-.card-hover-actions {
-    position: absolute;
-    inset: 0;
-    background: rgba(10, 15, 28, 0.88);
-    backdrop-filter: blur(4px);
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    gap: 8px;
-    padding: 16px;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.22s ease;
-}
-
-.movie-release-card:hover .card-hover-actions {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.btn-card-action {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: 100%;
-    padding: 8px 12px;
-    border-radius: var(--radius-xs);
-    font-size: 11.5px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-    border: none;
-}
-
-.btn-card-action.primary {
-    background: var(--accent-blue);
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
-}
-
-.btn-card-action.primary:hover {
-    background: #2563eb;
-    transform: translateY(-1px);
-}
-
-.btn-card-action.secondary {
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-}
-
-.btn-card-action.secondary:hover {
-    background: rgba(255, 255, 255, 0.2);
-}
-
-.btn-card-action.in-library {
-    background: rgba(16, 185, 129, 0.9);
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
-}
-
-.btn-card-action.in-library:hover {
-    background: #059669;
-    transform: translateY(-1px);
-}
-
 .movie-release-card.in-library {
     border-color: rgba(16, 185, 129, 0.35);
     box-shadow: 0 4px 16px rgba(16, 185, 129, 0.08);
@@ -3023,55 +2954,74 @@ h1, h2, h3, h4, h5, h6 {
     -webkit-box-orient: vertical;
 }
 
-/* Direct Action Buttons (Hidden on desktop where hover exists, visible only on mobile/touch screens) */
-.card-direct-action-wrap {
-    display: none;
+/* Card Bottom Action Buttons (Visible at all times on both desktop and mobile) */
+.card-bottom-actions {
+    margin-top: auto;
+    padding-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
     width: 100%;
-    margin-top: 6px;
 }
 
-.btn-card-direct-download {
+.btn-card-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     width: 100%;
     padding: 7px 10px;
     border-radius: var(--radius-xs);
-    background: var(--accent-blue);
-    color: #fff;
     font-size: 11.5px;
     font-weight: 600;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    border: none;
     cursor: pointer;
-    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.35);
     transition: all var(--transition-fast);
+    border: none;
+    box-sizing: border-box;
+    text-decoration: none;
 }
 
-.btn-card-direct-download:hover {
+.btn-card-action .tabler-icon {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+}
+
+.btn-card-action.primary {
+    background: var(--accent-blue);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.35);
+}
+
+.btn-card-action.primary:hover {
     background: #2563eb;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.45);
+}
+
+.btn-card-action.secondary {
+    background: rgba(255, 255, 255, 0.07);
+    color: #c9d1d9;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.btn-card-action.secondary:hover {
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.25);
     transform: translateY(-1px);
 }
 
-.btn-card-direct-library {
-    width: 100%;
-    padding: 6px 10px;
-    border-radius: var(--radius-xs);
+.btn-card-action.in-library {
     background: rgba(16, 185, 129, 0.15);
     color: var(--accent-emerald);
     border: 1px solid rgba(16, 185, 129, 0.35);
-    font-size: 11px;
-    font-weight: 600;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    cursor: pointer;
-    transition: all var(--transition-fast);
 }
 
-.btn-card-direct-library:hover {
+.btn-card-action.in-library:hover {
     background: rgba(16, 185, 129, 0.25);
+    color: #34d399;
+    transform: translateY(-1px);
 }
 
 /* Mobile Responsiveness for 2 Movies Per Row */
@@ -3136,13 +3086,18 @@ h1, h2, h3, h4, h5, h6 {
         font-size: 9px !important;
         padding: 1px 5px !important;
     }
-    .btn-card-direct-download {
-        padding: 6px 8px !important;
-        font-size: 11px !important;
+    .card-bottom-actions {
+        padding-top: 6px !important;
+        gap: 4px !important;
     }
-    .btn-card-direct-library {
-        padding: 5px 8px !important;
+    .btn-card-action {
+        padding: 5px 6px !important;
         font-size: 10.5px !important;
+        gap: 4px !important;
+    }
+    .btn-card-action .tabler-icon {
+        width: 12px !important;
+        height: 12px !important;
     }
     .download-station-wrap {
         padding: 12px 10px !important;
