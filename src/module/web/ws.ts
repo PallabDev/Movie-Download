@@ -106,6 +106,18 @@ export function broadcastNewDownload(data: {
     });
 }
 
+export function broadcastAiStatus(sessionId: string, status: {
+    step?: string;
+    label: string;
+}) {
+    broadcast({
+        type: "ai_status",
+        sessionId,
+        ...status,
+        timestamp: Date.now(),
+    });
+}
+
 export function getClientCount(): number {
     return clients.size;
 }

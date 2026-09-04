@@ -14,7 +14,7 @@ import {
     cleanMediaTitle,
 } from "../../common/tmdb/client.js";
 import { inngest } from "../inngest/client.js";
-import { broadcastNewDownload } from "./ws.js";
+import { broadcastNewDownload, broadcastAiStatus } from "./ws.js";
 import { logTelegramAudit } from "../../common/logger/telegram-audit.js";
 
 function safeHarness() {
@@ -223,6 +223,7 @@ export async function toolSearchMovie(args: Record<string, any>, sessionId: stri
 
     const query = `${cleanTitle} ${cleanYear}`.trim();
     harness.logActivity(`[TOOL search_movie] Querying @ProSearchM11Bot for: "${query}"`);
+    try { broadcastAiStatus(sessionId, { step: "searching_telegram", label: `Searching Telegram bots for "${cleanTitle}"...` }); } catch {}
 
     // Auto-record to requested media
     db.insert(schema.requestedMedia).values({
@@ -244,6 +245,7 @@ export async function toolSearchMovie(args: Record<string, any>, sessionId: stri
         caller: "search_movie"
     });
 
+    try { broadcastAiStatus(sessionId, { step: "grabbing_files", label: `Grabbing release files from Telegram...` }); } catch {}
     await new Promise(r => setTimeout(r, 4000));
 
     let btnMsg: any = null;
@@ -400,6 +402,7 @@ export async function toolSearchMovie(args: Record<string, any>, sessionId: stri
     if (sessionId) searchSessions.set(`session_${sessionId}`, sessionData);
     searchSessions.set(`title_${cleanTitle.toLowerCase().trim()}`, sessionData);
 
+    try { broadcastAiStatus(sessionId, { step: "analyzing", label: `Analyzing ${allResults.length} releases (Audio, Quality & Resolution)...` }); } catch {}
     const best = await pickBestResult(cleanTitle, "movie", allResults);
     setWorkflow(sessionId, { step: "telegram_searched", type: "movie", title: cleanTitle, year: cleanYear });
 
@@ -680,6 +683,7 @@ export async function toolCheckJellyfin(args: Record<string, any>, sessionId: st
     if (!title) return { success: false, message: "Title is required" };
 
     const harness = safeHarness();
+    try { broadcastAiStatus(sessionId, { step: "checking_jellyfin", label: `Checking Jellyfin library for "${title}"...` }); } catch {}
     harness.logActivity(`[JELLYFIN] Checking: "${title}" (${type || "any"})`);
 
     if (type === "series") {

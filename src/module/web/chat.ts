@@ -3,6 +3,7 @@ import { db, schema } from "../../common/db/index.js";
 import { lookupMedia, cleanMediaTitle } from "../../common/tmdb/client.js";
 import { parseToolCall, KNOWN_TOOLS } from "./tool-parser.js";
 import { executeTool, SYSTEM_PROMPT, clearWorkflow, searchSessions, type ToolResult } from "./tools.js";
+import { broadcastAiStatus } from "./ws.js";
 
 // ─── AGENT MEMORY (PostgreSQL) ───
 
@@ -24,6 +25,8 @@ export async function handleChat(
     const harness = getHarness();
     const toolCalls: { tool: string; args: any; result: ToolResult }[] = [];
 
+    broadcastAiStatus(sessionId, { step: "thinking", label: "Thinking..." });
+
     const lowerMsg = userMessage.toLowerCase().trim();
     const isSingleNumber = /^\d+$/.test(lowerMsg);
     if (!isSingleNumber && (/^(hi|hello|hey|start|reset|clear|new|help|\?)/.test(lowerMsg) || (lowerMsg.length < 3 && !/^[1-9]$/.test(lowerMsg)))) {
@@ -40,16 +43,19 @@ export async function handleChat(
     if (session && downloadNumMatch) {
         const optNum = downloadNumMatch[1] || downloadNumMatch[2];
         const optIdx = optNum ? parseInt(optNum) : undefined;
+        broadcastAiStatus(sessionId, { step: "starting_download", label: `Starting download (Option #${optIdx || "recommended"})...` });
         harness.logActivity(`[CHAT FAST-PATH] Detected direct download selection (Option #${optIdx || "recommended"}) for "${session.title}"`);
         const result = await executeTool("download_movie", { title: session.title, optionIndex: optIdx, sessionId }, sessionId);
         toolCalls.push({ tool: "download_movie", args: { title: session.title, optionIndex: optIdx }, result });
     } else if (downloadMovieMatch && !session) {
         const titleToDl = downloadMovieMatch[1].trim();
         if (titleToDl.length > 2 && !/^(movie|it|recommend|best)$/i.test(titleToDl)) {
+            broadcastAiStatus(sessionId, { step: "searching_telegram", label: `Searching releases for "${titleToDl}"...` });
             harness.logActivity(`[CHAT FAST-PATH] Direct download command for new movie: "${titleToDl}"`);
             const sRes = await executeTool("search_movie", { title: titleToDl }, sessionId);
             toolCalls.push({ tool: "search_movie", args: { title: titleToDl }, result: sRes });
             if (sRes.success) {
+                broadcastAiStatus(sessionId, { step: "starting_download", label: `Queuing download for "${titleToDl}"...` });
                 const dlRes = await executeTool("download_movie", { title: titleToDl, sessionId }, sessionId);
                 toolCalls.push({ tool: "download_movie", args: { title: titleToDl }, result: dlRes });
             }
@@ -61,6 +67,7 @@ export async function handleChat(
     try {
         const { title: cleanT } = cleanMediaTitle(userMessage);
         if (cleanT && cleanT.length > 2 && !/^(hi|hello|hey|help|status|reconnect)/i.test(cleanT)) {
+            broadcastAiStatus(sessionId, { step: "searching_tmdb", label: `Looking up "${cleanT}" on TMDB...` });
             const mediaFacts = await lookupMedia(cleanT);
             if (mediaFacts && mediaFacts.found) {
                 if (mediaFacts.type === "series") {
@@ -123,10 +130,24 @@ export async function handleChat(
                     continue;
                 }
 
+                const toolLabels: Record<string, string> = {
+                    check_jellyfin: "Checking Jellyfin media library...",
+                    tmdb_search: "Looking up metadata on TMDB...",
+                    search_movie: "Searching Telegram bots for releases...",
+                    download_movie: "Starting download in background...",
+                    request_media: "Adding to requested media list...",
+                    list_downloads: "Checking download queue status...",
+                };
+                if (toolLabels[parsed.tool]) {
+                    broadcastAiStatus(sessionId, { step: parsed.tool, label: toolLabels[parsed.tool] });
+                }
+
                 harness.logActivity(`[CHAT] Executing parsed tool: "${parsed.tool}" with args: ${JSON.stringify(parsed.args)}`);
 
                 const result = await executeTool(parsed.tool, parsed.args, sessionId);
                 toolCalls.push({ tool: parsed.tool, args: parsed.args, result });
+
+                broadcastAiStatus(sessionId, { step: "analyzing", label: "Analyzing response & best release..." });
 
                 messages.push({ role: "assistant", content: response });
                 messages.push({

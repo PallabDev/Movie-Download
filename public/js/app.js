@@ -323,8 +323,14 @@ function initWebSocket() {
     }
 }
 
+const COMPILE_ANIMATED_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56" role="img" aria-label="Compile" class="ai-matrix-loader-svg"><title>Compile</title><desc>Each column fills bottom-up, then releases as one.</desc><defs><circle id="b" r="2.4" fill="#ffffff" opacity="0.07"/><circle id="l" r="3.1"/></defs><style>.l{fill:#ffffff;opacity:0;animation:icon-28-k 2400ms cubic-bezier(0.65, 0, 0.35, 1) infinite both;}@keyframes icon-28-k{0%{opacity:0.08;}14%{opacity:1;}72%{opacity:0.95;}100%{opacity:0.08;}}@media (prefers-reduced-motion:reduce){.l{animation:none;opacity:0.45;}}.d00{animation-delay:960ms;}.d01{animation-delay:1056ms;}.d02{animation-delay:1152ms;}.d03{animation-delay:1248ms;}.d04{animation-delay:1344ms;}.d10{animation-delay:720ms;}.d11{animation-delay:816ms;}.d12{animation-delay:912ms;}.d13{animation-delay:1008ms;}.d14{animation-delay:1104ms;}.d20{animation-delay:480ms;}.d21{animation-delay:576ms;}.d22{animation-delay:672ms;}.d23{animation-delay:768ms;}.d24{animation-delay:864ms;}.d30{animation-delay:240ms;}.d31{animation-delay:336ms;}.d32{animation-delay:432ms;}.d33{animation-delay:528ms;}.d34{animation-delay:624ms;}.d40{animation-delay:0ms;}.d41{animation-delay:96ms;}.d42{animation-delay:192ms;}.d43{animation-delay:288ms;}.d44{animation-delay:384ms;}</style><use href="#b" x="6" y="6"/><use href="#b" x="17" y="6"/><use href="#b" x="28" y="6"/><use href="#b" x="39" y="6"/><use href="#b" x="50" y="6"/><use href="#b" x="6" y="17"/><use href="#b" x="17" y="17"/><use href="#b" x="28" y="17"/><use href="#b" x="39" y="17"/><use href="#b" x="50" y="17"/><use href="#b" x="6" y="28"/><use href="#b" x="17" y="28"/><use href="#b" x="28" y="28"/><use href="#b" x="39" y="28"/><use href="#b" x="50" y="28"/><use href="#b" x="6" y="39"/><use href="#b" x="17" y="39"/><use href="#b" x="28" y="39"/><use href="#b" x="39" y="39"/><use href="#b" x="50" y="39"/><use href="#b" x="6" y="50"/><use href="#b" x="17" y="50"/><use href="#b" x="28" y="50"/><use href="#b" x="39" y="50"/><use href="#b" x="50" y="50"/><use class="l d00" href="#l" x="6" y="6"/><use class="l d01" href="#l" x="17" y="6"/><use class="l d02" href="#l" x="28" y="6"/><use class="l d03" href="#l" x="39" y="6"/><use class="l d04" href="#l" x="50" y="6"/><use class="l d10" href="#l" x="6" y="17"/><use class="l d11" href="#l" x="17" y="17"/><use class="l d12" href="#l" x="28" y="17"/><use class="l d13" href="#l" x="39" y="17"/><use class="l d14" href="#l" x="50" y="17"/><use class="l d20" href="#l" x="6" y="28"/><use class="l d21" href="#l" x="17" y="28"/><use class="l d22" href="#l" x="28" y="28"/><use class="l d23" href="#l" x="39" y="28"/><use class="l d24" href="#l" x="50" y="28"/><use class="l d30" href="#l" x="6" y="39"/><use class="l d31" href="#l" x="17" y="39"/><use class="l d32" href="#l" x="28" y="39"/><use class="l d33" href="#l" x="39" y="39"/><use class="l d34" href="#l" x="50" y="39"/><use class="l d40" href="#l" x="6" y="50"/><use class="l d41" href="#l" x="17" y="50"/><use class="l d42" href="#l" x="28" y="50"/><use class="l d43" href="#l" x="39" y="50"/><use class="l d44" href="#l" x="50" y="50"/></svg>`;
+
 function handleWebSocketMessage(msg) {
-    if (msg.type === 'new_download') {
+    if (msg.type === 'ai_status') {
+        if (msg.sessionId === state.sessionId) {
+            updateTypingIndicator(msg.label);
+        }
+    } else if (msg.type === 'new_download') {
         state.activeDownloads.set(msg.jobId, {
             jobId: msg.jobId,
             title: msg.title,
@@ -485,10 +491,6 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
     const row = document.createElement('div');
     row.className = `message-row ${sender}`;
 
-    const avatarHtml = sender === 'user'
-        ? `<span style="font-weight:700;font-size:11px;">${(state.user.name || 'U').charAt(0).toUpperCase()}</span>`
-        : ICONS.ai;
-
     let formattedHtml = '';
     const safeContent = (content || '').trim();
 
@@ -568,7 +570,6 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
     }
 
     row.innerHTML = `
-        <div class="msg-avatar">${avatarHtml}</div>
         <div class="msg-bubble">
             ${meta.workflowChip ? `<div class="workflow-chip ${meta.workflowChip.type}">${meta.workflowChip.label}</div>` : ''}
             ${formattedHtml}
@@ -582,28 +583,67 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
     return row;
 }
 
-function showTypingIndicator() {
+let typingProgressTimer = null;
+
+function showTypingIndicator(initialLabel = 'Thinking...') {
     removeTypingIndicator();
     const chatBox = document.getElementById('chatMessagesBox');
     if (!chatBox) return;
 
     const row = document.createElement('div');
     row.id = 'chatTypingIndicator';
-    row.className = 'message-row assistant';
+    row.className = 'message-row assistant typing-row';
     row.innerHTML = `
-        <div class="msg-avatar">${ICONS.ai}</div>
-        <div class="msg-bubble typing-bubble">
-            <span class="typing-dot"></span>
-            <span class="typing-dot"></span>
-            <span class="typing-dot"></span>
-            <span style="font-size: 11px; color: var(--text-muted); margin-left: 6px;">Searching...</span>
+        <div class="ai-thought-pill">
+            <div class="ai-thought-svg-icon">
+                ${COMPILE_ANIMATED_SVG}
+            </div>
+            <div class="ai-thought-body">
+                <span class="ai-thought-label" id="aiThoughtLabel">${escapeHtml(initialLabel)}</span>
+            </div>
         </div>
     `;
     chatBox.appendChild(row);
     chatBox.scrollTop = chatBox.scrollHeight;
+
+    // Smooth progressive step fallback in case network delay occurs
+    const progressiveSteps = [
+        { time: 2000, label: 'Searching Jellyfin library...' },
+        { time: 4200, label: 'Looking up metadata on TMDB...' },
+        { time: 7000, label: 'Searching Telegram bots for releases...' },
+        { time: 11000, label: 'Grabbing files & parsing qualities...' },
+        { time: 15000, label: 'Analyzing best audio & resolution...' },
+        { time: 19000, label: 'Finalizing response...' }
+    ];
+
+    let stepIdx = 0;
+    const startTime = Date.now();
+
+    typingProgressTimer = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        while (stepIdx < progressiveSteps.length && elapsed >= progressiveSteps[stepIdx].time) {
+            updateTypingIndicator(progressiveSteps[stepIdx].label);
+            stepIdx++;
+        }
+        if (stepIdx >= progressiveSteps.length) {
+            clearInterval(typingProgressTimer);
+            typingProgressTimer = null;
+        }
+    }, 500);
+}
+
+function updateTypingIndicator(label) {
+    const labelEl = document.getElementById('aiThoughtLabel');
+    if (labelEl && label) {
+        labelEl.textContent = label;
+    }
 }
 
 function removeTypingIndicator() {
+    if (typingProgressTimer) {
+        clearInterval(typingProgressTimer);
+        typingProgressTimer = null;
+    }
     document.getElementById('chatTypingIndicator')?.remove();
 }
 
@@ -622,7 +662,6 @@ function addChatDownloadInitiated(jobId, title) {
     }
 
     el.innerHTML = `
-        <div class="msg-avatar">${ICONS.download}</div>
         <div class="msg-bubble chat-dl-bubble" style="max-width: 480px; width: 100%;">
             <div style="font-weight: 600; font-size: 13px; color: #fff; margin-bottom: 3px;">
                 🚀 Download Queued: ${escapeHtml(title)}
@@ -644,7 +683,6 @@ function completeChatDownload(jobId, title, success, error) {
     const el = document.getElementById(`chat-dl-${jobId}`);
     if (!el) return;
     el.innerHTML = `
-        <div class="msg-avatar">${success ? ICONS.success : ICONS.error}</div>
         <div class="msg-bubble chat-dl-bubble" style="max-width: 480px; width: 100%;">
             <div style="font-weight: 600; font-size: 13px; color: ${success ? 'var(--accent-emerald)' : 'var(--accent-rose)'}; margin-bottom: 3px;">
                 ${success ? '✅ Download Finished & Ready' : '❌ Download Failed'}
