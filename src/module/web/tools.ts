@@ -128,6 +128,7 @@ export const SYSTEM_PROMPT = `You are an expert movie download copilot connected
 ### STEP 2: DOWNLOAD EXECUTION
 - When the user selects or confirms an option (e.g. "5", "download 5", "yes", "download recommend", "15"):
   - Call 'download_movie' passing title, year, and optionIndex (e.g. {"tool": "download_movie", "args": {"title": "Miss You", "year": "2024", "optionIndex": 5}}).
+  - In your confirmation message, inform the user that the movie download has started in the background and they can track live progress and speed in the **Download Station** tab.
 
 ## RULES:
 1. NEVER display raw JSON in your final conversational response. Use clean, beautiful Markdown.
@@ -218,11 +219,6 @@ export async function toolSearchMovie(args: Record<string, any>, sessionId: stri
             success: false,
             message: "BOT_DISCONNECTED: Telegram Bot is currently disconnected. Please navigate to the Telegram Bot tab in the sidebar and click Reconnect."
         };
-    }
-
-    const jf = await checkMovieExists(cleanTitle, cleanYear);
-    if (jf.exists) {
-        return { success: true, message: `ALREADY_IN_JELLYFIN:${cleanTitle}`, data: { exists: true } };
     }
 
     const query = `${cleanTitle} ${cleanYear}`.trim();

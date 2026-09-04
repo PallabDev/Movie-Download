@@ -1634,6 +1634,117 @@ h1, h2, h3, h4, h5, h6 {
     gap: 12px;
 }
 
+/* Jellyfin Movies Grid */
+.jf-movies-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 14px;
+    padding: 16px;
+}
+
+@media (max-width: 640px) {
+    .jf-movies-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 10px !important;
+        padding: 10px !important;
+    }
+}
+
+.jf-movie-card {
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    position: relative;
+}
+
+.jf-movie-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--border-medium);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.jf-movie-poster-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    background: var(--bg-surface);
+    overflow: hidden;
+}
+
+.jf-movie-poster {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.3s ease;
+}
+
+.jf-movie-card:hover .jf-movie-poster {
+    transform: scale(1.04);
+}
+
+.jf-movie-poster-fallback {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, rgba(20, 25, 40, 0.95), rgba(10, 14, 25, 0.98));
+    color: var(--text-muted);
+    padding: 12px;
+    text-align: center;
+    gap: 8px;
+}
+
+.jf-movie-rating-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: rgba(10, 15, 25, 0.85);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #fbbf24;
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    z-index: 2;
+}
+
+.jf-movie-info {
+    padding: 10px 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+}
+
+.jf-movie-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.3;
+}
+
+.jf-movie-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
 /* ==========================================================================
    VIEW 5: TELEGRAM BOT & 2FA CONTROL
    ========================================================================== */
@@ -2253,3 +2364,502 @@ h1, h2, h3, h4, h5, h6 {
     transform: translateY(-1px);
     box-shadow: 0 6px 18px rgba(59, 130, 246, 0.45);
 }
+
+/* ==========================================================================
+   VIEW: NEW INDIAN OTT RELEASES HUB
+   ========================================================================== */
+
+.releases-container {
+    padding: 20px 20px;
+    max-width: 1200px;
+    width: 100%;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+/* Compact Header */
+.releases-compact-header {
+    background: linear-gradient(135deg, rgba(229, 9, 20, 0.08) 0%, rgba(15, 23, 42, 0.85) 100%);
+    border: 1px solid rgba(229, 9, 20, 0.25);
+    border-radius: var(--radius-md);
+    padding: 12px 18px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
+}
+
+.releases-header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.releases-header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.ott-metric-card {
+    transition: all var(--transition-fast);
+}
+
+.ott-metric-card:hover {
+    border-color: rgba(255, 255, 255, 0.25);
+    transform: translateY(-2px);
+    background: var(--bg-surface-hover);
+}
+
+/* Releases Toolbar */
+.releases-toolbar-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 14px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.toolbar-section {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.filter-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    min-width: 95px;
+}
+
+.pill-group {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.pill-btn {
+    padding: 5px 12px;
+    border-radius: 9999px;
+    font-size: 11.5px;
+    font-weight: 500;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    user-select: none;
+}
+
+.pill-btn:hover {
+    background: var(--bg-surface-hover);
+    color: #fff;
+    border-color: var(--border-medium);
+}
+
+.pill-btn.active {
+    background: var(--accent-blue);
+    color: #fff;
+    border-color: var(--accent-blue);
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.35);
+    font-weight: 600;
+}
+
+.sort-select-wrap select {
+    min-width: 170px;
+    background: var(--bg-surface-elevated);
+}
+
+/* Releases Grid */
+.releases-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 18px;
+}
+
+/* Movie Release Card */
+.movie-release-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: all var(--transition-normal);
+    position: relative;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.movie-release-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(255, 255, 255, 0.25);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+}
+
+.card-poster-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    overflow: hidden;
+    background: #0b1120;
+}
+
+.card-poster-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.35s ease;
+}
+
+.movie-release-card:hover .card-poster-img {
+    transform: scale(1.06);
+}
+
+.poster-overlay-gradient {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0) 40%, rgba(0,0,0,0.85) 100%);
+    pointer-events: none;
+}
+
+.card-top-badges {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    pointer-events: none;
+}
+
+.badge-rating {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(8px);
+    color: #fbbf24;
+    padding: 3px 8px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 700;
+    border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.badge-rating .star-icon {
+    width: 12px;
+    height: 12px;
+    fill: #fbbf24;
+    stroke: none;
+}
+
+.badge-jellyfin-in {
+    background: rgba(16, 185, 129, 0.85);
+    color: #fff;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    backdrop-filter: blur(6px);
+}
+
+.card-industry-tag {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(6px);
+    color: #e2e8f0;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+/* Hover Quick Actions Overlay */
+.card-hover-actions {
+    position: absolute;
+    inset: 0;
+    background: rgba(10, 15, 28, 0.88);
+    backdrop-filter: blur(4px);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    padding: 16px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s ease;
+}
+
+.movie-release-card:hover .card-hover-actions {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.btn-card-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: var(--radius-xs);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    border: none;
+}
+
+.btn-card-action.primary {
+    background: var(--accent-blue);
+    color: #fff;
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+}
+
+.btn-card-action.primary:hover {
+    background: #2563eb;
+    transform: translateY(-1px);
+}
+
+.btn-card-action.secondary {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.btn-card-action.secondary:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.btn-card-action.in-library {
+    background: rgba(16, 185, 129, 0.9);
+    color: #fff;
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
+}
+
+.btn-card-action.in-library:hover {
+    background: #059669;
+    transform: translateY(-1px);
+}
+
+.movie-release-card.in-library {
+    border-color: rgba(16, 185, 129, 0.35);
+    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.08);
+}
+
+.movie-release-card.in-library:hover {
+    border-color: rgba(16, 185, 129, 0.6);
+    box-shadow: 0 8px 24px rgba(16, 185, 129, 0.16);
+}
+
+/* Card Body Content */
+.card-body-content {
+    padding: 12px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+}
+
+.card-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.card-movie-title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: #fff;
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+}
+
+.card-movie-year {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 500;
+    flex-shrink: 0;
+}
+
+.card-date-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+}
+
+.card-date-label {
+    color: var(--text-muted);
+}
+
+.card-date-val {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.card-ott-providers-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+
+.ott-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    border: 1px solid transparent;
+    text-transform: capitalize;
+}
+
+.ott-badge-logo {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    object-fit: contain;
+}
+
+.ott-badge.more {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-muted);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+.card-synopsis-text {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    margin-top: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.releases-empty-card {
+    background: var(--bg-surface);
+    border: 1px dashed var(--border-medium);
+    border-radius: var(--radius-md);
+}
+
+.pagination-bar {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    margin-top: 14px;
+    padding: 16px 0;
+}
+
+.btn-page {
+    padding: 6px 14px;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xs);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.btn-page:hover:not(:disabled) {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+}
+
+.btn-page:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.page-indicator {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* ─── CHAT DOWNLOAD STATION LINK & BUBBLE ─── */
+.chat-dl-bubble {
+    background: rgba(22, 28, 42, 0.95);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 12px;
+    padding: 12px 14px;
+}
+
+.btn-chat-station-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+    border: 1px solid rgba(59, 130, 246, 0.4);
+    padding: 7px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    margin-top: 4px;
+}
+
+.btn-chat-station-link:hover {
+    background: rgba(59, 130, 246, 0.3);
+    border-color: #3b82f6;
+    color: #fff;
+    transform: translateY(-1px);
+}
+
+/* ─── STUDIO RESULTS WRAPPER ─── */
+.studio-panel-wrap {
+    max-width: 100%;
+    width: 100%;
+    margin-top: 14px;
+}
+
+.studio-panel-wrap .chat-search-list {
+    max-height: 560px;
+}
+
+@media (max-width: 768px) {
+    .studio-panel-wrap .chat-search-list {
+        max-height: 500px;
+    }
+    .btn-chat-station-link {
+        width: 100%;
+        justify-content: center;
+        box-sizing: border-box;
+    }
+}
+
+

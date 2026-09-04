@@ -77,7 +77,32 @@ try {
             requested_by VARCHAR(255),
             created_at TIMESTAMP DEFAULT NOW() NOT NULL,
             updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS ott_releases (
+            id SERIAL PRIMARY KEY,
+            tmdb_id INTEGER NOT NULL UNIQUE,
+            title VARCHAR(500) NOT NULL,
+            original_title VARCHAR(500),
+            original_language VARCHAR(10) NOT NULL,
+            industry VARCHAR(50) NOT NULL,
+            release_date VARCHAR(20),
+            year VARCHAR(10),
+            overview TEXT,
+            poster_url TEXT,
+            backdrop_url TEXT,
+            rating REAL DEFAULT 0,
+            vote_count INTEGER DEFAULT 0,
+            popularity REAL DEFAULT 0,
+            providers JSONB,
+            jellyfin_exists BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+            updated_at TIMESTAMP DEFAULT NOW() NOT NULL
         )
+    `);
+    await db.execute(sql`
+        ALTER TABLE downloads ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW() NOT NULL;
+        ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW() NOT NULL;
+        ALTER TABLE ott_releases ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW() NOT NULL;
     `);
     console.log("[INIT] Database tables ready");
 } catch (err) {

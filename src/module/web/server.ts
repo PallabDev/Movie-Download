@@ -15,7 +15,9 @@ import {
     getSeasonEpisodesList,
     searchMulti as tmdbSearchMulti,
     searchMovie as tmdbSearchMovie,
-    searchTV as tmdbSearchTV
+    searchTV as tmdbSearchTV,
+    syncIndianOTTReleasesToDB,
+    discoverIndianOTTReleases
 } from "../../common/tmdb/client.js";
 import { handleChat } from "./chat.js";
 
@@ -264,6 +266,221 @@ app.get("/api/tmdb/episodes", requireAuth, async (req: any, res) => {
     }
 });
 
+// ─── NEW INDIAN OTT RELEASES API ───
+
+let cachedJellyfinMovies: { title: string; cleanTitle: string; year?: string; name: string }[] | null = null;
+let lastJellyfinFetch = 0;
+
+async function getCachedJellyfinMovies() {
+    const now = Date.now();
+    if (cachedJellyfinMovies && now - lastJellyfinFetch < 30000) {
+        return cachedJellyfinMovies;
+    }
+    try {
+        const jfItems = await getAllMovies();
+        cachedJellyfinMovies = (jfItems || []).map(item => ({
+            name: item.Name,
+            title: item.Name.toLowerCase().trim(),
+            cleanTitle: item.Name.toLowerCase().replace(/[^a-z0-9]/g, ""),
+            year: item.Year ? String(item.Year) : undefined,
+        }));
+        lastJellyfinFetch = now;
+    } catch {
+        cachedJellyfinMovies = cachedJellyfinMovies || [];
+    }
+    return cachedJellyfinMovies;
+}
+
+function checkMovieInLibrary(title: string, year?: string | null, originalTitle?: string | null, jfList: { title: string; cleanTitle: string; year?: string; name: string }[] = []): boolean {
+    if (!title || jfList.length === 0) return false;
+    
+    const cleanT = title.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const cleanOrig = (originalTitle || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const targetYear = year ? String(year).trim() : "";
+
+    for (const item of jfList) {
+        // 1. Exact match on normalized alphanumeric string
+        if (item.cleanTitle === cleanT || (cleanOrig && item.cleanTitle === cleanOrig)) {
+            return true;
+        }
+
+        // 2. Year check with substring match
+        const yearMatches = !targetYear || !item.year || item.year === targetYear || Math.abs(Number(item.year) - Number(targetYear)) <= 1;
+
+        if (yearMatches) {
+            if (cleanT.length >= 4 && item.cleanTitle.length >= 4) {
+                if (cleanT.includes(item.cleanTitle) || item.cleanTitle.includes(cleanT)) {
+                    return true;
+                }
+            }
+            if (cleanOrig && cleanOrig.length >= 4 && item.cleanTitle.length >= 4) {
+                if (cleanOrig.includes(item.cleanTitle) || item.cleanTitle.includes(cleanOrig)) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+app.get("/api/new-releases", requireAuth, async (req: any, res) => {
+    try {
+        const page = Math.max(1, Number(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 24));
+        const offset = (page - 1) * limit;
+
+        const provider = (req.query.provider as string || "").trim().toLowerCase();
+        const industry = (req.query.industry as string || "").trim().toLowerCase();
+        const search = (req.query.search as string || "").trim();
+        const sort = (req.query.sort as string || "date_desc").toLowerCase();
+
+        const conditions: any[] = [];
+
+        if (search) {
+            conditions.push(like(schema.ottReleases.title, `%${search}%`));
+        }
+
+        if (industry && industry !== "all") {
+            conditions.push(sql`LOWER(${schema.ottReleases.industry}) = ${industry}`);
+        }
+
+        if (provider && provider !== "all") {
+            conditions.push(sql`EXISTS (
+                SELECT 1 FROM jsonb_array_elements(${schema.ottReleases.providers}) AS elem
+                WHERE LOWER(elem->>'name') LIKE ${`%${provider}%`}
+            )`);
+        }
+
+        const whereClause = conditions.length > 0 ? sql.join(conditions, sql` AND `) : undefined;
+
+        let orderByClause = desc(schema.ottReleases.releaseDate);
+        if (sort === "rating_desc") {
+            orderByClause = desc(schema.ottReleases.rating);
+        } else if (sort === "popularity_desc") {
+            orderByClause = desc(schema.ottReleases.popularity);
+        }
+
+        const countQuery = whereClause
+            ? db.select({ count: count() }).from(schema.ottReleases).where(whereClause)
+            : db.select({ count: count() }).from(schema.ottReleases);
+
+        const itemsQuery = whereClause
+            ? db.select().from(schema.ottReleases).where(whereClause).orderBy(orderByClause).limit(limit).offset(offset)
+            : db.select().from(schema.ottReleases).orderBy(orderByClause).limit(limit).offset(offset);
+
+        const [totalRes, items, jfMovies] = await Promise.all([countQuery, itemsQuery, getCachedJellyfinMovies()]);
+        const total = Number(totalRes[0]?.count || 0);
+
+        const enrichedReleases = items.map(item => {
+            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfMovies);
+            return {
+                ...item,
+                jellyfinExists: inJellyfin || Boolean(item.jellyfinExists),
+            };
+        });
+
+        return res.json({
+            releases: enrichedReleases,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit) || 1,
+            }
+        });
+    } catch (err: any) {
+        console.error("[NEW RELEASES] Fetch error:", err);
+        return res.status(500).json({ error: err.message, releases: [] });
+    }
+});
+
+// Rate limiting map: userId -> array of successful refresh epoch timestamps
+const userRefreshTimestamps = new Map<number | string, number[]>();
+const REFRESH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const REFRESH_RATE_LIMIT_MAX = 2; // max 2 successful refreshes per 15 minutes
+
+app.post("/api/new-releases/refresh", requireAuth, async (req: any, res) => {
+    try {
+        const userId = req.user?.userId || req.user?.id || req.user?.email || "anonymous";
+        const now = Date.now();
+
+        // 1. Clean up timestamps older than 15 minutes for this user
+        const userHistory = (userRefreshTimestamps.get(userId) || []).filter(t => now - t < REFRESH_RATE_LIMIT_WINDOW_MS);
+        userRefreshTimestamps.set(userId, userHistory);
+
+        // 2. Check rate limit
+        if (userHistory.length >= REFRESH_RATE_LIMIT_MAX) {
+            const oldestInWindow = userHistory[0];
+            const waitMs = (oldestInWindow + REFRESH_RATE_LIMIT_WINDOW_MS) - now;
+            const waitMinutes = Math.max(1, Math.ceil(waitMs / 60000));
+            return res.status(429).json({
+                error: `Rate limit reached: You can only refresh OTT releases 2 times per 15 minutes. Please try again in ${waitMinutes} minute${waitMinutes > 1 ? "s" : ""}.`,
+                retryAfterMinutes: waitMinutes,
+                retryAfterSeconds: Math.ceil(waitMs / 1000),
+            });
+        }
+
+        let daysBack = Number(req.body.daysBack);
+        if (isNaN(daysBack) || daysBack <= 0) {
+            daysBack = 90; // Default 3 months
+        }
+
+        console.log(`[NEW RELEASES] Refresh triggered by user ${userId} (daysBack: ${daysBack}, attempt #${userHistory.length + 1} in 15m window)`);
+        const syncStats = await syncIndianOTTReleasesToDB({ daysBack, pageLimit: 6 });
+
+        // 3. ONLY record successful refresh
+        userHistory.push(Date.now());
+        userRefreshTimestamps.set(userId, userHistory);
+
+        const remaining = Math.max(0, REFRESH_RATE_LIMIT_MAX - userHistory.length);
+
+        return res.json({
+            success: true,
+            message: `Successfully refreshed OTT releases (${syncStats.totalFetched} scanned, ${syncStats.newlyAdded} new, ${syncStats.updated} updated). ${remaining} refresh${remaining === 1 ? '' : 'es'} remaining in this 15-min window.`,
+            stats: syncStats,
+            remainingRefreshes: remaining,
+        });
+    } catch (err: any) {
+        console.error("[NEW RELEASES REFRESH] Error:", err);
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.get("/api/new-releases/stats", requireAuth, async (_req, res) => {
+    try {
+        const totalRes = await db.select({ count: count() }).from(schema.ottReleases);
+        const total = Number(totalRes[0]?.count || 0);
+
+        const platforms = ["Netflix", "Amazon Prime Video", "Disney+ Hotstar", "Zee5", "Sony LIV", "JioCinema", "YouTube"];
+        const platformCounts: Record<string, number> = {};
+
+        for (const p of platforms) {
+            const pRes = await db.select({ count: count() }).from(schema.ottReleases).where(
+                sql`EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(${schema.ottReleases.providers}) AS elem
+                    WHERE LOWER(elem->>'name') LIKE ${`%${p.toLowerCase()}%`}
+                )`
+            );
+            platformCounts[p] = Number(pRes[0]?.count || 0);
+        }
+
+        const latestItem = await db.select({ releaseDate: schema.ottReleases.releaseDate, updatedAt: schema.ottReleases.updatedAt })
+            .from(schema.ottReleases)
+            .orderBy(desc(schema.ottReleases.updatedAt))
+            .limit(1);
+
+        return res.json({
+            total,
+            platformCounts,
+            lastRefreshed: latestItem[0]?.updatedAt || null,
+            latestReleaseDate: latestItem[0]?.releaseDate || null,
+        });
+    } catch (err: any) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
 // ─── SEARCH (Direct Studio & AI Workflow) ───
 
 app.post("/api/search", requireAuth, async (req: any, res) => {
@@ -301,19 +518,6 @@ app.post("/api/search", requireAuth, async (req: any, res) => {
             : cleanTitle;
 
         console.log(`[SEARCH] Query: "${query}"`);
-
-        // Jellyfin check
-        if (type === "movie") {
-            const jf = await checkMovieExists(cleanTitle, cleanYear);
-            if (jf.exists) {
-                return res.json({ searchId, status: "skipped", message: `"${cleanTitle}" already in Jellyfin`, results: [], mediaMetadata });
-            }
-        } else {
-            const jf = await checkSeriesExists(cleanTitle);
-            if (jf.exists) {
-                return res.json({ searchId, status: "skipped", message: `"${cleanTitle}" already in Jellyfin`, results: [], mediaMetadata });
-            }
-        }
 
         const bot = type === "movie" ? "ProSearchM11Bot" : "ProSearchY11Bot";
         const botClient = (await import("../../module/bot/bot.js")).default;
@@ -527,10 +731,19 @@ app.post("/api/search", requireAuth, async (req: any, res) => {
             uniqueSeasons = [...new Set(seriesEpisodes.map(e => e.season))].sort((a, b) => a - b);
         }
 
+        const formattedResults = (allPaged.length > 0 ? allPaged : results.map((r, i) => ({ globalIndex: i + 1, ...r, page: 1 }))).map((r, i) => ({
+            index: r.globalIndex || i + 1,
+            text: r.text,
+            sizeMB: r.sizeMB,
+            page: (r as any).page || 1,
+            isBest: i === bestIdx,
+            reason: i === bestIdx ? bestReason : ""
+        }));
+
         console.log(`[SEARCH] Found ${results.length} results, best: #${bestIdx + 1} (${bestReason}), episodes: ${seriesEpisodes.length}`);
         return res.json({
             searchId, status: "results", title: cleanTitle, year: cleanYear,
-            results, bestIdx, bestReason, seriesEpisodes, uniqueSeasons, mediaMetadata
+            results: formattedResults, bestIdx, bestReason, seriesEpisodes, uniqueSeasons, mediaMetadata
         });
 
     } catch (err: any) {
@@ -728,25 +941,32 @@ app.post("/api/select-all-episodes", requireAuth, async (req: any, res) => {
 // ─── DOWNLOADS API ───
 
 app.get("/api/downloads", requireAuth, async (req: any, res) => {
-    const page = Number(req.query.page) || 1;
-    const limit = Number(req.query.limit) || 20;
-    const offset = (page - 1) * limit;
-    const search = (req.query.search as string) || "";
+    try {
+        const page = Number(req.query.page) || 1;
+        const limit = Number(req.query.limit) || 20;
+        const offset = (page - 1) * limit;
+        const search = (req.query.search as string) || "";
 
-    const whereClause = search ? like(schema.downloads.title, `%${search}%`) : undefined;
+        // 1-hour completion filter: Hide completed items older than 1 hour, and hide soft-deleted items
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+        const baseCondition = sql`${schema.downloads.status} != 'deleted' AND (${schema.downloads.status} != 'completed' OR COALESCE(${schema.downloads.updatedAt}, ${schema.downloads.createdAt}) >= ${oneHourAgo})`;
 
-    const totalResult = whereClause
-        ? await db.select({ count: count() }).from(schema.downloads).where(whereClause)
-        : await db.select({ count: count() }).from(schema.downloads);
+        const whereClause = search
+            ? sql`${baseCondition} AND ${schema.downloads.title} ILIKE ${'%' + search + '%'}`
+            : baseCondition;
 
-    const items = whereClause
-        ? await db.select().from(schema.downloads).where(whereClause).orderBy(desc(schema.downloads.createdAt)).limit(limit).offset(offset)
-        : await db.select().from(schema.downloads).orderBy(desc(schema.downloads.createdAt)).limit(limit).offset(offset);
+        const totalResult = await db.select({ count: count() }).from(schema.downloads).where(whereClause);
 
-    res.json({
-        downloads: items,
-        pagination: { page, limit, total: Number(totalResult[0].count), pages: Math.ceil(Number(totalResult[0].count) / limit) },
-    });
+        const items = await db.select().from(schema.downloads).where(whereClause).orderBy(desc(schema.downloads.createdAt)).limit(limit).offset(offset);
+
+        res.json({
+            downloads: items,
+            pagination: { page, limit, total: Number(totalResult[0]?.count || 0), pages: Math.ceil(Number(totalResult[0]?.count || 0) / limit) },
+        });
+    } catch (err: any) {
+        console.error("[DOWNLOADS] Error fetching downloads:", err.message);
+        res.status(500).json({ error: err.message, downloads: [] });
+    }
 });
 
 // ─── DOWNLOAD ACTIONS ───
@@ -775,19 +995,19 @@ app.post("/api/downloads/:id/retry", requireAuth, async (req: any, res) => {
 app.delete("/api/downloads/:id", requireAuth, async (req: any, res) => {
     const { id } = req.params;
     downloadQueue.cancelJob(id);
-    await db.delete(schema.downloads).where(eq(schema.downloads.requestId, id));
+    await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(eq(schema.downloads.requestId, id));
     res.json({ success: true, message: "Download cancelled and removed" });
 });
 
 app.delete("/api/downloads/clear/failed", requireAuth, async (_req: any, res) => {
     downloadQueue.clearFailed();
-    await db.delete(schema.downloads).where(eq(schema.downloads.status, "failed"));
+    await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(eq(schema.downloads.status, "failed"));
     res.json({ success: true, message: "Failed downloads cleared" });
 });
 
 app.delete("/api/downloads/clear/all", requireAuth, async (_req: any, res) => {
     downloadQueue.clearFailed();
-    await db.delete(schema.downloads).where(sql`status IN ('completed', 'failed', 'cancelled')`);
+    await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(sql`${schema.downloads.status} IN ('completed', 'failed', 'cancelled', 'paused')`);
     res.json({ success: true, message: "Download history cleared" });
 });
 
@@ -795,7 +1015,7 @@ app.delete("/api/downloads/clear/all", requireAuth, async (_req: any, res) => {
 
 app.get("/api/requested-media", requireAuth, async (_req, res) => {
     try {
-        const items = await db.select().from(schema.requestedMedia).orderBy(desc(schema.requestedMedia.createdAt)).limit(100);
+        const items = await db.select().from(schema.requestedMedia).where(sql`${schema.requestedMedia.status} != 'deleted'`).orderBy(desc(schema.requestedMedia.createdAt)).limit(100);
         res.json({ items });
     } catch (err: any) {
         res.status(500).json({ error: err.message, items: [] });
@@ -819,20 +1039,21 @@ app.post("/api/requested-media", requireAuth, async (req: any, res) => {
     }
 });
 
-app.delete("/api/requested-media/:id", requireAuth, async (req: any, res) => {
+app.delete("/api/requested-media/clear", requireAuth, async (_req: any, res) => {
     try {
-        const id = Number(req.params.id);
-        await db.delete(schema.requestedMedia).where(eq(schema.requestedMedia.id, id));
-        res.json({ success: true, message: "Entry removed" });
+        await db.update(schema.requestedMedia).set({ status: "deleted", updatedAt: new Date() }).where(sql`${schema.requestedMedia.status} != 'deleted'`);
+        res.json({ success: true, message: "All requested media cleared" });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }
 });
 
-app.delete("/api/requested-media/clear", requireAuth, async (_req: any, res) => {
+app.delete("/api/requested-media/:id", requireAuth, async (req: any, res) => {
     try {
-        await db.delete(schema.requestedMedia);
-        res.json({ success: true, message: "All requested media cleared" });
+        const id = Number(req.params.id);
+        if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+        await db.update(schema.requestedMedia).set({ status: "deleted", updatedAt: new Date() }).where(eq(schema.requestedMedia.id, id));
+        res.json({ success: true, message: "Entry removed" });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }
@@ -847,8 +1068,12 @@ app.get("/api/jellyfin/stats", requireAuth, async (_req, res) => {
 });
 
 app.get("/api/jellyfin/movies", requireAuth, async (_req, res) => {
-    const items = await getAllMovies();
-    res.json({ items });
+    try {
+        const items = await getAllMovies();
+        res.json({ items: items || [] });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, items: [] });
+    }
 });
 
 app.get("/api/jellyfin/series", requireAuth, async (_req, res) => {
@@ -859,6 +1084,31 @@ app.get("/api/jellyfin/series", requireAuth, async (_req, res) => {
 app.get("/api/jellyfin/shows", requireAuth, async (_req, res) => {
     const items = await getAllSeries();
     res.json({ items });
+});
+
+app.get("/api/jellyfin/image/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const jellyfinUrl = process.env.JELLYFIN_URL || "";
+        const jellyfinToken = process.env.JELLYFIN_TOKEN || "";
+        if (!jellyfinUrl || !jellyfinToken) {
+            return res.status(404).send("Jellyfin not configured");
+        }
+        const imgUrl = `${jellyfinUrl}/Items/${id}/Images/Primary?maxWidth=400&quality=85`;
+        const response = await fetch(imgUrl, {
+            headers: { "X-Emby-Token": jellyfinToken }
+        });
+        if (!response.ok) {
+            return res.status(response.status).send("Image not found");
+        }
+        const contentType = response.headers.get("content-type") || "image/jpeg";
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Cache-Control", "public, max-age=86400");
+        const arrayBuffer = await response.arrayBuffer();
+        res.send(Buffer.from(arrayBuffer));
+    } catch (err: any) {
+        res.status(500).send(err.message);
+    }
 });
 
 app.get("/api/jellyfin/check", requireAuth, async (req, res) => {
@@ -927,6 +1177,7 @@ app.use("/api/inngest", inngestApp);
 
 const pageRoutes = [
     "/", "/ai",
+    "/releases", "/new-releases", "/ott",
     "/download", "/downloads", "/downlaod",
     "/request", "/requests", "/requested",
     "/jellyfin",
@@ -942,7 +1193,8 @@ app.get(pageRoutes, (req, res) => {
 
     const path = req.path.toLowerCase();
     let initialView = "chat";
-    if (path.startsWith("/download") || path.startsWith("/downlaod")) initialView = "downloads";
+    if (path.startsWith("/releases") || path.startsWith("/new-releases") || path.startsWith("/ott")) initialView = "releases";
+    else if (path.startsWith("/download") || path.startsWith("/downlaod")) initialView = "downloads";
     else if (path.startsWith("/request")) initialView = "requested";
     else if (path.startsWith("/jellyfin")) initialView = "jellyfin";
     else if (path.startsWith("/telegram") || path.startsWith("/bot")) initialView = "bot";
@@ -1099,6 +1351,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
 
     const titles: Record<string, string> = {
         chat: "AI Copilot Assistant",
+        releases: "New OTT Releases (Bollywood & South Indian)",
         downloads: "Download Station",
         requested: "Requested Media Hub",
         jellyfin: "Jellyfin Media Hub",
@@ -1146,6 +1399,15 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <a class="nav-link ${activeView === 'chat' ? 'active' : ''}" href="/" data-view="chat" onclick="navigateRoute(event, 'chat')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
                             <span>AI Copilot</span>
+                        </a>
+                        <a class="nav-link ${activeView === 'studio' ? 'active' : ''}" href="/studio" data-view="studio" onclick="navigateRoute(event, 'studio')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
+                            <span>Search & Download</span>
+                        </a>
+                        <a class="nav-link ${activeView === 'releases' ? 'active' : ''}" href="/releases" data-view="releases" onclick="navigateRoute(event, 'releases')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4v16"/><path d="M16 4v16"/><path d="M4 8h4"/><path d="M4 16h4"/><path d="M4 12h16"/><path d="M16 8h4"/><path d="M16 16h4"/></svg>
+                            <span>New Releases</span>
+                            <span class="nav-badge" style="background: rgba(229, 9, 20, 0.2); color: #ff5252; border: 1px solid rgba(229, 9, 20, 0.4);">OTT</span>
                         </a>
                         <a class="nav-link ${activeView === 'downloads' ? 'active' : ''}" href="/download" data-view="downloads" onclick="navigateRoute(event, 'downloads')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
@@ -1250,28 +1512,141 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                 </div>
             </section>
 
+            <!-- VIEW: NEW OTT RELEASES (BOLLYWOOD & SOUTH INDIAN) -->
+            <section class="view-container ${activeView === 'releases' ? 'active' : ''}" id="view-releases">
+                <div class="releases-container">
+                    <!-- Compact Header & Refresh Panel -->
+                    <div class="releases-compact-header">
+                        <div class="releases-header-left">
+                            <div style="display:flex; align-items:center; gap: 8px; flex-wrap: wrap;">
+                                <h1 style="font-size: 16.5px; font-weight: 700; color: #fff; margin: 0;">New OTT Releases</h1>
+                                <span class="chip quality" style="background: rgba(229, 9, 20, 0.18); color: #ff5252; border-color: rgba(229, 9, 20, 0.35); font-size: 10.5px; padding: 2px 7px;">OTT Radar</span>
+                                <span class="chip" id="releasesLastUpdatedTag" style="font-size: 11px; color: var(--text-muted); background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-subtle);">Last updated: Loading...</span>
+                            </div>
+                        </div>
+                        <div class="releases-header-right">
+                            <button class="btn-primary-action" id="btnManualRefreshReleases" onclick="triggerManualReleasesRefresh(90)" style="padding: 7px 16px; font-size: 12px;">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                <span>Refresh Releases</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Platform Metrics Bar -->
+                    <div class="metrics-row" style="margin-top: 10px;">
+                        <div class="metric-card ott-metric-card" onclick="filterReleasesByPlatform('all')" title="Filter: All Releases">
+                            <div class="metric-icon-box active">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4v16"/><path d="M16 4v16"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="statTotalReleases">0</div>
+                                <div class="metric-label">All Releases</div>
+                            </div>
+                        </div>
+                        <div class="metric-card ott-metric-card" onclick="filterReleasesByPlatform('netflix')" title="Filter: Netflix">
+                            <div class="metric-icon-box" style="background: rgba(229, 9, 20, 0.15); color: #E50914;">
+                                <span style="font-weight: 900; font-size: 15px;">N</span>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="statNetflixCount">0</div>
+                                <div class="metric-label">Netflix</div>
+                            </div>
+                        </div>
+                        <div class="metric-card ott-metric-card" onclick="filterReleasesByPlatform('amazon prime video')" title="Filter: Prime Video">
+                            <div class="metric-icon-box" style="background: rgba(0, 168, 225, 0.15); color: #00A8E1;">
+                                <span style="font-weight: 900; font-size: 15px;">P</span>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="statPrimeCount">0</div>
+                                <div class="metric-label">Prime Video</div>
+                            </div>
+                        </div>
+                        <div class="metric-card ott-metric-card" onclick="filterReleasesByPlatform('disney+ hotstar')" title="Filter: Hotstar">
+                            <div class="metric-icon-box" style="background: rgba(255, 204, 0, 0.15); color: #FFCC00;">
+                                <span style="font-weight: 900; font-size: 15px;">H</span>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="statHotstarCount">0</div>
+                                <div class="metric-label">Hotstar</div>
+                            </div>
+                        </div>
+                        <div class="metric-card ott-metric-card" onclick="filterReleasesByPlatform('zee5')" title="Filter: Zee5">
+                            <div class="metric-icon-box" style="background: rgba(162, 28, 175, 0.15); color: #c084fc;">
+                                <span style="font-weight: 900; font-size: 15px;">Z</span>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="statZee5Count">0</div>
+                                <div class="metric-label">Zee5</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Toolbar Filters (No Search Bar) -->
+                    <div class="releases-toolbar-card">
+                        <!-- OTT Platform Pills -->
+                        <div class="toolbar-section">
+                            <div class="filter-label">OTT PLATFORM:</div>
+                            <div class="pill-group" id="platformFilterPills">
+                                <button class="pill-btn active" data-platform="all" onclick="filterReleasesByPlatform('all')">All Platforms</button>
+                                <button class="pill-btn" data-platform="netflix" onclick="filterReleasesByPlatform('netflix')">Netflix</button>
+                                <button class="pill-btn" data-platform="amazon prime video" onclick="filterReleasesByPlatform('amazon prime video')">Prime Video</button>
+                                <button class="pill-btn" data-platform="disney+ hotstar" onclick="filterReleasesByPlatform('disney+ hotstar')">Hotstar</button>
+                                <button class="pill-btn" data-platform="zee5" onclick="filterReleasesByPlatform('zee5')">Zee5</button>
+                                <button class="pill-btn" data-platform="sony liv" onclick="filterReleasesByPlatform('sony liv')">Sony LIV</button>
+                                <button class="pill-btn" data-platform="jiocinema" onclick="filterReleasesByPlatform('jiocinema')">JioCinema</button>
+                                <button class="pill-btn" data-platform="youtube" onclick="filterReleasesByPlatform('youtube')">YouTube</button>
+                            </div>
+                        </div>
+
+                        <!-- Industry Pills & Sort Row -->
+                        <div class="toolbar-section" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: 1;">
+                                <div class="filter-label">INDUSTRY:</div>
+                                <div class="pill-group" id="industryFilterPills">
+                                    <button class="pill-btn active" data-industry="all" onclick="filterReleasesByIndustry('all')">All Industries</button>
+                                    <button class="pill-btn" data-industry="bollywood" onclick="filterReleasesByIndustry('bollywood')">Bollywood (Hindi)</button>
+                                    <button class="pill-btn" data-industry="tollywood" onclick="filterReleasesByIndustry('tollywood')">Tollywood (Telugu)</button>
+                                    <button class="pill-btn" data-industry="kollywood" onclick="filterReleasesByIndustry('kollywood')">Kollywood (Tamil)</button>
+                                    <button class="pill-btn" data-industry="mollywood" onclick="filterReleasesByIndustry('mollywood')">Mollywood (Malayalam)</button>
+                                    <button class="pill-btn" data-industry="sandalwood" onclick="filterReleasesByIndustry('sandalwood')">Sandalwood (Kannada)</button>
+                                    <button class="pill-btn" data-industry="bengali" onclick="filterReleasesByIndustry('bengali')">Bengali Cinema</button>
+                                </div>
+                            </div>
+                            <div class="sort-select-wrap" style="min-width: 170px;">
+                                <select id="releasesSortSelect" class="form-input" onchange="handleReleasesSortChange()" style="padding: 6px 12px; font-size: 12px;">
+                                    <option value="date_desc">Newest Release Date</option>
+                                    <option value="rating_desc">Highest TMDB Rating</option>
+                                    <option value="popularity_desc">Most Popular</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Cards Grid -->
+                    <div class="releases-grid" id="releasesGrid">
+                        <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted);">
+                            <div class="spinner" style="margin: 0 auto 12px;"></div>
+                            <div>Loading new OTT releases...</div>
+                        </div>
+                    </div>
+
+                    <!-- Pagination -->
+                    <div class="pagination-bar" id="releasesPaginationBar" style="display:none;"></div>
+                </div>
+            </section>
+
             <!-- VIEW 2: SEARCH & DISCOVER STUDIO -->
             <section class="view-container ${activeView === 'studio' ? 'active' : ''}" id="view-studio">
                 <div class="studio-wrap">
                     <div class="studio-header">
                         <h1>Search & Discover Studio</h1>
-                        <p>Direct search Telegram ProSearch Bots with instant quality matrix recommendations.</p>
+                        <p>Direct search Telegram ProSearch Bots with instant quality matrix recommendations for movies.</p>
                     </div>
 
                     <div class="studio-search-card">
-                        <div class="search-type-tabs">
-                            <button class="type-tab-btn active" id="studioTypeMovie" onclick="setStudioType('movie')">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
-                                Movie
-                            </button>
-                            <button class="type-tab-btn" id="studioTypeSeries" onclick="setStudioType('series')">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M3 7m0 2a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z"/><path d="M16 3l-4 4l-4 -4"/></svg>
-                                TV Series
-                            </button>
-                        </div>
                         <div class="search-input-group">
-                            <input type="text" id="studioSearchInput" class="form-input" placeholder="Title (e.g. Interstellar, Severance, Arcane)...">
-                            <input type="text" id="studioYearInput" class="form-input" placeholder="Year (e.g. 2024)">
+                            <input type="text" id="studioSearchInput" class="form-input" placeholder="Movie Title (e.g. Interstellar, Dune, Jawan, Animal)..." onkeydown="if(event.key==='Enter') performStudioSearch()">
+                            <input type="text" id="studioYearInput" class="form-input" placeholder="Year (e.g. 2024)" onkeydown="if(event.key==='Enter') performStudioSearch()">
                             <button class="btn-primary-action" id="btnStudioSearch" onclick="performStudioSearch()">
                                 <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
                                 Search Releases
@@ -1281,8 +1656,8 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
 
                     <div class="studio-results-area" id="studioResultsArea">
                         <div style="text-align:center; padding: 40px; color: var(--text-muted);">
-                            <div style="font-weight: 600; color: #fff; font-size: 14px;">Ready to Search</div>
-                            <div style="font-size: 12.5px; margin-top: 4px;">Enter a title above to discover release qualities, file sizes, and season packs.</div>
+                            <div style="font-weight: 600; color: #fff; font-size: 14px;">Ready to Search Movies</div>
+                            <div style="font-size: 12.5px; margin-top: 4px;">Enter a movie title above to discover release qualities, file sizes, and audio tracks.</div>
                         </div>
                     </div>
                 </div>
@@ -1347,7 +1722,6 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                                 <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Manage active and completed Telegram file downloads.</p>
                             </div>
                             <div style="display: flex; gap: 8px; align-items: center;">
-                                <input type="text" id="historySearchFilter" class="search-filter-input" placeholder="Filter downloads..." oninput="loadDownloadHistory(1)">
                                 <button class="btn-header" style="color: var(--accent-amber);" onclick="clearFailedDownloads()" title="Remove failed jobs">Clear Failed</button>
                                 <button class="btn-header" style="color: var(--text-muted);" onclick="clearAllDownloads()" title="Clear completed and cancelled">Clear All</button>
                             </div>
@@ -1380,7 +1754,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <div>
                             <span class="chip quality">Watchlist & Queue</span>
                             <h1 style="font-size: 20px; margin: 6px 0 2px;">Requested Media Hub</h1>
-                            <p style="color: var(--text-secondary); font-size: 12.5px;">All movies and TV series requested through AI Copilot and search queries.</p>
+                            <p style="color: var(--text-secondary); font-size: 12.5px;">All movies requested through AI Copilot and search queries.</p>
                         </div>
                         <div class="metric-icon-box active" style="width: 44px; height: 44px;">
                             <svg class="tabler-icon" style="width:24px;height:24px;" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M19 16h-12a2 2 0 0 0 -2 2"/><path d="M9 8h6"/></svg>
@@ -1389,8 +1763,9 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
 
                     <div class="history-card" style="margin-top: 16px;">
                         <div class="history-toolbar">
-                            <div style="display: flex; gap: 8px; align-items: center; flex: 1;">
-                                <input type="text" id="requestedSearchFilter" class="search-filter-input" placeholder="Search requested titles..." oninput="loadRequestedMedia()">
+                            <div>
+                                <h2 style="font-size: 15px;">Requested Media List</h2>
+                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">All tracked movie requests and status</p>
                             </div>
                             <div style="display: flex; gap: 8px; align-items: center;">
                                 <button class="btn-header" style="color: var(--accent-rose);" onclick="clearAllRequestedMedia()">Clear All Requests</button>
@@ -1424,7 +1799,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <div>
                             <span class="chip jellyfin">Media Server</span>
                             <h1 style="font-size: 20px; margin: 6px 0 2px;">Jellyfin Integration</h1>
-                            <p style="color: var(--text-secondary); font-size: 12.5px;">Direct library inspection prevents duplicate downloads.</p>
+                            <p style="color: var(--text-secondary); font-size: 12.5px;">Direct library inspection and collection browser.</p>
                         </div>
                         <div class="metric-icon-box completed" style="width: 44px; height: 44px;">
                             <svg class="tabler-icon" style="width:24px;height:24px;" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
@@ -1442,33 +1817,45 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                             </div>
                         </div>
                         <div class="metric-card">
-                            <div class="metric-icon-box waiting">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M3 7m0 2a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z"/></svg>
-                            </div>
-                            <div>
-                                <div class="metric-value tabular-nums" id="jfSeriesCount">--</div>
-                                <div class="metric-label">TV Series in Library</div>
-                            </div>
-                        </div>
-                        <div class="metric-card">
                             <div class="metric-icon-box completed">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2"/></svg>
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
                             </div>
                             <div>
-                                <div class="metric-value tabular-nums" id="jfTotalCount">--</div>
-                                <div class="metric-label">Total Library Items</div>
+                                <div class="metric-value tabular-nums" style="font-size: 16px; color: var(--accent-emerald);">Synchronized</div>
+                                <div class="metric-label">Jellyfin Media Server</div>
                             </div>
                         </div>
                     </div>
 
                     <div class="studio-search-card">
-                        <h3 style="font-size: 14px;">Library Duplicate Checker</h3>
-                        <p style="font-size: 12.5px; color: var(--text-secondary);">Test whether any title exists on your Jellyfin server before searching Telegram.</p>
+                        <h3 style="font-size: 14px;">Movie Duplicate Checker</h3>
+                        <p style="font-size: 12.5px; color: var(--text-secondary);">Test whether any movie exists in your Jellyfin movie collection before searching Telegram.</p>
                         <div style="display: flex; gap: 8px; margin-top: 8px;">
-                            <input type="text" id="jfCheckInput" class="form-input" placeholder="Title (e.g. Breaking Bad, Dune)..." style="flex: 1;">
+                            <input type="text" id="jfCheckInput" class="form-input" placeholder="Movie Title (e.g. Dune, Inception, Jawan)..." style="flex: 1;" onkeydown="if(event.key==='Enter') checkJellyfinItem()">
                             <button class="btn-primary-action" onclick="checkJellyfinItem()">Check Jellyfin</button>
                         </div>
                         <div id="jfCheckResultBox" style="display:none; margin-top: 10px; padding: 10px; background: var(--bg-input); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);"></div>
+                    </div>
+
+                    <!-- JELLYFIN MOVIE LIBRARY COLLECTION -->
+                    <div class="history-card" style="margin-top: 16px;">
+                        <div class="history-toolbar">
+                            <div>
+                                <h2 style="font-size: 15px;">Movies Collection</h2>
+                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Your indexed Jellyfin movie library</p>
+                            </div>
+                            <div>
+                                <button class="btn-header" onclick="loadJellyfinLibrary(true)" title="Refresh Movie Library" style="display: inline-flex; align-items: center; gap: 4px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                    Refresh
+                                </button>
+                            </div>
+                        </div>
+                        <div id="jfMoviesGrid" class="jf-movies-grid">
+                            <div style="text-align: center; color: var(--text-muted); padding: 40px; width: 100%; grid-column: 1 / -1;">
+                                Loading movie library...
+                            </div>
+                        </div>
                     </div>
                 </div>
             </section>

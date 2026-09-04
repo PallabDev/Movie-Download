@@ -608,3 +608,271 @@ export async function getSeasonEpisodesList(title: string, seasonNumber: number)
         episodes: Array.from({ length: count }, (_, i) => ({ episodeNumber: i + 1, name: `Episode ${i + 1}` })),
     };
 }
+
+// ─── INDIAN OTT RELEASES DISCOVERY (Bollywood & South Indian Cinema) ───
+
+export interface OTTProviderInfo {
+    id: number;
+    name: string;
+    logoUrl: string | null;
+    type: "flatrate" | "rent" | "buy" | "free" | "ads";
+}
+
+export interface IndianOTTReleaseItem {
+    tmdbId: number;
+    title: string;
+    originalTitle: string;
+    originalLanguage: string;
+    industry: string;
+    releaseDate: string;
+    year: string;
+    overview: string;
+    posterUrl: string | null;
+    backdropUrl: string | null;
+    rating: number;
+    voteCount: number;
+    popularity: number;
+    providers: OTTProviderInfo[];
+    jellyfinExists?: boolean;
+}
+
+export function mapLanguageToIndustry(lang: string): { industry: string; label: string } {
+    const lower = (lang || "").toLowerCase().trim();
+    switch (lower) {
+        case "hi":
+            return { industry: "Bollywood", label: "Hindi • Bollywood" };
+        case "ta":
+            return { industry: "Kollywood", label: "Tamil • Kollywood" };
+        case "te":
+            return { industry: "Tollywood", label: "Telugu • Tollywood" };
+        case "ml":
+            return { industry: "Mollywood", label: "Malayalam • Mollywood" };
+        case "kn":
+            return { industry: "Sandalwood", label: "Kannada • Sandalwood" };
+        case "bn":
+            return { industry: "Bengali", label: "Bengali Cinema" };
+        case "pa":
+            return { industry: "Pollywood", label: "Punjabi Cinema" };
+        case "mr":
+            return { industry: "Marathi", label: "Marathi Cinema" };
+        default:
+            return { industry: "Indian Cinema", label: (lang || "Unknown").toUpperCase() };
+    }
+}
+
+/**
+ * Fetch Watch Providers for India (IN) for a specific TMDB movie
+ */
+export async function getMovieWatchProviders(movieId: number): Promise<OTTProviderInfo[]> {
+    try {
+        const data = await tmdbFetch(`/movie/${movieId}/watch/providers`);
+        const inRegion = data?.results?.IN;
+        if (!inRegion) return [];
+
+        const providersList: OTTProviderInfo[] = [];
+        const seenIds = new Set<number>();
+
+        const addProviders = (list: any[], type: OTTProviderInfo["type"]) => {
+            if (!Array.isArray(list)) return;
+            for (const p of list) {
+                if (!seenIds.has(p.provider_id)) {
+                    seenIds.add(p.provider_id);
+                    providersList.push({
+                        id: p.provider_id,
+                        name: p.provider_name,
+                        logoUrl: getTMDBImageUrl(p.logo_path, "w300"),
+                        type,
+                    });
+                }
+            }
+        };
+
+        addProviders(inRegion.flatrate, "flatrate");
+        addProviders(inRegion.ads, "ads");
+        addProviders(inRegion.free, "free");
+        addProviders(inRegion.rent, "rent");
+        addProviders(inRegion.buy, "buy");
+
+        return providersList;
+    } catch (err: any) {
+        console.warn(`[TMDB] Watch providers lookup error for ${movieId}:`, err.message);
+        return [];
+    }
+}
+
+/**
+ * Discover newly released Indian movies on OTT platforms
+ * Target platforms: Netflix (8), Amazon Prime Video (119/9), Disney+ Hotstar (122/337), Zee5 (232), Sony LIV (237), JioCinema (220), YouTube (192)
+ */
+export async function discoverIndianOTTReleases(options: {
+    daysBack?: number;
+    page?: number;
+    language?: string;
+    sortBy?: string;
+} = {}): Promise<{
+    results: IndianOTTReleaseItem[];
+    totalResults: number;
+    totalPages: number;
+    page: number;
+}> {
+    const daysBack = options.daysBack !== undefined ? options.daysBack : 90;
+    const page = options.page || 1;
+    const sortBy = options.sortBy || "primary_release_date.desc";
+
+    const now = new Date();
+    const pastDate = new Date();
+    pastDate.setDate(now.getDate() - (daysBack > 0 ? daysBack : 1));
+
+    const fromDate = pastDate.toISOString().split("T")[0];
+    const toDate = now.toISOString().split("T")[0];
+
+    // Supported OTT providers in India
+    const ottProviders = "8|119|9|122|337|232|237|220|192";
+    // Indian languages: Hindi, Tamil, Telugu, Malayalam, Kannada, Bengali
+    const targetLanguages = options.language || "hi|ta|te|ml|kn|bn";
+
+    console.log(`[TMDB] Discovering Indian OTT releases (${fromDate} to ${toDate}, page: ${page}, langs: ${targetLanguages})`);
+
+    const data = await tmdbFetch("/discover/movie", {
+        watch_region: "IN",
+        with_watch_providers: ottProviders,
+        with_original_language: targetLanguages,
+        "primary_release_date.gte": fromDate,
+        "primary_release_date.lte": toDate,
+        sort_by: sortBy,
+        page,
+    });
+
+    if (!data || !Array.isArray(data.results)) {
+        return { results: [], totalResults: 0, totalPages: 0, page };
+    }
+
+    const items: IndianOTTReleaseItem[] = [];
+
+    // Process releases and resolve providers
+    for (const m of data.results) {
+        const { industry } = mapLanguageToIndustry(m.original_language);
+        const year = m.release_date ? m.release_date.slice(0, 4) : "";
+
+        // Fetch watch providers in parallel or sequentially
+        const providers = await getMovieWatchProviders(m.id);
+
+        items.push({
+            tmdbId: m.id,
+            title: m.title,
+            originalTitle: m.original_title || m.title,
+            originalLanguage: m.original_language || "hi",
+            industry,
+            releaseDate: m.release_date || "",
+            year,
+            overview: m.overview || "",
+            posterUrl: getTMDBImageUrl(m.poster_path, "w500"),
+            backdropUrl: getTMDBImageUrl(m.backdrop_path, "original"),
+            rating: m.vote_average || 0,
+            voteCount: m.vote_count || 0,
+            popularity: m.popularity || 0,
+            providers,
+        });
+    }
+
+    return {
+        results: items,
+        totalResults: data.total_results || items.length,
+        totalPages: data.total_pages || 1,
+        page: data.page || page,
+    };
+}
+
+/**
+ * Synchronize newly discovered OTT releases from TMDB into the PostgreSQL database
+ */
+export async function syncIndianOTTReleasesToDB(options: {
+    daysBack?: number;
+    pageLimit?: number;
+} = {}): Promise<{
+    totalFetched: number;
+    newlyAdded: number;
+    updated: number;
+}> {
+    const daysBack = options.daysBack !== undefined ? options.daysBack : 90;
+    const pageLimit = options.pageLimit || (daysBack >= 90 ? 6 : 3);
+
+    const { db, schema } = await import("../db/index.js");
+    const { checkMovieExists } = await import("../jellyfin/client.js");
+    const { eq } = await import("drizzle-orm");
+
+    let totalFetched = 0;
+    let newlyAdded = 0;
+    let updated = 0;
+
+    for (let p = 1; p <= pageLimit; p++) {
+        const discoverRes = await discoverIndianOTTReleases({ daysBack, page: p });
+        if (!discoverRes.results.length) break;
+
+        for (const item of discoverRes.results) {
+            totalFetched++;
+
+            // Check if already in Jellyfin
+            let jellyfinExists = false;
+            try {
+                const jf = await checkMovieExists(item.title, item.year);
+                jellyfinExists = jf.exists;
+            } catch {}
+
+            // Check if existing in DB
+            const existing = await db
+                .select({ id: schema.ottReleases.id })
+                .from(schema.ottReleases)
+                .where(eq(schema.ottReleases.tmdbId, item.tmdbId))
+                .limit(1);
+
+            if (existing.length > 0) {
+                await db
+                    .update(schema.ottReleases)
+                    .set({
+                        title: item.title,
+                        originalTitle: item.originalTitle,
+                        originalLanguage: item.originalLanguage,
+                        industry: item.industry,
+                        releaseDate: item.releaseDate,
+                        year: item.year,
+                        overview: item.overview,
+                        posterUrl: item.posterUrl,
+                        backdropUrl: item.backdropUrl,
+                        rating: item.rating,
+                        voteCount: item.voteCount,
+                        popularity: item.popularity,
+                        providers: item.providers,
+                        jellyfinExists,
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(schema.ottReleases.tmdbId, item.tmdbId));
+                updated++;
+            } else {
+                await db.insert(schema.ottReleases).values({
+                    tmdbId: item.tmdbId,
+                    title: item.title,
+                    originalTitle: item.originalTitle,
+                    originalLanguage: item.originalLanguage,
+                    industry: item.industry,
+                    releaseDate: item.releaseDate,
+                    year: item.year,
+                    overview: item.overview,
+                    posterUrl: item.posterUrl,
+                    backdropUrl: item.backdropUrl,
+                    rating: item.rating,
+                    voteCount: item.voteCount,
+                    popularity: item.popularity,
+                    providers: item.providers,
+                    jellyfinExists,
+                });
+                newlyAdded++;
+            }
+        }
+
+        if (p >= discoverRes.totalPages) break;
+    }
+
+    console.log(`[TMDB SYNC] OTT sync completed: ${totalFetched} processed, ${newlyAdded} added, ${updated} updated`);
+    return { totalFetched, newlyAdded, updated };
+}

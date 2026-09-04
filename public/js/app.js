@@ -65,6 +65,37 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
+function getLanguageTag(text) {
+    if (!text) return null;
+    const lower = text.toLowerCase();
+    if (/\b(hindi|hin|hindi-dubbed|dubbed\s*in\s*hindi|hindi\s*dub|hindi\s*clean|clean\s*hindi|org\s*hindi|hindi\s*org|dd5\.1\s*hindi|hq\s*hindi)\b/i.test(lower) ||
+        /\[(?:hin|hindi)[-+_\s/][^\]]+\]/i.test(lower) ||
+        /\[[^\]]+[-+_\s/](?:hin|hindi)\]/i.test(lower) ||
+        /\b(hin-eng|eng-hin|hin-tam|tam-hin|hin-tel|tel-hin|hin-kan|kan-hin)\b/i.test(lower)) {
+        return { type: 'lang-hindi', label: '🇮🇳 HINDI' };
+    }
+    if (/\b(bengali|bangla|ben|beng)\b/i.test(lower) || /\[(?:ben|bengali|bangla)[-+_\s/][^\]]+\]/i.test(lower) || /\b(ben-eng|eng-ben|hin-ben|ben-hin)\b/i.test(lower)) {
+        return { type: 'lang-bengali', label: '🇧🇩 BENGALI' };
+    }
+    if (/\b(dual|dual-audio|dual\s*audio|multi|multi-audio|multi\s*audio|tri-audio)\b/i.test(lower) || /\[(?:dual|multi)[^\]]*\]/i.test(lower)) {
+        return { type: 'lang-dual', label: '🌐 DUAL AUDIO' };
+    }
+    if (/\b(malayalam|malay|mal)\b/i.test(lower)) return { type: 'lang-other', label: 'MALAYALAM' };
+    if (/\b(telugu|tel)\b/i.test(lower)) return { type: 'lang-other', label: 'TELUGU' };
+    if (/\b(tamil|tam)\b/i.test(lower)) return { type: 'lang-other', label: 'TAMIL' };
+    if (/\b(kannada|kan)\b/i.test(lower)) return { type: 'lang-other', label: 'KANNADA' };
+    if (/\b(punjabi|panjabi)\b/i.test(lower)) return { type: 'lang-other', label: 'PUNJABI' };
+    if (/\b(marathi|mar)\b/i.test(lower)) return { type: 'lang-other', label: 'MARATHI' };
+    if (/\b(korean|kor)\b/i.test(lower)) return { type: 'lang-other', label: 'KOREAN' };
+    if (/\b(japanese|jap)\b/i.test(lower)) return { type: 'lang-other', label: 'JAPANESE' };
+    if (/\b(chinese|chi)\b/i.test(lower)) return { type: 'lang-other', label: 'CHINESE' };
+    if (/\b(spanish|spa)\b/i.test(lower)) return { type: 'lang-other', label: 'SPANISH' };
+    if (/\b(french|fre)\b/i.test(lower)) return { type: 'lang-other', label: 'FRENCH' };
+    if (/\b(russian|rus)\b/i.test(lower)) return { type: 'lang-other', label: 'RUSSIAN' };
+    if (/\b(english|eng)\b/i.test(lower)) return { type: 'lang-eng', label: 'ENGLISH' };
+    return null;
+}
+
 // ==========================================================================
 // BEAUTIFUL MODAL & CONFIRMATION DIALOGS
 // ==========================================================================
@@ -152,6 +183,7 @@ function showAlertModal({
 // ==========================================================================
 const VIEW_ROUTES = {
     chat: '/',
+    releases: '/releases',
     downloads: '/download',
     requested: '/request',
     jellyfin: '/jellyfin',
@@ -162,6 +194,7 @@ const VIEW_ROUTES = {
 
 const VIEW_TITLES = {
     chat: 'AI Copilot Assistant',
+    releases: 'New OTT Releases (Bollywood & South Indian)',
     downloads: 'Download Station',
     requested: 'Requested Media Hub',
     jellyfin: 'Jellyfin Media Hub',
@@ -172,6 +205,7 @@ const VIEW_TITLES = {
 
 function getViewForPath(pathname) {
     const p = (pathname || window.location.pathname || '/').toLowerCase();
+    if (p.startsWith('/releases') || p.startsWith('/new-releases') || p.startsWith('/ott')) return 'releases';
     if (p.startsWith('/download') || p.startsWith('/downlaod')) return 'downloads';
     if (p.startsWith('/request')) return 'requested';
     if (p.startsWith('/jellyfin')) return 'jellyfin';
@@ -205,9 +239,16 @@ function switchView(viewName, updateHistory = true) {
         }
     }
 
+    if (viewName === 'releases') {
+        syncReleasesStateFromUrl();
+        loadNewReleases(releasesState.page, false);
+    }
     if (viewName === 'downloads') loadDownloadHistory();
     if (viewName === 'requested') loadRequestedMedia();
-    if (viewName === 'jellyfin') loadJellyfinStats();
+    if (viewName === 'jellyfin') {
+        loadJellyfinStats();
+        loadJellyfinLibrary();
+    }
     if (viewName === 'admin') loadAdminUsers();
     if (viewName === 'bot') checkBotStatus();
 
@@ -296,7 +337,7 @@ function handleWebSocketMessage(msg) {
         });
         showToast(`Started download: ${msg.title}`, 'info');
         renderActiveDownloads();
-        addOrUpdateChatProgress(msg.jobId, msg.title, 0, 'downloading', 'Starting...');
+        addChatDownloadInitiated(msg.jobId, msg.title);
         updateDownloadBadge();
     } else if (msg.type === 'download_progress') {
         const existing = state.activeDownloads.get(msg.jobId) || { jobId: msg.jobId, title: msg.title };
@@ -311,7 +352,6 @@ function handleWebSocketMessage(msg) {
         };
         state.activeDownloads.set(msg.jobId, updated);
         renderActiveDownloads();
-        addOrUpdateChatProgress(msg.jobId, msg.title, msg.percent, 'downloading', `${msg.speed} · ETA ${msg.eta}`);
     } else if (msg.type === 'download_complete') {
         const item = state.activeDownloads.get(msg.jobId);
         if (item) {
@@ -321,7 +361,7 @@ function handleWebSocketMessage(msg) {
         }
         showToast(msg.success ? `Downloaded: ${msg.title}` : `Download failed: ${msg.title}`, msg.success ? 'success' : 'error');
         renderActiveDownloads();
-        completeChatProgress(msg.jobId, msg.title, msg.success, msg.error);
+        completeChatDownload(msg.jobId, msg.title, msg.success, msg.error);
         loadDownloadHistory();
         setTimeout(() => {
             state.activeDownloads.delete(msg.jobId);
@@ -477,37 +517,6 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
         `;
     }
 
-function getLanguageTag(text) {
-    if (!text) return null;
-    const lower = text.toLowerCase();
-    if (/\b(hindi|hin|hindi-dubbed|dubbed\s*in\s*hindi|hindi\s*dub|hindi\s*clean|clean\s*hindi|org\s*hindi|hindi\s*org|dd5\.1\s*hindi|hq\s*hindi)\b/i.test(lower) ||
-        /\[(?:hin|hindi)[-+_\s/][^\]]+\]/i.test(lower) ||
-        /\[[^\]]+[-+_\s/](?:hin|hindi)\]/i.test(lower) ||
-        /\b(hin-eng|eng-hin|hin-tam|tam-hin|hin-tel|tel-hin|hin-kan|kan-hin)\b/i.test(lower)) {
-        return { type: 'lang-hindi', label: '🇮🇳 HINDI' };
-    }
-    if (/\b(bengali|bangla|ben|beng)\b/i.test(lower) || /\[(?:ben|bengali|bangla)[-+_\s/][^\]]+\]/i.test(lower) || /\b(ben-eng|eng-ben|hin-ben|ben-hin)\b/i.test(lower)) {
-        return { type: 'lang-bengali', label: '🇧🇩 BENGALI' };
-    }
-    if (/\b(dual|dual-audio|dual\s*audio|multi|multi-audio|multi\s*audio|tri-audio)\b/i.test(lower) || /\[(?:dual|multi)[^\]]*\]/i.test(lower)) {
-        return { type: 'lang-dual', label: '🌐 DUAL AUDIO' };
-    }
-    if (/\b(malayalam|malay|mal)\b/i.test(lower)) return { type: 'lang-other', label: 'MALAYALAM' };
-    if (/\b(telugu|tel)\b/i.test(lower)) return { type: 'lang-other', label: 'TELUGU' };
-    if (/\b(tamil|tam)\b/i.test(lower)) return { type: 'lang-other', label: 'TAMIL' };
-    if (/\b(kannada|kan)\b/i.test(lower)) return { type: 'lang-other', label: 'KANNADA' };
-    if (/\b(punjabi|panjabi)\b/i.test(lower)) return { type: 'lang-other', label: 'PUNJABI' };
-    if (/\b(marathi|mar)\b/i.test(lower)) return { type: 'lang-other', label: 'MARATHI' };
-    if (/\b(korean|kor)\b/i.test(lower)) return { type: 'lang-other', label: 'KOREAN' };
-    if (/\b(japanese|jap)\b/i.test(lower)) return { type: 'lang-other', label: 'JAPANESE' };
-    if (/\b(chinese|chi)\b/i.test(lower)) return { type: 'lang-other', label: 'CHINESE' };
-    if (/\b(spanish|spa)\b/i.test(lower)) return { type: 'lang-other', label: 'SPANISH' };
-    if (/\b(french|fre)\b/i.test(lower)) return { type: 'lang-other', label: 'FRENCH' };
-    if (/\b(russian|rus)\b/i.test(lower)) return { type: 'lang-other', label: 'RUSSIAN' };
-    if (/\b(english|eng)\b/i.test(lower)) return { type: 'lang-eng', label: 'ENGLISH' };
-    return null;
-}
-
     let searchResultsHtml = '';
     if (meta.searchResults && Array.isArray(meta.searchResults.results) && meta.searchResults.results.length > 0) {
         const results = meta.searchResults.results;
@@ -598,53 +607,61 @@ function removeTypingIndicator() {
     document.getElementById('chatTypingIndicator')?.remove();
 }
 
-function addOrUpdateChatProgress(jobId, title, percent, status, speedInfo) {
+function addChatDownloadInitiated(jobId, title) {
     const chatBox = document.getElementById('chatMessagesBox');
     if (!chatBox) return;
 
-    let el = document.getElementById(`chat-prog-${jobId}`);
+    let el = document.getElementById(`chat-dl-${jobId}`);
     const isAtBottom = chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight < 80;
 
     if (!el) {
         el = document.createElement('div');
-        el.id = `chat-prog-${jobId}`;
+        el.id = `chat-dl-${jobId}`;
         el.className = 'message-row assistant';
         chatBox.appendChild(el);
     }
 
     el.innerHTML = `
-        <div class="msg-avatar">
-            ${ICONS.download}
-        </div>
-        <div class="msg-bubble" style="width: 100%; max-width: 400px;">
-            <div style="font-weight: 600; font-size: 12.5px; color: #fff; margin-bottom: 6px;">${escapeHtml(title)}</div>
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <div class="lpc-linear-progress" style="flex: 1;">
-                    <div class="lpc-linear-bar" style="width: ${percent || 0}%;"></div>
-                </div>
-                <span class="tabular-nums" style="font-size: 11px; font-weight: 600; color: var(--accent-blue);">${percent || 0}%</span>
+        <div class="msg-avatar">${ICONS.download}</div>
+        <div class="msg-bubble chat-dl-bubble" style="max-width: 480px; width: 100%;">
+            <div style="font-weight: 600; font-size: 13px; color: #fff; margin-bottom: 3px;">
+                🚀 Download Queued: ${escapeHtml(title)}
             </div>
-            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px; display: flex; justify-content: space-between;">
-                <span>${status === 'completed' ? 'Finished' : 'Downloading'}</span>
-                <span>${escapeHtml(speedInfo || '')}</span>
+            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 10px;">
+                File is downloading in the background. Check live speed, progress, and logs in the Download Station.
             </div>
+            <a href="/download" class="btn-chat-station-link" onclick="navigateRoute(event, 'downloads')">
+                <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                <span>Go to Download Station ➔</span>
+            </a>
         </div>
     `;
 
     if (isAtBottom) chatBox.scrollTop = chatBox.scrollHeight;
 }
 
-function completeChatProgress(jobId, title, success, error) {
-    const el = document.getElementById(`chat-prog-${jobId}`);
+function completeChatDownload(jobId, title, success, error) {
+    const el = document.getElementById(`chat-dl-${jobId}`);
     if (!el) return;
     el.innerHTML = `
         <div class="msg-avatar">${success ? ICONS.success : ICONS.error}</div>
-        <div class="msg-bubble">
-            <div style="font-weight: 600; font-size: 12.5px; color: ${success ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">
-                ${success ? 'Download Complete' : 'Download Failed'}
+        <div class="msg-bubble chat-dl-bubble" style="max-width: 480px; width: 100%;">
+            <div style="font-weight: 600; font-size: 13px; color: ${success ? 'var(--accent-emerald)' : 'var(--accent-rose)'}; margin-bottom: 3px;">
+                ${success ? '✅ Download Finished & Ready' : '❌ Download Failed'}
             </div>
-            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">${escapeHtml(title)}</div>
-            ${error ? `<div style="font-size: 11px; color: var(--accent-rose); margin-top: 2px;">${escapeHtml(error)}</div>` : ''}
+            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 10px;">${escapeHtml(title)}</div>
+            ${error ? `<div style="font-size: 11.5px; color: var(--accent-rose); margin-bottom: 10px;">${escapeHtml(error)}</div>` : ''}
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <a href="/download" class="btn-chat-station-link" onclick="navigateRoute(event, 'downloads')">
+                    <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                    <span>View Download Station</span>
+                </a>
+                ${success ? `
+                <a href="/jellyfin" class="btn-chat-station-link" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.4);" onclick="navigateRoute(event, 'jellyfin')">
+                    <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                    <span>Jellyfin Library</span>
+                </a>` : ''}
+            </div>
         </div>
     `;
 }
@@ -792,14 +809,8 @@ function loadChatSessionPrompt(index) {
 // ==========================================================================
 let studioSearchType = 'movie';
 
-function setStudioType(type) {
-    studioSearchType = type;
-    document.getElementById('studioTypeMovie')?.classList.toggle('active', type === 'movie');
-    document.getElementById('studioTypeSeries')?.classList.toggle('active', type === 'series');
-    const yearInput = document.getElementById('studioYearInput');
-    if (yearInput) {
-        yearInput.placeholder = type === 'movie' ? 'Year (e.g. 2024)' : 'Optional Year';
-    }
+function setStudioType(type = 'movie') {
+    studioSearchType = 'movie';
 }
 
 async function performStudioSearch() {
@@ -812,7 +823,7 @@ async function performStudioSearch() {
     const title = queryInput.value.trim();
     const year = yearInput ? yearInput.value.trim() : '';
     if (!title) {
-        showToast('Please enter a title', 'error');
+        showToast('Please enter a movie title', 'error');
         return;
     }
 
@@ -822,7 +833,7 @@ async function performStudioSearch() {
             <div class="typing-dot" style="display: inline-block; width: 6px; height: 6px; margin: 0 3px;"></div>
             <div class="typing-dot" style="display: inline-block; width: 6px; height: 6px; margin: 0 3px;"></div>
             <div class="typing-dot" style="display: inline-block; width: 6px; height: 6px; margin: 0 3px;"></div>
-            <div style="margin-top: 10px; font-size: 12.5px;">Searching releases...</div>
+            <div style="margin-top: 10px; font-size: 12.5px;">Searching movie releases...</div>
         </div>
     `;
 
@@ -831,7 +842,7 @@ async function performStudioSearch() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ title, type: studioSearchType, year })
+            body: JSON.stringify({ title, type: 'movie', year })
         });
 
         const data = await response.json();
@@ -847,7 +858,7 @@ async function performStudioSearch() {
                         <svg class="tabler-icon text-emerald" style="width:22px;height:22px;" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
                         <div>
                             <div class="card-title">${escapeHtml(data.message)}</div>
-                            <div class="chip jellyfin" style="margin-top: 4px;">Already in Jellyfin Library</div>
+                            <div class="chip jellyfin" style="margin-top: 4px;">Already in Jellyfin Movie Library</div>
                         </div>
                     </div>
                 </div>
@@ -858,7 +869,7 @@ async function performStudioSearch() {
         if (data.status === 'no_results' || !data.results || data.results.length === 0) {
             resultsArea.innerHTML = `
                 <div style="text-align: center; padding: 30px; color: var(--text-muted);">
-                    <div style="font-size: 13px; font-weight: 600; color: #fff;">No results found</div>
+                    <div style="font-size: 13px; font-weight: 600; color: #fff;">No movie releases found</div>
                     <div style="font-size: 12px; margin-top: 2px;">Try adjusting the title or query.</div>
                 </div>
             `;
@@ -866,12 +877,7 @@ async function performStudioSearch() {
         }
 
         state.searchResultSession = data.searchId;
-
-        if (studioSearchType === 'movie') {
-            renderMovieStudioResults(data, resultsArea);
-        } else {
-            renderSeriesStudioResults(data, resultsArea);
-        }
+        renderMovieStudioResults(data, resultsArea);
     } catch (err) {
         resultsArea.innerHTML = `<div class="auth-error-alert" style="display: block;">Search error: ${escapeHtml(err.message)}</div>`;
     } finally {
@@ -880,38 +886,54 @@ async function performStudioSearch() {
 }
 
 function renderMovieStudioResults(data, container) {
-    container.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px;">
-            <h3 style="font-size: 15px;">Releases for "${escapeHtml(data.title)}"</h3>
-            <span class="chip best">${data.results.length} found</span>
-        </div>
-        <div class="results-grid">
-            ${data.results.map((res, idx) => {
-                const isBest = idx === data.bestIdx;
-                const sizeLabel = res.sizeMB > 1024 ? (res.sizeMB / 1024).toFixed(1) + ' GB' : res.sizeMB.toFixed(0) + ' MB';
-                let quality = '720p';
-                if (res.text.includes('1080p')) quality = '1080p';
-                else if (res.text.includes('2160p') || res.text.includes('4K')) quality = '4K';
-                else if (res.text.includes('480p')) quality = '480p';
-                const langTag = getLanguageTag(res.text);
+    const results = data.results || [];
+    const total = results.length;
+    const movieTitle = data.title || '';
+    const movieYear = data.year || '';
+    const bestIdx = data.bestIdx;
 
-                return `
-                    <div class="media-result-card ${isBest ? 'best-pick' : ''}">
-                        <div class="card-title">${escapeHtml(res.text)}</div>
-                        <div class="card-badge-row">
-                            ${langTag ? `<span class="chip ${langTag.type}">${langTag.label}</span>` : ''}
-                            <span class="chip quality">${quality}</span>
-                            <span class="chip size">${sizeLabel}</span>
-                            ${isBest ? `<span class="chip best">Recommended</span>` : ''}
+    container.innerHTML = `
+        <div class="chat-search-results-panel studio-panel-wrap">
+            <div class="chat-search-header">
+                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 8px;">
+                    <span>🎬 <strong>${escapeHtml(movieTitle)}</strong> ${movieYear ? `(${escapeHtml(movieYear)})` : ''} · <strong>${total} Available Releases</strong></span>
+                    <span class="chip best">${total} Found</span>
+                </div>
+                <span class="chat-search-hint">Click any release below to download directly to your streaming server:</span>
+            </div>
+            <div class="chat-search-list">
+                ${results.map((r, i) => {
+                    const optIndex = r.index || (i + 1);
+                    const isRecommended = r.isBest || optIndex === (bestIdx + 1) || optIndex === bestIdx || (i === bestIdx);
+                    const sizeStr = r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${Number(r.sizeMB).toFixed(0)} MB`;
+                    const res = (r.text.match(/\\b(480p|720p|1080p|2160p|4k|400p)\\b/i) || [])[1] || 'HD';
+                    const codec = (r.text.match(/\\b(hevc|x265|h265|x264|h264|avc)\\b/i) || [])[1] || '';
+                    const langTag = getLanguageTag(r.text);
+
+                    return `
+                        <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="triggerStudioMovieDownload('${escapeHtml(r.text).replace(/'/g, "\\'")}')">
+                            <div class="chat-release-left">
+                                <span class="chat-release-index">#${optIndex}</span>
+                                <div class="chat-release-meta">
+                                    <div class="chat-release-title" title="${escapeHtml(r.text)}">${escapeHtml(r.text)}</div>
+                                    <div class="chat-release-tags">
+                                        ${langTag ? `<span class="badge ${langTag.type}">${langTag.label}</span>` : ''}
+                                        <span class="badge res">${escapeHtml(res.toUpperCase())}</span>
+                                        <span class="badge size">${sizeStr}</span>
+                                        ${codec ? `<span class="badge codec">${escapeHtml(codec.toUpperCase())}</span>` : ''}
+                                        ${isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                        <span class="badge page">Page ${r.page || 1}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); triggerStudioMovieDownload('${escapeHtml(r.text).replace(/'/g, "\\'")}')">
+                                <svg class="tabler-icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                Download #${optIndex}
+                            </button>
                         </div>
-                        ${isBest && data.bestReason ? `<div class="card-reason">${escapeHtml(data.bestReason)}</div>` : ''}
-                        <button class="btn-primary-action" style="width: 100%; padding: 7px 12px; font-size: 12px;" onclick="triggerStudioMovieDownload('${escapeHtml(res.text)}')">
-                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                            Download
-                        </button>
-                    </div>
-                `;
-            }).join('')}
+                    `;
+                }).join('')}
+            </div>
         </div>
     `;
 }
@@ -1047,11 +1069,10 @@ async function triggerStudioBulkSeasonDownload(season) {
 // ==========================================================================
 async function loadDownloadHistory(page = 1) {
     const tableBody = document.getElementById('downloadHistoryTableBody');
-    const searchFilter = document.getElementById('historySearchFilter')?.value || '';
     if (!tableBody) return;
 
     try {
-        const res = await fetch(`/api/downloads?page=${page}&limit=20&search=${encodeURIComponent(searchFilter)}`, {
+        const res = await fetch(`/api/downloads?page=${page}&limit=20`, {
             credentials: 'include'
         });
         const data = await res.json();
@@ -1251,17 +1272,12 @@ async function clearAllDownloads() {
 // ==========================================================================
 async function loadRequestedMedia() {
     const tableBody = document.getElementById('requestedMediaTableBody');
-    const searchFilter = (document.getElementById('requestedSearchFilter')?.value || '').toLowerCase().trim();
     if (!tableBody) return;
 
     try {
         const res = await fetch('/api/requested-media', { credentials: 'include' });
         const data = await res.json();
-        let items = data.items || [];
-
-        if (searchFilter) {
-            items = items.filter(i => (i.title && i.title.toLowerCase().includes(searchFilter)) || (i.year && i.year.includes(searchFilter)) || (i.type && i.type.toLowerCase().includes(searchFilter)));
-        }
+        const items = data.items || [];
 
         if (items.length === 0) {
             tableBody.innerHTML = `
@@ -1372,10 +1388,78 @@ async function loadJellyfinStats() {
     try {
         const res = await fetch('/api/jellyfin/stats', { credentials: 'include' });
         const data = await res.json();
-        document.getElementById('jfMoviesCount').textContent = data.movies ?? '--';
-        document.getElementById('jfSeriesCount').textContent = data.series ?? '--';
-        document.getElementById('jfTotalCount').textContent = ((data.movies || 0) + (data.series || 0)) || '--';
+        const moviesEl = document.getElementById('jfMoviesCount');
+        if (moviesEl) moviesEl.textContent = data.movies ?? '--';
     } catch {}
+}
+
+async function loadJellyfinLibrary(force = false) {
+    const grid = document.getElementById('jfMoviesGrid');
+    if (!grid) return;
+
+    if (force) {
+        grid.innerHTML = `
+            <div style="text-align: center; color: var(--text-muted); padding: 40px; width: 100%; grid-column: 1 / -1;">
+                <div class="spinner" style="margin: 0 auto 12px; width: 28px; height: 28px; border: 2px solid var(--border-medium); border-top-color: var(--accent-cyan); border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+                Refreshing Jellyfin Movie Library...
+            </div>
+        `;
+    }
+
+    try {
+        const res = await fetch('/api/jellyfin/movies', { credentials: 'include' });
+        const data = await res.json();
+        const movies = data.items || [];
+
+        if (movies.length === 0) {
+            grid.innerHTML = `
+                <div style="text-align: center; color: var(--text-muted); padding: 48px 20px; width: 100%; grid-column: 1 / -1;">
+                    <div style="width: 52px; height: 52px; border-radius: 50%; background: var(--bg-surface-elevated); border: 1px solid var(--border-medium); display: flex; align-items: center; justify-content: center; color: var(--accent-cyan); margin: 0 auto 12px;">
+                        <svg class="tabler-icon" style="width:26px;height:26px;" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                    </div>
+                    <div style="font-size: 15px; font-weight: 600; color: #fff;">No Movies Found</div>
+                    <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 4px;">Your Jellyfin server reports 0 movies or is still indexing.</div>
+                </div>
+            `;
+            return;
+        }
+
+        grid.innerHTML = movies.map(movie => {
+            const year = movie.ProductionYear || movie.Year || (movie.PremiereDate ? new Date(movie.PremiereDate).getFullYear() : '');
+            const rating = movie.CommunityRating ? Number(movie.CommunityRating).toFixed(1) : null;
+            const posterUrl = `/api/jellyfin/image/${movie.Id}`;
+
+            return `
+                <div class="jf-movie-card" title="${escapeHtml(movie.Name)}${year ? ` (${year})` : ''}">
+                    <div class="jf-movie-poster-wrap">
+                        <img class="jf-movie-poster" 
+                             src="${posterUrl}" 
+                             alt="${escapeHtml(movie.Name)}" 
+                             loading="lazy" 
+                             onerror="this.style.display='none'; if (this.nextElementSibling) this.nextElementSibling.style.display='flex';" />
+                        <div class="jf-movie-poster-fallback" style="display: none;">
+                            <svg class="tabler-icon" style="width:28px;height:28px;" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
+                            <span style="font-size: 11px; font-weight: 600; line-height: 1.3;">${escapeHtml(movie.Name)}</span>
+                        </div>
+                        ${rating ? `<div class="jf-movie-rating-badge">★ ${rating}</div>` : ''}
+                    </div>
+                    <div class="jf-movie-info">
+                        <div class="jf-movie-title">${escapeHtml(movie.Name)}</div>
+                        <div class="jf-movie-meta">
+                            <span>${year || 'Movie'}</span>
+                            <span class="chip quality" style="font-size: 10px; padding: 1px 6px;">Library</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (err) {
+        grid.innerHTML = `
+            <div style="text-align: center; color: var(--accent-rose); padding: 40px; width: 100%; grid-column: 1 / -1;">
+                Failed to load Jellyfin movies library: ${escapeHtml(err.message)}
+            </div>
+        `;
+    }
 }
 
 async function checkJellyfinItem() {
@@ -1387,23 +1471,23 @@ async function checkJellyfinItem() {
     if (!title) return;
 
     resultBox.style.display = 'block';
-    resultBox.innerHTML = '<span class="text-muted">Checking library...</span>';
+    resultBox.innerHTML = '<span class="text-muted">Checking movie library...</span>';
 
     try {
-        const res = await fetch(`/api/jellyfin/check?title=${encodeURIComponent(title)}`, { credentials: 'include' });
+        const res = await fetch(`/api/jellyfin/check?type=movie&title=${encodeURIComponent(title)}`, { credentials: 'include' });
         const data = await res.json();
         if (data.exists) {
             resultBox.innerHTML = `
                 <div style="color: var(--accent-emerald); font-weight: 600; display: flex; align-items: center; gap: 6px;">
                     <svg class="tabler-icon text-emerald" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
-                    "${escapeHtml(title)}" is in your Jellyfin Library.
+                    "${escapeHtml(title)}" is in your Jellyfin Movie Library.
                 </div>
             `;
         } else {
             resultBox.innerHTML = `
                 <div style="color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
                     <svg class="tabler-icon text-blue" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12.01" y2="8"/><polyline points="11 12 12 12 12 16 13 16"/></svg>
-                    "${escapeHtml(title)}" is not in Jellyfin.
+                    "${escapeHtml(title)}" is not in your Jellyfin Movie Library.
                 </div>
             `;
         }
@@ -1682,6 +1766,483 @@ async function deleteAdminUser(id) {
         if (data.success) {
             showToast('User deleted', 'success');
             loadAdminUsers();
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// ==========================================================================
+// NEW INDIAN OTT RELEASES MODULE (BOLLYWOOD & SOUTH INDIAN CINEMA)
+// ==========================================================================
+const releasesState = {
+    items: [],
+    page: 1,
+    totalPages: 1,
+    total: 0,
+    providerFilter: 'all',
+    industryFilter: 'all',
+    searchQuery: '',
+    sortBy: 'date_desc',
+    loading: false,
+    refreshing: false,
+    searchDebounce: null,
+};
+
+// Platform styling and brand identity map
+const OTT_PLATFORMS = {
+    netflix: { name: 'Netflix', color: '#E50914', bg: 'rgba(229, 9, 20, 0.15)', border: 'rgba(229, 9, 20, 0.4)' },
+    'amazon prime video': { name: 'Prime Video', color: '#00A8E1', bg: 'rgba(0, 168, 225, 0.15)', border: 'rgba(0, 168, 225, 0.4)' },
+    'amazon prime': { name: 'Prime Video', color: '#00A8E1', bg: 'rgba(0, 168, 225, 0.15)', border: 'rgba(0, 168, 225, 0.4)' },
+    'disney+ hotstar': { name: 'Disney+ Hotstar', color: '#FFCC00', bg: 'rgba(255, 204, 0, 0.15)', border: 'rgba(255, 204, 0, 0.4)' },
+    hotstar: { name: 'Hotstar', color: '#FFCC00', bg: 'rgba(255, 204, 0, 0.15)', border: 'rgba(255, 204, 0, 0.4)' },
+    zee5: { name: 'Zee5', color: '#c084fc', bg: 'rgba(162, 28, 175, 0.15)', border: 'rgba(162, 28, 175, 0.4)' },
+    'sony liv': { name: 'Sony LIV', color: '#818cf8', bg: 'rgba(99, 102, 241, 0.15)', border: 'rgba(99, 102, 241, 0.4)' },
+    sonyliv: { name: 'Sony LIV', color: '#818cf8', bg: 'rgba(99, 102, 241, 0.15)', border: 'rgba(99, 102, 241, 0.4)' },
+    jiocinema: { name: 'JioCinema', color: '#f43f5e', bg: 'rgba(244, 63, 94, 0.15)', border: 'rgba(244, 63, 94, 0.4)' },
+    youtube: { name: 'YouTube', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.4)' },
+};
+
+function getPlatformBadge(provider) {
+    const rawName = (provider?.name || '').toLowerCase();
+    let match = null;
+    for (const key of Object.keys(OTT_PLATFORMS)) {
+        if (rawName.includes(key)) {
+            match = OTT_PLATFORMS[key];
+            break;
+        }
+    }
+
+    if (!match) {
+    match = { name: provider.name || 'OTT', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)', border: 'rgba(56, 189, 248, 0.3)' };
+    }
+
+    return `<span class="ott-badge" style="color: ${match.color}; background: ${match.bg}; border-color: ${match.border};">
+        ${provider.logoUrl ? `<img src="${provider.logoUrl}" alt="${escapeHtml(match.name)}" class="ott-badge-logo" onerror="this.style.display='none'">` : ''}
+        <span>${escapeHtml(match.name)}</span>
+    </span>`;
+}
+
+function syncReleasesStateFromUrl() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const urlPage = parseInt(params.get('page'), 10);
+        if (!isNaN(urlPage) && urlPage >= 1) {
+            releasesState.page = urlPage;
+        } else {
+            releasesState.page = 1;
+        }
+
+        const platform = params.get('platform') || params.get('provider');
+        if (platform) {
+            releasesState.providerFilter = platform.toLowerCase();
+        } else {
+            releasesState.providerFilter = 'all';
+        }
+
+        const industry = params.get('industry');
+        if (industry) {
+            releasesState.industryFilter = industry.toLowerCase();
+        } else {
+            releasesState.industryFilter = 'all';
+        }
+
+        const sort = params.get('sort');
+        if (sort) {
+            releasesState.sortBy = sort;
+        } else {
+            releasesState.sortBy = 'date_desc';
+        }
+
+        // Sync UI form controls
+        const sortSelect = document.getElementById('releasesSortSelect');
+        if (sortSelect) {
+            sortSelect.value = releasesState.sortBy;
+        }
+        document.querySelectorAll('#platformFilterPills .pill-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.platform === releasesState.providerFilter);
+        });
+        document.querySelectorAll('#industryFilterPills .pill-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.industry === releasesState.industryFilter);
+        });
+    } catch {}
+}
+
+function updateReleasesUrl(push = true) {
+    try {
+        if (state.currentView !== 'releases') return;
+        const url = new URL(window.location.href);
+        url.pathname = '/releases';
+
+        if (releasesState.page > 1) {
+            url.searchParams.set('page', String(releasesState.page));
+        } else {
+            url.searchParams.delete('page');
+        }
+
+        if (releasesState.providerFilter && releasesState.providerFilter !== 'all') {
+            url.searchParams.set('platform', releasesState.providerFilter);
+        } else {
+            url.searchParams.delete('platform');
+            url.searchParams.delete('provider');
+        }
+
+        if (releasesState.industryFilter && releasesState.industryFilter !== 'all') {
+            url.searchParams.set('industry', releasesState.industryFilter);
+        } else {
+            url.searchParams.delete('industry');
+        }
+
+        // Remove any residual search params
+        url.searchParams.delete('search');
+
+        if (releasesState.sortBy && releasesState.sortBy !== 'date_desc') {
+            url.searchParams.set('sort', releasesState.sortBy);
+        } else {
+            url.searchParams.delete('sort');
+        }
+
+        const newPath = url.pathname + (url.search ? url.search : '');
+        const currentPath = window.location.pathname + window.location.search;
+
+        if (newPath !== currentPath) {
+            if (push) {
+                history.pushState({ view: 'releases', page: releasesState.page }, '', newPath);
+            } else {
+                history.replaceState({ view: 'releases', page: releasesState.page }, '', newPath);
+            }
+        }
+    } catch {}
+}
+
+async function loadNewReleases(page = null, updateUrl = true) {
+    if (page === null) {
+        syncReleasesStateFromUrl();
+        page = releasesState.page || 1;
+    } else {
+        releasesState.page = page;
+    }
+
+    if (updateUrl) {
+        updateReleasesUrl(true);
+    }
+
+    const grid = document.getElementById('releasesGrid');
+    if (!grid) return;
+
+    grid.innerHTML = `
+        <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted);">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            <div>Discovering new OTT releases...</div>
+        </div>
+    `;
+
+    try {
+        const queryParams = new URLSearchParams({
+            page: String(releasesState.page),
+            limit: '24',
+            provider: releasesState.providerFilter,
+            industry: releasesState.industryFilter,
+            sort: releasesState.sortBy,
+        });
+
+        const [releasesRes, statsRes] = await Promise.all([
+            fetch(`/api/new-releases?${queryParams.toString()}`, { credentials: 'include' }),
+            fetch('/api/new-releases/stats', { credentials: 'include' })
+        ]);
+
+        const data = await releasesRes.json();
+        const stats = await statsRes.json();
+
+        // Update stats
+        if (stats) {
+            const statTotal = document.getElementById('statTotalReleases');
+            const statN = document.getElementById('statNetflixCount');
+            const statP = document.getElementById('statPrimeCount');
+            const statH = document.getElementById('statHotstarCount');
+            const statZ = document.getElementById('statZee5Count');
+
+            if (statTotal) statTotal.textContent = stats.total || '0';
+            if (statN) statN.textContent = stats.platformCounts?.['Netflix'] || '0';
+            if (statP) statP.textContent = stats.platformCounts?.['Amazon Prime Video'] || '0';
+            if (statH) statH.textContent = stats.platformCounts?.['Disney+ Hotstar'] || '0';
+            if (statZ) statZ.textContent = (stats.platformCounts?.['Zee5'] || 0) + (stats.platformCounts?.['Sony LIV'] || 0);
+
+            const lastUpdatedEl = document.getElementById('releasesLastUpdatedTag');
+            if (lastUpdatedEl) {
+                if (stats.lastRefreshed) {
+                    const d = new Date(stats.lastRefreshed);
+                    lastUpdatedEl.textContent = `Last refreshed: ${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+                } else {
+                    lastUpdatedEl.textContent = `No items cached yet (Click Refresh)`;
+                }
+            }
+        }
+
+        releasesState.items = data.releases || [];
+        releasesState.total = data.pagination?.total || 0;
+        releasesState.totalPages = data.pagination?.totalPages || 1;
+
+        if (releasesState.items.length === 0) {
+            if (releasesState.total === 0 && !releasesState.searchQuery && releasesState.providerFilter === 'all' && releasesState.industryFilter === 'all') {
+                grid.innerHTML = `
+                    <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px;" class="releases-empty-card">
+                        <div class="brand-icon-box" style="width: 48px; height: 48px; margin: 0 auto 16px; background: rgba(229, 9, 20, 0.15); color: #ff5252;">
+                            <svg class="tabler-icon" style="width:28px;height:28px;" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4v16"/><path d="M16 4v16"/><path d="M4 8h4"/><path d="M4 16h4"/><path d="M4 12h16"/><path d="M16 8h4"/><path d="M16 16h4"/></svg>
+                        </div>
+                        <h2 style="font-size: 18px; margin-bottom: 6px; font-weight: 700;">No OTT Releases Cached Yet</h2>
+                        <p style="color: var(--text-secondary); font-size: 13px; max-width: 500px; margin: 0 auto 20px;">
+                            Click below to perform an initial scan of TMDB for the latest Indian OTT releases across Netflix, Prime Video, Hotstar, Zee5, and Sony LIV.
+                        </p>
+                        <button class="btn-primary-action" onclick="triggerManualReleasesRefresh(90)" style="padding: 10px 24px; font-size: 13.5px; margin: 0 auto;">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                            Fetch OTT Releases Now
+                        </button>
+                    </div>
+                `;
+            } else {
+                grid.innerHTML = `
+                    <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
+                        <div style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 4px;">No matching releases found</div>
+                        <div style="font-size: 12.5px;">Try changing your platform, industry, or search filters.</div>
+                    </div>
+                `;
+            }
+            renderReleasesPagination();
+            return;
+        }
+
+        renderReleaseCards(releasesState.items);
+        renderReleasesPagination();
+
+    } catch (err) {
+        grid.innerHTML = `
+            <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--accent-rose);">
+                <div>Failed to load OTT releases: ${escapeHtml(err.message)}</div>
+                <button class="btn-header" style="margin-top: 10px;" onclick="loadNewReleases(1, true)">Retry</button>
+            </div>
+        `;
+    }
+}
+
+function renderReleaseCards(items) {
+    const grid = document.getElementById('releasesGrid');
+    if (!grid) return;
+
+    grid.innerHTML = items.map(item => {
+        const posterSrc = item.posterUrl || 'https://via.placeholder.com/300x450/111827/ffffff?text=No+Poster';
+        const rating = item.rating ? Number(item.rating).toFixed(1) : 'N/A';
+        const providers = item.providers || [];
+        const providerBadges = providers.slice(0, 3).map(p => getPlatformBadge(p)).join('');
+        const extraCount = providers.length > 3 ? `<span class="ott-badge more">+${providers.length - 3}</span>` : '';
+
+        const year = item.year || (item.releaseDate ? item.releaseDate.slice(0, 4) : '');
+        const formattedDate = item.releaseDate ? new Date(item.releaseDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recent';
+
+        const isExists = Boolean(item.jellyfinExists);
+
+        return `
+            <div class="movie-release-card ${isExists ? 'in-library' : ''}">
+                <div class="card-poster-wrap">
+                    <img src="${posterSrc}" alt="${escapeHtml(item.title)}" class="card-poster-img" loading="lazy" onerror="this.src='https://via.placeholder.com/300x450/111827/ffffff?text=Poster+Unavailable'">
+                    <div class="poster-overlay-gradient"></div>
+                    <div class="card-top-badges">
+                        <span class="badge-rating">
+                            <svg class="tabler-icon star-icon" viewBox="0 0 24 24"><path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></svg>
+                            ${rating}
+                        </span>
+                        ${isExists ? `<span class="badge-jellyfin-in" title="Already available in your Jellyfin Movie Library"><svg class="tabler-icon" style="width:11px;height:11px;stroke-width:3;display:inline-block;vertical-align:middle;margin-right:2px;" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>In Library</span>` : ''}
+                    </div>
+                    <div class="card-industry-tag">${escapeHtml(item.industry || 'Cinema')}</div>
+                    
+                    <!-- Hover Quick Actions -->
+                    <div class="card-hover-actions">
+                        ${isExists ? `
+                            <button class="btn-card-action in-library" onclick="switchView('jellyfin')" title="Already in your Jellyfin Library">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
+                                In Library (Jellyfin)
+                            </button>
+                            <button class="btn-card-action secondary" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Search alternate release quality">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                Search Again
+                            </button>
+                        ` : `
+                            <button class="btn-card-action primary" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Search & Download with Telegram Bot">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                Search & Download
+                            </button>
+                        `}
+                        <div style="display: flex; gap: 6px; width: 100%;">
+                            <button class="btn-card-action secondary" style="flex: 1;" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Ask AI Copilot to find movie">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
+                                Copilot
+                            </button>
+                            <button class="btn-card-action secondary" style="flex: 1;" onclick="addReleaseToWatchlist('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Add to Watchlist">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M9 8h6"/></svg>
+                                Request
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card-body-content">
+                    <div class="card-title-row">
+                        <h3 class="card-movie-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h3>
+                        <span class="card-movie-year">${escapeHtml(year)}</span>
+                    </div>
+                    
+                    <div class="card-date-row">
+                        <span class="card-date-label">OTT Launch:</span>
+                        <span class="card-date-val">${escapeHtml(formattedDate)}</span>
+                    </div>
+
+                    <!-- OTT Platforms List -->
+                    <div class="card-ott-providers-row">
+                        ${providerBadges || `<span class="ott-badge generic">OTT Stream</span>`}
+                        ${extraCount}
+                    </div>
+
+                    ${item.overview ? `<p class="card-synopsis-text" title="${escapeHtml(item.overview)}">${escapeHtml(item.overview)}</p>` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderReleasesPagination() {
+    const bar = document.getElementById('releasesPaginationBar');
+    if (!bar) return;
+
+    if (releasesState.totalPages <= 1) {
+        bar.style.display = 'none';
+        return;
+    }
+
+    bar.style.display = 'flex';
+    const cur = releasesState.page;
+    const total = releasesState.totalPages;
+
+    let pageBtnsHtml = '';
+    const maxVisible = 5;
+    let startPage = Math.max(1, cur - Math.floor(maxVisible / 2));
+    let endPage = Math.min(total, startPage + maxVisible - 1);
+    if (endPage - startPage + 1 < maxVisible) {
+        startPage = Math.max(1, endPage - maxVisible + 1);
+    }
+
+    for (let p = startPage; p <= endPage; p++) {
+        pageBtnsHtml += `
+            <button class="btn-page ${p === cur ? 'active' : ''}" style="${p === cur ? 'background: var(--accent-blue); color: #fff; font-weight: 700; border-color: var(--accent-blue);' : ''}" onclick="loadNewReleases(${p}, true)">${p}</button>
+        `;
+    }
+
+    bar.innerHTML = `
+        <button class="btn-page ${cur <= 1 ? 'disabled' : ''}" onclick="loadNewReleases(${cur - 1}, true)" ${cur <= 1 ? 'disabled' : ''}>Previous</button>
+        <div style="display: flex; gap: 4px; align-items: center;">
+            ${pageBtnsHtml}
+        </div>
+        <span class="page-indicator" style="font-size: 12px; color: var(--text-muted); margin: 0 4px;">Page ${cur} of ${total} (${releasesState.total} titles)</span>
+        <button class="btn-page ${cur >= total ? 'disabled' : ''}" onclick="loadNewReleases(${cur + 1}, true)" ${cur >= total ? 'disabled' : ''}>Next</button>
+    `;
+}
+
+async function triggerManualReleasesRefresh(daysBack = 90) {
+    const btnManual = document.getElementById('btnManualRefreshReleases');
+
+    if (releasesState.refreshing) return;
+    releasesState.refreshing = true;
+
+    const originalManualHtml = btnManual ? btnManual.innerHTML : '';
+    if (btnManual) {
+        btnManual.innerHTML = `<div class="spinner" style="width:13px;height:13px;border-width:2px;display:inline-block;margin-right:6px;"></div> Scanning OTT (3 Mo)...`;
+        btnManual.disabled = true;
+    }
+
+    showToast('Scanning last 3 months of Indian OTT releases from TMDB...', 'info');
+
+    try {
+        const res = await fetch('/api/new-releases/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ daysBack })
+        });
+
+        const data = await res.json();
+        if (res.status === 429) {
+            showToast(`⚠️ ${data.error}`, 'warning', 7000);
+        } else if (data.success) {
+            showToast(`✅ ${data.message}`, 'success', 6000);
+            await loadNewReleases(1, true);
+        } else {
+            showToast(data.error || 'Refresh failed', 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        releasesState.refreshing = false;
+        if (btnManual) {
+            btnManual.innerHTML = originalManualHtml;
+            btnManual.disabled = false;
+        }
+    }
+}
+
+function filterReleasesByPlatform(platform) {
+    releasesState.providerFilter = platform;
+    document.querySelectorAll('#platformFilterPills .pill-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.platform === platform);
+    });
+    loadNewReleases(1, true);
+}
+
+function filterReleasesByIndustry(industry) {
+    releasesState.industryFilter = industry;
+    document.querySelectorAll('#industryFilterPills .pill-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.industry === industry);
+    });
+    loadNewReleases(1, true);
+}
+
+function handleReleasesSortChange() {
+    const select = document.getElementById('releasesSortSelect');
+    releasesState.sortBy = select?.value || 'date_desc';
+    loadNewReleases(1, true);
+}
+
+function directSearchRelease(title, year) {
+    switchView('studio');
+    const studioInput = document.getElementById('studioSearchInput');
+    const studioYear = document.getElementById('studioYearInput');
+    if (studioInput) studioInput.value = title;
+    if (studioYear) studioYear.value = year || '';
+    setStudioType('movie');
+    performStudioSearch();
+    showToast(`Searching releases for "${title}"`, 'info');
+}
+
+function askCopilotRelease(title, year) {
+    switchView('chat');
+    const chatInput = document.getElementById('chatInput');
+    if (chatInput) {
+        chatInput.value = `Search and download ${title} ${year ? year : ''}`.trim();
+        sendChatMessage();
+    }
+}
+
+async function addReleaseToWatchlist(title, year) {
+    try {
+        const res = await fetch('/api/requested-media', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ title, type: 'movie', year })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast(`Added "${title}" to Requested Media`, 'success');
+        } else {
+            showToast(data.error || 'Failed to request', 'error');
         }
     } catch (err) {
         showToast(err.message, 'error');

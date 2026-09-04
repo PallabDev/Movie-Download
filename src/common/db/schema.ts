@@ -7,6 +7,7 @@ import {
     boolean,
     integer,
     jsonb,
+    real,
 } from "drizzle-orm/pg-core";
 
 // Users table
@@ -77,3 +78,26 @@ export const requestedMedia = pgTable("requested_media", {
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// Indian OTT Releases table (Bollywood & South Indian Cinema)
+export const ottReleases = pgTable("ott_releases", {
+    id: serial("id").primaryKey(),
+    tmdbId: integer("tmdb_id").notNull().unique(),
+    title: varchar("title", { length: 500 }).notNull(),
+    originalTitle: varchar("original_title", { length: 500 }),
+    originalLanguage: varchar("original_language", { length: 10 }).notNull(), // "hi" | "ta" | "te" | "ml" | "kn" | "bn"
+    industry: varchar("industry", { length: 50 }).notNull(), // "Bollywood" | "Tollywood" | "Kollywood" | "Mollywood" | "Sandalwood" | "Bengali"
+    releaseDate: varchar("release_date", { length: 20 }), // e.g. "2026-09-03"
+    year: varchar("year", { length: 10 }),
+    overview: text("overview"),
+    posterUrl: text("poster_url"),
+    backdropUrl: text("backdrop_url"),
+    rating: real("rating").default(0),
+    voteCount: integer("vote_count").default(0),
+    popularity: real("popularity").default(0),
+    providers: jsonb("providers"), // array of { id, name, logo, type }
+    jellyfinExists: boolean("jellyfin_exists").default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
