@@ -2318,7 +2318,7 @@ function renderReleaseCards(items) {
 
                     ${item.overview ? `<p class="card-synopsis-text" title="${escapeHtml(item.overview)}">${escapeHtml(item.overview)}</p>` : ''}
 
-                    <!-- Card Bottom Actions (Always visible on desktop and mobile) -->
+                    <!-- Card Bottom Actions (1 Row Layout for Search & Download and Copilot) -->
                     <div class="card-bottom-actions">
                         ${isExists ? `
                             <button class="btn-card-action in-library" onclick="switchView('jellyfin')" title="Already in your Jellyfin Library">
@@ -2326,11 +2326,11 @@ function renderReleaseCards(items) {
                                 <span>In Library</span>
                             </button>
                         ` : `
-                            <button class="btn-card-action primary" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Search & Download with Telegram Bot">
+                            <button class="btn-card-action primary" style="flex: 1.25;" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Search & Download with Telegram Bot">
                                 <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                 <span>Search & Download</span>
                             </button>
-                            <button class="btn-card-action secondary" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Ask AI Copilot to find movie">
+                            <button class="btn-card-action secondary" style="flex: 0.85;" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Ask AI Copilot to find movie">
                                 <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
                                 <span>Copilot</span>
                             </button>
