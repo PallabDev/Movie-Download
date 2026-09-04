@@ -193,14 +193,14 @@ const VIEW_ROUTES = {
 };
 
 const VIEW_TITLES = {
-    chat: 'AI Copilot Assistant',
-    releases: 'New OTT Releases (Bollywood & South Indian)',
+    chat: 'AI Downloader',
+    releases: 'New Releases',
     downloads: 'Download Station',
-    requested: 'Requested Media Hub',
-    jellyfin: 'Jellyfin Media Hub',
+    requested: 'Requested Media',
+    jellyfin: 'Jellyfin Library',
     bot: 'Telegram Bot',
     admin: 'User Management',
-    studio: 'Search & Discover Studio'
+    studio: 'Search Studio'
 };
 
 function getViewForPath(pathname) {
@@ -1393,11 +1393,64 @@ async function loadJellyfinStats() {
     } catch {}
 }
 
+let cachedJellyfinMovies = [];
+let jfSearchDebounceTimer = null;
+
+function renderJellyfinMovieCardHtml(movie) {
+    const year = movie.ProductionYear || movie.Year || (movie.PremiereDate ? new Date(movie.PremiereDate).getFullYear() : '');
+    const rating = movie.CommunityRating ? Number(movie.CommunityRating).toFixed(1) : null;
+    const posterUrl = `/api/jellyfin/image/${movie.Id}`;
+
+    return `
+        <div class="jf-movie-card" title="${escapeHtml(movie.Name)}${year ? ` (${year})` : ''}">
+            <div class="jf-movie-poster-wrap">
+                <img class="jf-movie-poster" 
+                     src="${posterUrl}" 
+                     alt="${escapeHtml(movie.Name)}" 
+                     loading="lazy" 
+                     onerror="this.style.display='none'; if (this.nextElementSibling) this.nextElementSibling.style.display='flex';" />
+                <div class="jf-movie-poster-fallback" style="display: none;">
+                    <svg class="tabler-icon" style="width:28px;height:28px;" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
+                    <span style="font-size: 11px; font-weight: 600; line-height: 1.3;">${escapeHtml(movie.Name)}</span>
+                </div>
+                ${rating ? `<div class="jf-movie-rating-badge">★ ${rating}</div>` : ''}
+            </div>
+            <div class="jf-movie-info">
+                <div class="jf-movie-title">${escapeHtml(movie.Name)}</div>
+                <div class="jf-movie-meta">
+                    <span>${year || 'Movie'}</span>
+                    <span class="chip quality" style="font-size: 10px; padding: 1px 6px;">Library</span>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderJellyfinGrid(movies) {
+    const grid = document.getElementById('jfMoviesGrid');
+    if (!grid) return;
+
+    if (!movies || movies.length === 0) {
+        grid.innerHTML = `
+            <div style="text-align: center; color: var(--text-muted); padding: 48px 20px; width: 100%; grid-column: 1 / -1;">
+                <div style="width: 52px; height: 52px; border-radius: 50%; background: var(--bg-surface-elevated); border: 1px solid var(--border-medium); display: flex; align-items: center; justify-content: center; color: var(--accent-cyan); margin: 0 auto 12px;">
+                    <svg class="tabler-icon" style="width:26px;height:26px;" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                </div>
+                <div style="font-size: 15px; font-weight: 600; color: #fff;">No Movies Found</div>
+                <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 4px;">No movies matching your criteria in your Jellyfin collection.</div>
+            </div>
+        `;
+        return;
+    }
+
+    grid.innerHTML = movies.map(renderJellyfinMovieCardHtml).join('');
+}
+
 async function loadJellyfinLibrary(force = false) {
     const grid = document.getElementById('jfMoviesGrid');
     if (!grid) return;
 
-    if (force) {
+    if (force || cachedJellyfinMovies.length === 0) {
         grid.innerHTML = `
             <div style="text-align: center; color: var(--text-muted); padding: 40px; width: 100%; grid-column: 1 / -1;">
                 <div class="spinner" style="margin: 0 auto 12px; width: 28px; height: 28px; border: 2px solid var(--border-medium); border-top-color: var(--accent-cyan); border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
@@ -1409,50 +1462,8 @@ async function loadJellyfinLibrary(force = false) {
     try {
         const res = await fetch('/api/jellyfin/movies', { credentials: 'include' });
         const data = await res.json();
-        const movies = data.items || [];
-
-        if (movies.length === 0) {
-            grid.innerHTML = `
-                <div style="text-align: center; color: var(--text-muted); padding: 48px 20px; width: 100%; grid-column: 1 / -1;">
-                    <div style="width: 52px; height: 52px; border-radius: 50%; background: var(--bg-surface-elevated); border: 1px solid var(--border-medium); display: flex; align-items: center; justify-content: center; color: var(--accent-cyan); margin: 0 auto 12px;">
-                        <svg class="tabler-icon" style="width:26px;height:26px;" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
-                    </div>
-                    <div style="font-size: 15px; font-weight: 600; color: #fff;">No Movies Found</div>
-                    <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 4px;">Your Jellyfin server reports 0 movies or is still indexing.</div>
-                </div>
-            `;
-            return;
-        }
-
-        grid.innerHTML = movies.map(movie => {
-            const year = movie.ProductionYear || movie.Year || (movie.PremiereDate ? new Date(movie.PremiereDate).getFullYear() : '');
-            const rating = movie.CommunityRating ? Number(movie.CommunityRating).toFixed(1) : null;
-            const posterUrl = `/api/jellyfin/image/${movie.Id}`;
-
-            return `
-                <div class="jf-movie-card" title="${escapeHtml(movie.Name)}${year ? ` (${year})` : ''}">
-                    <div class="jf-movie-poster-wrap">
-                        <img class="jf-movie-poster" 
-                             src="${posterUrl}" 
-                             alt="${escapeHtml(movie.Name)}" 
-                             loading="lazy" 
-                             onerror="this.style.display='none'; if (this.nextElementSibling) this.nextElementSibling.style.display='flex';" />
-                        <div class="jf-movie-poster-fallback" style="display: none;">
-                            <svg class="tabler-icon" style="width:28px;height:28px;" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
-                            <span style="font-size: 11px; font-weight: 600; line-height: 1.3;">${escapeHtml(movie.Name)}</span>
-                        </div>
-                        ${rating ? `<div class="jf-movie-rating-badge">★ ${rating}</div>` : ''}
-                    </div>
-                    <div class="jf-movie-info">
-                        <div class="jf-movie-title">${escapeHtml(movie.Name)}</div>
-                        <div class="jf-movie-meta">
-                            <span>${year || 'Movie'}</span>
-                            <span class="chip quality" style="font-size: 10px; padding: 1px 6px;">Library</span>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }).join('');
+        cachedJellyfinMovies = data.items || [];
+        renderJellyfinGrid(cachedJellyfinMovies);
     } catch (err) {
         grid.innerHTML = `
             <div style="text-align: center; color: var(--accent-rose); padding: 40px; width: 100%; grid-column: 1 / -1;">
@@ -1462,38 +1473,73 @@ async function loadJellyfinLibrary(force = false) {
     }
 }
 
-async function checkJellyfinItem() {
-    const input = document.getElementById('jfCheckInput');
+function handleJellyfinSearchInput(val) {
+    clearTimeout(jfSearchDebounceTimer);
+    jfSearchDebounceTimer = setTimeout(() => {
+        performJellyfinLookup(val);
+    }, 150);
+}
+
+async function performJellyfinLookup(query) {
+    const q = (query || '').trim().toLowerCase();
     const resultBox = document.getElementById('jfCheckResultBox');
-    if (!input || !resultBox) return;
+    
+    if (!q) {
+        if (resultBox) {
+            resultBox.style.display = 'none';
+            resultBox.innerHTML = '';
+        }
+        renderJellyfinGrid(cachedJellyfinMovies);
+        return;
+    }
 
-    const title = input.value.trim();
-    if (!title) return;
+    // Filter in cached library
+    const matched = cachedJellyfinMovies.filter(m => {
+        const name = (m.Name || '').toLowerCase();
+        const orig = (m.OriginalTitle || '').toLowerCase();
+        return name.includes(q) || orig.includes(q);
+    });
 
-    resultBox.style.display = 'block';
-    resultBox.innerHTML = '<span class="text-muted">Checking movie library...</span>';
+    // Also update library collection grid below in real-time
+    renderJellyfinGrid(matched);
 
-    try {
-        const res = await fetch(`/api/jellyfin/check?type=movie&title=${encodeURIComponent(title)}`, { credentials: 'include' });
-        const data = await res.json();
-        if (data.exists) {
+    if (resultBox) {
+        resultBox.style.display = 'block';
+
+        if (matched.length > 0) {
             resultBox.innerHTML = `
-                <div style="color: var(--accent-emerald); font-weight: 600; display: flex; align-items: center; gap: 6px;">
-                    <svg class="tabler-icon text-emerald" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
-                    "${escapeHtml(title)}" is in your Jellyfin Movie Library.
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+                    <div style="color: var(--accent-emerald); font-weight: 600; display: flex; align-items: center; gap: 6px; font-size: 12.5px;">
+                        <svg class="tabler-icon text-emerald" style="width:16px;height:16px;" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
+                        <span>Found ${matched.length} ${matched.length === 1 ? 'matching movie' : 'matching movies'} in your Jellyfin Library (showing below)</span>
+                    </div>
+                    <span class="chip quality" style="background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.3); font-size: 10.5px; padding: 2px 8px;">In Library</span>
                 </div>
             `;
         } else {
             resultBox.innerHTML = `
-                <div style="color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
-                    <svg class="tabler-icon text-blue" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12.01" y2="8"/><polyline points="11 12 12 12 12 16 13 16"/></svg>
-                    "${escapeHtml(title)}" is not in your Jellyfin Movie Library.
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                    <div>
+                        <div style="color: var(--text-secondary); display: flex; align-items: center; gap: 6px; font-size: 12.5px;">
+                            <svg class="tabler-icon text-blue" style="width:16px;height:16px;" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12.01" y2="8"/><polyline points="11 12 12 12 12 16 13 16"/></svg>
+                            <span><strong>"${escapeHtml(q)}"</strong> is not in your Jellyfin Library.</span>
+                        </div>
+                        <p style="font-size: 11.5px; color: var(--text-muted); margin-top: 3px; margin-bottom: 0;">You can discover & download this movie directly from Telegram bots via Search Studio.</p>
+                    </div>
+                    <button class="btn-primary-action" onclick="directSearchRelease('${escapeHtml(q).replace(/'/g, "\\'")}', '')" style="padding: 5px 12px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px;">
+                        <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
+                        Search on Studio
+                    </button>
                 </div>
             `;
         }
-    } catch (err) {
-        resultBox.innerHTML = `<span style="color: var(--accent-rose);">Error: ${escapeHtml(err.message)}</span>`;
     }
+}
+
+function checkJellyfinItem() {
+    const input = document.getElementById('jfCheckInput');
+    if (!input) return;
+    performJellyfinLookup(input.value);
 }
 
 // ==========================================================================
@@ -1814,11 +1860,15 @@ function getPlatformBadge(provider) {
     }
 
     if (!match) {
-    match = { name: provider.name || 'OTT', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)', border: 'rgba(56, 189, 248, 0.3)' };
+        let cleanName = (provider?.name || 'OTT')
+            .replace(/Amazon Channel|Apple TV Channel|Channel/gi, '')
+            .trim();
+        if (cleanName.length > 14) cleanName = cleanName.slice(0, 13) + '…';
+        match = { name: cleanName, color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)', border: 'rgba(56, 189, 248, 0.3)' };
     }
 
-    return `<span class="ott-badge" style="color: ${match.color}; background: ${match.bg}; border-color: ${match.border};">
-        ${provider.logoUrl ? `<img src="${provider.logoUrl}" alt="${escapeHtml(match.name)}" class="ott-badge-logo" onerror="this.style.display='none'">` : ''}
+    return `<span class="ott-badge" style="color: ${match.color}; background: ${match.bg}; border-color: ${match.border};" title="${escapeHtml(provider?.name || match.name)}">
+        ${provider?.logoUrl ? `<img src="${provider.logoUrl}" alt="${escapeHtml(match.name)}" class="ott-badge-logo" onerror="this.style.display='none'">` : ''}
         <span>${escapeHtml(match.name)}</span>
     </span>`;
 }
@@ -1859,8 +1909,9 @@ function syncReleasesStateFromUrl() {
         if (sortSelect) {
             sortSelect.value = releasesState.sortBy;
         }
-        document.querySelectorAll('#platformFilterPills .pill-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.platform === releasesState.providerFilter);
+        document.querySelectorAll('.ott-metric-card').forEach(card => {
+            const attr = (card.getAttribute('onclick') || '').toLowerCase();
+            card.classList.toggle('active', attr.includes(`'${releasesState.providerFilter}'`));
         });
         document.querySelectorAll('#industryFilterPills .pill-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.industry === releasesState.industryFilter);
@@ -2033,8 +2084,8 @@ function renderReleaseCards(items) {
         const posterSrc = item.posterUrl || 'https://via.placeholder.com/300x450/111827/ffffff?text=No+Poster';
         const rating = item.rating ? Number(item.rating).toFixed(1) : 'N/A';
         const providers = item.providers || [];
-        const providerBadges = providers.slice(0, 3).map(p => getPlatformBadge(p)).join('');
-        const extraCount = providers.length > 3 ? `<span class="ott-badge more">+${providers.length - 3}</span>` : '';
+        const providerBadges = providers.slice(0, 2).map(p => getPlatformBadge(p)).join('');
+        const extraCount = providers.length > 2 ? `<span class="ott-badge more" title="${providers.slice(2).map(p => escapeHtml(p.name)).join(', ')}">+${providers.length - 2}</span>` : '';
 
         const year = item.year || (item.releaseDate ? item.releaseDate.slice(0, 4) : '');
         const formattedDate = item.releaseDate ? new Date(item.releaseDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recent';
@@ -2062,26 +2113,22 @@ function renderReleaseCards(items) {
                                 <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
                                 In Library (Jellyfin)
                             </button>
-                            <button class="btn-card-action secondary" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Search alternate release quality">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                Search Again
-                            </button>
                         ` : `
                             <button class="btn-card-action primary" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Search & Download with Telegram Bot">
                                 <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                 Search & Download
                             </button>
+                            <div style="display: flex; gap: 6px; width: 100%;">
+                                <button class="btn-card-action secondary" style="flex: 1;" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Ask AI Copilot to find movie">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
+                                    Copilot
+                                </button>
+                                <button class="btn-card-action secondary" style="flex: 1;" onclick="addReleaseToWatchlist('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Add to Watchlist">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M9 8h6"/></svg>
+                                    Request
+                                </button>
+                            </div>
                         `}
-                        <div style="display: flex; gap: 6px; width: 100%;">
-                            <button class="btn-card-action secondary" style="flex: 1;" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Ask AI Copilot to find movie">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
-                                Copilot
-                            </button>
-                            <button class="btn-card-action secondary" style="flex: 1;" onclick="addReleaseToWatchlist('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Add to Watchlist">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M9 8h6"/></svg>
-                                Request
-                            </button>
-                        </div>
                     </div>
                 </div>
                 
@@ -2100,6 +2147,21 @@ function renderReleaseCards(items) {
                     <div class="card-ott-providers-row">
                         ${providerBadges || `<span class="ott-badge generic">OTT Stream</span>`}
                         ${extraCount}
+                    </div>
+
+                    <!-- Direct Action Button (Visible without hover for mobile & desktop) -->
+                    <div class="card-direct-action-wrap">
+                        ${isExists ? `
+                            <button class="btn-card-direct-library" onclick="switchView('jellyfin')" title="Already in Jellyfin Library">
+                                <svg class="tabler-icon" style="width:13px;height:13px;" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
+                                <span>In Library</span>
+                            </button>
+                        ` : `
+                            <button class="btn-card-direct-download" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Download with Telegram Bot">
+                                <svg class="tabler-icon" style="width:13px;height:13px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                <span>Download</span>
+                            </button>
+                        `}
                     </div>
 
                     ${item.overview ? `<p class="card-synopsis-text" title="${escapeHtml(item.overview)}">${escapeHtml(item.overview)}</p>` : ''}
@@ -2190,8 +2252,9 @@ async function triggerManualReleasesRefresh(daysBack = 90) {
 
 function filterReleasesByPlatform(platform) {
     releasesState.providerFilter = platform;
-    document.querySelectorAll('#platformFilterPills .pill-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.platform === platform);
+    document.querySelectorAll('.ott-metric-card').forEach(card => {
+        const attr = (card.getAttribute('onclick') || '').toLowerCase();
+        card.classList.toggle('active', attr.includes(`'${platform}'`));
     });
     loadNewReleases(1, true);
 }

@@ -1609,29 +1609,81 @@ h1, h2, h3, h4, h5, h6 {
    ========================================================================== */
 
 .jellyfin-wrap {
-    padding: 24px 20px;
+    padding: 20px;
     max-width: 1000px;
     width: 100%;
     margin: 0 auto;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 14px;
 }
 
-.jf-hero-card {
+.jf-compact-header {
     background: var(--bg-surface);
-    border: 1px solid var(--border-medium);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
-    padding: 20px;
+    padding: 12px 18px;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
 }
 
-.jf-stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 12px;
+.jf-compact-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.jf-compact-stats {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.jf-stat-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg-surface-elevated);
+    border: 1px solid var(--border-subtle);
+    padding: 5px 12px;
+    border-radius: 9999px;
+    font-size: 11.5px;
+}
+
+.jf-stat-val {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: #fff;
+}
+
+.jf-stat-lbl {
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.jf-stat-pill.sync {
+    background: rgba(16, 185, 129, 0.1);
+    border-color: rgba(16, 185, 129, 0.25);
+}
+
+@media (max-width: 640px) {
+    .jellyfin-wrap {
+        padding: 12px 10px !important;
+        gap: 12px !important;
+    }
+    .jf-compact-header {
+        padding: 10px 12px !important;
+    }
+    .jf-compact-title h1 {
+        font-size: 14px !important;
+    }
+    .jf-stat-pill {
+        padding: 4px 8px !important;
+        font-size: 10.5px !important;
+    }
 }
 
 /* Jellyfin Movies Grid */
@@ -1743,6 +1795,85 @@ h1, h2, h3, h4, h5, h6 {
     justify-content: space-between;
     font-size: 11px;
     color: var(--text-secondary);
+}
+
+.jf-lookup-results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.jf-lookup-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    transition: all 0.2s ease;
+}
+
+.jf-lookup-card:hover {
+    border-color: var(--accent-cyan);
+    background: var(--bg-surface-hover);
+}
+
+.jf-lookup-poster-box {
+    position: relative;
+    width: 48px;
+    height: 70px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--bg-surface-elevated);
+    flex-shrink: 0;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.jf-lookup-poster-box img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.jf-lookup-poster-fallback {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-surface-elevated);
+    color: var(--text-muted);
+}
+
+.jf-lookup-details {
+    flex: 1;
+    min-width: 0;
+}
+
+.jf-lookup-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+@media (max-width: 640px) {
+    .jf-lookup-results-grid {
+        grid-template-columns: 1fr !important;
+        gap: 8px !important;
+    }
+    .jf-lookup-card {
+        padding: 6px 8px !important;
+    }
+    .jf-lookup-poster-box {
+        width: 42px !important;
+        height: 60px !important;
+    }
 }
 
 /* ==========================================================================
@@ -2205,14 +2336,58 @@ h1, h2, h3, h4, h5, h6 {
     }
 }
 
-@media (max-width: 420px) {
-    .header-view-title {
-        max-width: 90px;
-        font-size: 12.5px;
+@media (max-width: 640px) {
+    .main-header {
+        padding: 0 10px !important;
     }
 
-    .btn-header span {
-        display: none;
+    .header-left {
+        gap: 8px !important;
+        min-width: 0 !important;
+        flex: 1 1 auto !important;
+    }
+
+    .header-title-wrap {
+        gap: 6px !important;
+        min-width: 0 !important;
+    }
+
+    .header-view-title {
+        font-size: 13.5px !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        max-width: unset !important;
+    }
+
+    /* On mobile: Hide 'Connected' text and only show the status dot */
+    .header-bot-status-text,
+    #headerBotStatusText {
+        display: none !important;
+    }
+
+    .bot-status-pill {
+        padding: 5px 6px !important;
+        gap: 0 !important;
+        min-width: unset !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+
+    /* On mobile phone header: Hide Search button */
+    .header-search-btn {
+        display: none !important;
+    }
+
+    .header-right {
+        gap: 6px !important;
+        flex-shrink: 0 !important;
+    }
+
+    .btn-header.primary {
+        padding: 6px 10px !important;
+        font-size: 11.5px !important;
     }
 
     .chat-welcome-card h2 {
@@ -2376,19 +2551,19 @@ h1, h2, h3, h4, h5, h6 {
     margin: 0 auto;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 10px;
 }
 
 /* Compact Header */
 .releases-compact-header {
     background: linear-gradient(135deg, rgba(229, 9, 20, 0.08) 0%, rgba(15, 23, 42, 0.85) 100%);
     border: 1px solid rgba(229, 9, 20, 0.25);
-    border-radius: var(--radius-md);
-    padding: 12px 18px;
+    border-radius: var(--radius-sm);
+    padding: 8px 14px;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 14px;
+    gap: 10px;
     flex-wrap: wrap;
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
 }
@@ -2396,35 +2571,49 @@ h1, h2, h3, h4, h5, h6 {
 .releases-header-left {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
 }
 
 .releases-header-right {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
 }
 
-.ott-metric-card {
-    transition: all var(--transition-fast);
-}
-
-.ott-metric-card:hover {
-    border-color: rgba(255, 255, 255, 0.25);
-    transform: translateY(-2px);
-    background: var(--bg-surface-hover);
+@media (max-width: 640px) {
+    .releases-container {
+        padding: 10px 10px !important;
+        gap: 8px !important;
+    }
+    .releases-compact-header {
+        padding: 6px 10px !important;
+    }
+    .releases-compact-header h1 {
+        font-size: 13.5px !important;
+    }
+    .releases-toolbar-card {
+        padding: 8px 10px !important;
+    }
+    .releases-toolbar-card .filter-label {
+        font-size: 9.5px !important;
+        min-width: 55px !important;
+    }
+    .releases-toolbar-card .pill-btn {
+        padding: 3px 8px !important;
+        font-size: 10.5px !important;
+    }
 }
 
 /* Releases Toolbar */
 .releases-toolbar-card {
     background: var(--bg-surface);
     border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    padding: 14px 18px;
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
 }
 
 .toolbar-section {
@@ -2439,7 +2628,7 @@ h1, h2, h3, h4, h5, h6 {
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--text-muted);
-    min-width: 95px;
+    min-width: 85px;
 }
 
 .pill-group {
@@ -2477,7 +2666,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .sort-select-wrap select {
-    min-width: 170px;
+    min-width: 160px;
     background: var(--bg-surface-elevated);
 }
 
@@ -2566,15 +2755,20 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .badge-jellyfin-in {
-    background: rgba(16, 185, 129, 0.85);
+    background: rgba(16, 185, 129, 0.9);
     color: #fff;
-    padding: 2px 7px;
+    padding: 2px 6px;
     border-radius: 4px;
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
     backdrop-filter: blur(6px);
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
 }
 
 .card-industry-tag {
@@ -2591,7 +2785,7 @@ h1, h2, h3, h4, h5, h6 {
     border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
-/* Hover Quick Actions Overlay */
+/* Hover Quick Actions Overlay (Desktop) */
 .card-hover-actions {
     position: absolute;
     inset: 0;
@@ -2724,21 +2918,35 @@ h1, h2, h3, h4, h5, h6 {
 .card-ott-providers-row {
     display: flex;
     align-items: center;
-    gap: 5px;
-    flex-wrap: wrap;
+    gap: 4px;
+    flex-wrap: nowrap;
+    overflow: hidden;
+    white-space: nowrap;
     margin-top: 4px;
+    height: 22px;
 }
 
 .ott-badge {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 2px 7px;
+    padding: 2px 6px;
     border-radius: 4px;
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 700;
     border: 1px solid transparent;
     text-transform: capitalize;
+    white-space: nowrap;
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+}
+
+.ott-badge span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .ott-badge-logo {
@@ -2746,12 +2954,16 @@ h1, h2, h3, h4, h5, h6 {
     height: 12px;
     border-radius: 2px;
     object-fit: contain;
+    flex-shrink: 0;
 }
 
 .ott-badge.more {
     background: rgba(255, 255, 255, 0.08);
     color: var(--text-muted);
     border-color: rgba(255, 255, 255, 0.15);
+    font-size: 9.5px;
+    padding: 2px 5px;
+    flex-shrink: 0;
 }
 
 .card-synopsis-text {
@@ -2764,6 +2976,186 @@ h1, h2, h3, h4, h5, h6 {
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
+}
+
+/* Direct Action Buttons (Hidden on desktop where hover exists, visible only on mobile/touch screens) */
+.card-direct-action-wrap {
+    display: none;
+    width: 100%;
+    margin-top: 6px;
+}
+
+.btn-card-direct-download {
+    width: 100%;
+    padding: 7px 10px;
+    border-radius: var(--radius-xs);
+    background: var(--accent-blue);
+    color: #fff;
+    font-size: 11.5px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.35);
+    transition: all var(--transition-fast);
+}
+
+.btn-card-direct-download:hover {
+    background: #2563eb;
+    transform: translateY(-1px);
+}
+
+.btn-card-direct-library {
+    width: 100%;
+    padding: 6px 10px;
+    border-radius: var(--radius-xs);
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--accent-emerald);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    font-size: 11px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.btn-card-direct-library:hover {
+    background: rgba(16, 185, 129, 0.25);
+}
+
+/* Mobile Responsiveness for 2 Movies Per Row */
+@media (max-width: 640px) {
+    .releases-container {
+        padding: 12px 10px !important;
+        gap: 10px !important;
+    }
+    .releases-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 10px !important;
+    }
+    .card-top-badges {
+        top: 6px !important;
+        left: 6px !important;
+        right: 6px !important;
+        gap: 4px !important;
+    }
+    .badge-rating {
+        padding: 2px 5px !important;
+        font-size: 9px !important;
+        gap: 2px !important;
+    }
+    .badge-rating .star-icon {
+        width: 9px !important;
+        height: 9px !important;
+    }
+    .badge-jellyfin-in {
+        padding: 2px 4px !important;
+        font-size: 8px !important;
+        letter-spacing: 0 !important;
+        white-space: nowrap !important;
+        border-radius: 3px !important;
+    }
+    .badge-jellyfin-in svg {
+        width: 8px !important;
+        height: 8px !important;
+    }
+    .card-industry-tag {
+        bottom: 6px !important;
+        left: 6px !important;
+        font-size: 8.5px !important;
+        padding: 1px 5px !important;
+    }
+    .card-body-content {
+        padding: 8px 10px 10px !important;
+        gap: 4px !important;
+    }
+    .card-movie-title {
+        font-size: 12px !important;
+    }
+    .card-movie-year {
+        font-size: 11px !important;
+    }
+    .card-date-row {
+        font-size: 10px !important;
+    }
+    .card-synopsis-text {
+        display: none !important;
+    }
+    .ott-badge {
+        font-size: 9px !important;
+        padding: 1px 5px !important;
+    }
+    .btn-card-direct-download {
+        padding: 6px 8px !important;
+        font-size: 11px !important;
+    }
+    .btn-card-direct-library {
+        padding: 5px 8px !important;
+        font-size: 10.5px !important;
+    }
+    .download-station-wrap {
+        padding: 12px 10px !important;
+        gap: 12px !important;
+    }
+    .metrics-row {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 8px !important;
+    }
+    .metric-card {
+        padding: 10px 10px !important;
+        gap: 8px !important;
+    }
+    .metric-value {
+        font-size: 16px !important;
+    }
+    .metric-label {
+        font-size: 10px !important;
+    }
+    .metric-icon-box {
+        width: 30px !important;
+        height: 30px !important;
+    }
+}
+
+/* Admin User Management */
+.admin-wrap {
+    padding: 20px;
+    max-width: 1000px;
+    width: 100%;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    box-sizing: border-box;
+}
+
+.admin-create-user-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 110px auto;
+    gap: 8px;
+    margin-top: 10px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+@media (max-width: 768px) {
+    .admin-wrap {
+        padding: 12px 10px !important;
+    }
+    .admin-create-user-grid {
+        grid-template-columns: 1fr !important;
+        gap: 8px !important;
+    }
+    .admin-create-user-grid button {
+        width: 100% !important;
+        margin-top: 4px;
+    }
 }
 
 .releases-empty-card {

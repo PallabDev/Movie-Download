@@ -948,8 +948,8 @@ app.get("/api/downloads", requireAuth, async (req: any, res) => {
         const search = (req.query.search as string) || "";
 
         // 1-hour completion filter: Hide completed items older than 1 hour, and hide soft-deleted items
-        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-        const baseCondition = sql`${schema.downloads.status} != 'deleted' AND (${schema.downloads.status} != 'completed' OR COALESCE(${schema.downloads.updatedAt}, ${schema.downloads.createdAt}) >= ${oneHourAgo})`;
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        const baseCondition = sql`${schema.downloads.status} != 'deleted' AND (${schema.downloads.status} != 'completed' OR COALESCE(${schema.downloads.updatedAt}, ${schema.downloads.createdAt}) >= ${oneHourAgo}::timestamp)`;
 
         const whereClause = search
             ? sql`${baseCondition} AND ${schema.downloads.title} ILIKE ${'%' + search + '%'}`
@@ -1350,17 +1350,17 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
     });
 
     const titles: Record<string, string> = {
-        chat: "AI Copilot Assistant",
-        releases: "New OTT Releases (Bollywood & South Indian)",
+        chat: "AI Downloader",
+        releases: "New Releases",
         downloads: "Download Station",
-        requested: "Requested Media Hub",
-        jellyfin: "Jellyfin Media Hub",
+        requested: "Requested Media",
+        jellyfin: "Jellyfin Library",
         bot: "Telegram Bot",
         admin: "User Management",
-        studio: "Search & Discover Studio"
+        studio: "Search Studio"
     };
 
-    const headerTitle = titles[activeView] || "AI Copilot Assistant";
+    const headerTitle = titles[activeView] || "AI Downloader";
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1474,12 +1474,12 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <h2 class="header-view-title" id="headerViewTitle">${headerTitle}</h2>
                         <div class="bot-status-pill" onclick="navigateRoute(event, 'bot')">
                             <span class="status-dot connecting" id="headerBotDot"></span>
-                            <span id="headerBotStatusText" style="font-size:11.5px;">Checking bot...</span>
+                            <span id="headerBotStatusText" class="header-bot-status-text" style="font-size:11.5px;">Checking bot...</span>
                         </div>
                     </div>
                 </div>
                 <div class="header-right">
-                    <button class="btn-header" onclick="navigateRoute(event, 'studio')">
+                    <button class="btn-header header-search-btn" onclick="navigateRoute(event, 'studio')">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
                         Search
                     </button>
@@ -1518,109 +1518,18 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                     <!-- Compact Header & Refresh Panel -->
                     <div class="releases-compact-header">
                         <div class="releases-header-left">
-                            <div style="display:flex; align-items:center; gap: 8px; flex-wrap: wrap;">
-                                <h1 style="font-size: 16.5px; font-weight: 700; color: #fff; margin: 0;">New OTT Releases</h1>
-                                <span class="chip quality" style="background: rgba(229, 9, 20, 0.18); color: #ff5252; border-color: rgba(229, 9, 20, 0.35); font-size: 10.5px; padding: 2px 7px;">OTT Radar</span>
-                                <span class="chip" id="releasesLastUpdatedTag" style="font-size: 11px; color: var(--text-muted); background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-subtle);">Last updated: Loading...</span>
-                            </div>
+                            <h1 style="font-size: 15px; font-weight: 700; color: #fff; margin: 0;">New OTT Releases</h1>
+                            <span class="chip quality" style="background: rgba(229, 9, 20, 0.18); color: #ff5252; border-color: rgba(229, 9, 20, 0.35); font-size: 10px; padding: 1px 6px;">OTT Radar</span>
+                            <span id="releasesLastUpdatedTag" style="font-size: 11px; color: var(--text-muted);">Loading...</span>
                         </div>
                         <div class="releases-header-right">
-                            <button class="btn-primary-action" id="btnManualRefreshReleases" onclick="triggerManualReleasesRefresh(90)" style="padding: 7px 16px; font-size: 12px;">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
-                                <span>Refresh Releases</span>
+                            <button class="btn-primary-action" id="btnManualRefreshReleases" onclick="triggerManualReleasesRefresh(90)" style="padding: 5px 12px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px;">
+                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                <span>Refresh</span>
                             </button>
                         </div>
                     </div>
 
-                    <!-- Platform Metrics Bar -->
-                    <div class="metrics-row" style="margin-top: 10px;">
-                        <div class="metric-card ott-metric-card" onclick="filterReleasesByPlatform('all')" title="Filter: All Releases">
-                            <div class="metric-icon-box active">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4v16"/><path d="M16 4v16"/></svg>
-                            </div>
-                            <div>
-                                <div class="metric-value tabular-nums" id="statTotalReleases">0</div>
-                                <div class="metric-label">All Releases</div>
-                            </div>
-                        </div>
-                        <div class="metric-card ott-metric-card" onclick="filterReleasesByPlatform('netflix')" title="Filter: Netflix">
-                            <div class="metric-icon-box" style="background: rgba(229, 9, 20, 0.15); color: #E50914;">
-                                <span style="font-weight: 900; font-size: 15px;">N</span>
-                            </div>
-                            <div>
-                                <div class="metric-value tabular-nums" id="statNetflixCount">0</div>
-                                <div class="metric-label">Netflix</div>
-                            </div>
-                        </div>
-                        <div class="metric-card ott-metric-card" onclick="filterReleasesByPlatform('amazon prime video')" title="Filter: Prime Video">
-                            <div class="metric-icon-box" style="background: rgba(0, 168, 225, 0.15); color: #00A8E1;">
-                                <span style="font-weight: 900; font-size: 15px;">P</span>
-                            </div>
-                            <div>
-                                <div class="metric-value tabular-nums" id="statPrimeCount">0</div>
-                                <div class="metric-label">Prime Video</div>
-                            </div>
-                        </div>
-                        <div class="metric-card ott-metric-card" onclick="filterReleasesByPlatform('disney+ hotstar')" title="Filter: Hotstar">
-                            <div class="metric-icon-box" style="background: rgba(255, 204, 0, 0.15); color: #FFCC00;">
-                                <span style="font-weight: 900; font-size: 15px;">H</span>
-                            </div>
-                            <div>
-                                <div class="metric-value tabular-nums" id="statHotstarCount">0</div>
-                                <div class="metric-label">Hotstar</div>
-                            </div>
-                        </div>
-                        <div class="metric-card ott-metric-card" onclick="filterReleasesByPlatform('zee5')" title="Filter: Zee5">
-                            <div class="metric-icon-box" style="background: rgba(162, 28, 175, 0.15); color: #c084fc;">
-                                <span style="font-weight: 900; font-size: 15px;">Z</span>
-                            </div>
-                            <div>
-                                <div class="metric-value tabular-nums" id="statZee5Count">0</div>
-                                <div class="metric-label">Zee5</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Toolbar Filters (No Search Bar) -->
-                    <div class="releases-toolbar-card">
-                        <!-- OTT Platform Pills -->
-                        <div class="toolbar-section">
-                            <div class="filter-label">OTT PLATFORM:</div>
-                            <div class="pill-group" id="platformFilterPills">
-                                <button class="pill-btn active" data-platform="all" onclick="filterReleasesByPlatform('all')">All Platforms</button>
-                                <button class="pill-btn" data-platform="netflix" onclick="filterReleasesByPlatform('netflix')">Netflix</button>
-                                <button class="pill-btn" data-platform="amazon prime video" onclick="filterReleasesByPlatform('amazon prime video')">Prime Video</button>
-                                <button class="pill-btn" data-platform="disney+ hotstar" onclick="filterReleasesByPlatform('disney+ hotstar')">Hotstar</button>
-                                <button class="pill-btn" data-platform="zee5" onclick="filterReleasesByPlatform('zee5')">Zee5</button>
-                                <button class="pill-btn" data-platform="sony liv" onclick="filterReleasesByPlatform('sony liv')">Sony LIV</button>
-                                <button class="pill-btn" data-platform="jiocinema" onclick="filterReleasesByPlatform('jiocinema')">JioCinema</button>
-                                <button class="pill-btn" data-platform="youtube" onclick="filterReleasesByPlatform('youtube')">YouTube</button>
-                            </div>
-                        </div>
-
-                        <!-- Industry Pills & Sort Row -->
-                        <div class="toolbar-section" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: 1;">
-                                <div class="filter-label">INDUSTRY:</div>
-                                <div class="pill-group" id="industryFilterPills">
-                                    <button class="pill-btn active" data-industry="all" onclick="filterReleasesByIndustry('all')">All Industries</button>
-                                    <button class="pill-btn" data-industry="bollywood" onclick="filterReleasesByIndustry('bollywood')">Bollywood (Hindi)</button>
-                                    <button class="pill-btn" data-industry="tollywood" onclick="filterReleasesByIndustry('tollywood')">Tollywood (Telugu)</button>
-                                    <button class="pill-btn" data-industry="kollywood" onclick="filterReleasesByIndustry('kollywood')">Kollywood (Tamil)</button>
-                                    <button class="pill-btn" data-industry="mollywood" onclick="filterReleasesByIndustry('mollywood')">Mollywood (Malayalam)</button>
-                                    <button class="pill-btn" data-industry="sandalwood" onclick="filterReleasesByIndustry('sandalwood')">Sandalwood (Kannada)</button>
-                                    <button class="pill-btn" data-industry="bengali" onclick="filterReleasesByIndustry('bengali')">Bengali Cinema</button>
-                                </div>
-                            </div>
-                            <div class="sort-select-wrap" style="min-width: 170px;">
-                                <select id="releasesSortSelect" class="form-input" onchange="handleReleasesSortChange()" style="padding: 6px 12px; font-size: 12px;">
-                                    <option value="date_desc">Newest Release Date</option>
-                                    <option value="rating_desc">Highest TMDB Rating</option>
-                                    <option value="popularity_desc">Most Popular</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
 
                     <!-- Cards Grid -->
                     <div class="releases-grid" id="releasesGrid">
@@ -1750,18 +1659,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             <!-- VIEW: DEDICATED REQUESTED MEDIA HUB -->
             <section class="view-container ${activeView === 'requested' ? 'active' : ''}" id="view-requested">
                 <div class="download-station-wrap">
-                    <div class="jf-hero-card">
-                        <div>
-                            <span class="chip quality">Watchlist & Queue</span>
-                            <h1 style="font-size: 20px; margin: 6px 0 2px;">Requested Media Hub</h1>
-                            <p style="color: var(--text-secondary); font-size: 12.5px;">All movies requested through AI Copilot and search queries.</p>
-                        </div>
-                        <div class="metric-icon-box active" style="width: 44px; height: 44px;">
-                            <svg class="tabler-icon" style="width:24px;height:24px;" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M19 16h-12a2 2 0 0 0 -2 2"/><path d="M9 8h6"/></svg>
-                        </div>
-                    </div>
-
-                    <div class="history-card" style="margin-top: 16px;">
+                    <div class="history-card">
                         <div class="history-toolbar">
                             <div>
                                 <h2 style="font-size: 15px;">Requested Media List</h2>
@@ -1795,50 +1693,41 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             <!-- VIEW 4: JELLYFIN MEDIA HUB -->
             <section class="view-container ${activeView === 'jellyfin' ? 'active' : ''}" id="view-jellyfin">
                 <div class="jellyfin-wrap">
-                    <div class="jf-hero-card">
-                        <div>
+                    <!-- Compact 1-Line Header Bar on small/large screens -->
+                    <div class="jf-compact-header">
+                        <div class="jf-compact-title">
                             <span class="chip jellyfin">Media Server</span>
-                            <h1 style="font-size: 20px; margin: 6px 0 2px;">Jellyfin Integration</h1>
-                            <p style="color: var(--text-secondary); font-size: 12.5px;">Direct library inspection and collection browser.</p>
+                            <h1 style="font-size: 16px; margin: 2px 0 0; color: #fff; font-weight: 700;">Jellyfin Library</h1>
                         </div>
-                        <div class="metric-icon-box completed" style="width: 44px; height: 44px;">
-                            <svg class="tabler-icon" style="width:24px;height:24px;" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
-                        </div>
-                    </div>
-
-                    <div class="jf-stats-grid">
-                        <div class="metric-card">
-                            <div class="metric-icon-box active">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/></svg>
+                        <div class="jf-compact-stats">
+                            <div class="jf-stat-pill">
+                                <span class="jf-stat-val tabular-nums" id="jfMoviesCount">--</span>
+                                <span class="jf-stat-lbl">Movies in Library</span>
                             </div>
-                            <div>
-                                <div class="metric-value tabular-nums" id="jfMoviesCount">--</div>
-                                <div class="metric-label">Movies in Library</div>
-                            </div>
-                        </div>
-                        <div class="metric-card">
-                            <div class="metric-icon-box completed">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
-                            </div>
-                            <div>
-                                <div class="metric-value tabular-nums" style="font-size: 16px; color: var(--accent-emerald);">Synchronized</div>
-                                <div class="metric-label">Jellyfin Media Server</div>
+                            <div class="jf-stat-pill sync">
+                                <span class="status-dot online"></span>
+                                <span class="jf-stat-lbl" style="color: var(--accent-emerald);">Synchronized</span>
                             </div>
                         </div>
                     </div>
 
-                    <div class="studio-search-card">
-                        <h3 style="font-size: 14px;">Movie Duplicate Checker</h3>
-                        <p style="font-size: 12.5px; color: var(--text-secondary);">Test whether any movie exists in your Jellyfin movie collection before searching Telegram.</p>
-                        <div style="display: flex; gap: 8px; margin-top: 8px;">
-                            <input type="text" id="jfCheckInput" class="form-input" placeholder="Movie Title (e.g. Dune, Inception, Jawan)..." style="flex: 1;" onkeydown="if(event.key==='Enter') checkJellyfinItem()">
-                            <button class="btn-primary-action" onclick="checkJellyfinItem()">Check Jellyfin</button>
+                    <div class="studio-search-card" style="padding: 14px 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
+                            <h3 style="font-size: 13.5px; margin: 0;">Movie Duplicate Checker</h3>
+                            <span style="font-size: 11px; color: var(--text-secondary);">Instant poster lookup & library search</span>
                         </div>
-                        <div id="jfCheckResultBox" style="display:none; margin-top: 10px; padding: 10px; background: var(--bg-input); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);"></div>
+                        <div style="display: flex; gap: 8px; margin-top: 10px;">
+                            <input type="text" id="jfCheckInput" class="form-input" placeholder="Type a movie name (e.g. Your Name, 3 Idiots, 2012, Dune)..." style="flex: 1; font-size: 12.5px;" oninput="handleJellyfinSearchInput(this.value)" onkeydown="if(event.key==='Enter') checkJellyfinItem()">
+                            <button class="btn-primary-action" onclick="checkJellyfinItem()" style="padding: 6px 14px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
+                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
+                                Check
+                            </button>
+                        </div>
+                        <div id="jfCheckResultBox" style="display:none; margin-top: 10px; padding: 12px; background: var(--bg-surface-elevated); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px;"></div>
                     </div>
 
                     <!-- JELLYFIN MOVIE LIBRARY COLLECTION -->
-                    <div class="history-card" style="margin-top: 16px;">
+                    <div class="history-card" style="margin-top: 4px;">
                         <div class="history-toolbar">
                             <div>
                                 <h2 style="font-size: 15px;">Movies Collection</h2>
@@ -1896,7 +1785,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                 <div class="admin-wrap">
                     <div class="studio-search-card">
                         <h2 style="font-size: 15px;">Create New User</h2>
-                        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 110px auto; gap: 8px; margin-top: 10px;">
+                        <div class="admin-create-user-grid">
                             <input type="text" id="adminNewName" class="form-input" placeholder="Name">
                             <input type="email" id="adminNewEmail" class="form-input" placeholder="Email">
                             <input type="password" id="adminNewPass" class="form-input" placeholder="Password">
