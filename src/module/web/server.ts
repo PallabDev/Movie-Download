@@ -318,6 +318,7 @@ app.post("/api/search", requireAuth, async (req: any, res) => {
         const bot = type === "movie" ? "ProSearchM11Bot" : "ProSearchY11Bot";
         const botClient = (await import("../../module/bot/bot.js")).default;
         const results: { text: string; sizeMB: number; season?: number; episode?: number }[] = [];
+        const allPaged: { globalIndex: number; text: string; sizeMB: number; page: number; row: number; col: number }[] = [];
         let primaryBtnMsg: any = null;
 
         if (type === "movie") {
@@ -345,16 +346,85 @@ app.post("/api/search", requireAuth, async (req: any, res) => {
 
             if (btnMsg) {
                 primaryBtnMsg = btnMsg;
-                const buttons = (await btnMsg.getButtons())!;
-                for (const row of buttons) {
-                    for (const btn of row) {
-                        const text = (btn as any).text || "";
-                        if (!text) continue;
-                        const lower = text.toLowerCase();
-                        if (lower.includes("srt") || lower.includes("sub")) continue;
-                        const sizeMB = extractSizeMB(text);
-                        if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
-                        results.push({ text, sizeMB });
+                let currentMsg = btnMsg;
+                const seenTexts = new Set<string>();
+                const MAX_PAGES = 10;
+
+                for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
+                    const buttons = (await currentMsg.getButtons()) || [];
+                    let nextBtn: any = null;
+
+                    for (let r = 0; r < buttons.length; r++) {
+                        for (let c = 0; c < buttons[r].length; c++) {
+                            const btn = buttons[r][c];
+                            const text = ((btn as any).text || "").trim();
+                            if (!text) continue;
+
+                            const lower = text.toLowerCase();
+                            const isNav =
+                                lower.includes("next") ||
+                                lower.includes("prev") ||
+                                lower.includes("page") ||
+                                lower.includes("back") ||
+                                lower.includes("close") ||
+                                lower.includes("update") ||
+                                lower.includes("channel") ||
+                                /^\s*(⬅️|➡️|◀️|▶️|<<|>>|\d+\/\d+)/i.test(lower) ||
+                                /\[\d+\/\d+\]/.test(lower);
+
+                            if (isNav) {
+                                if (
+                                    lower.includes("next") ||
+                                    lower.includes("➡️") ||
+                                    lower.includes("▶️") ||
+                                    lower.includes(">>") ||
+                                    (/\[\d+\/\d+\]/.test(lower) && !lower.includes("prev") && !lower.includes("⬅️"))
+                                ) {
+                                    const pageMatch = lower.match(/\[(\d+)\/(\d+)\]/);
+                                    if (pageMatch && parseInt(pageMatch[1], 10) >= parseInt(pageMatch[2], 10)) {
+                                        // Last page
+                                    } else {
+                                        nextBtn = btn;
+                                    }
+                                }
+                                continue;
+                            }
+
+                            if (lower.includes("srt") || lower.includes("sub") || lower.includes(".txt") || lower.includes(".zip")) continue;
+
+                            const sizeMB = extractSizeMB(text);
+                            if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
+
+                            if (!seenTexts.has(text)) {
+                                seenTexts.add(text);
+                                allPaged.push({
+                                    globalIndex: allPaged.length + 1,
+                                    text,
+                                    sizeMB,
+                                    page: pageNum,
+                                    row: r,
+                                    col: c,
+                                });
+                                results.push({ text, sizeMB });
+                            }
+                        }
+                    }
+
+                    if (nextBtn && pageNum < MAX_PAGES) {
+                        try {
+                            await nextBtn.click({});
+                            await new Promise(res => setTimeout(res, 1500));
+                            const msgs = await botClient.getMessages(bot, { ids: [btnMsg.id] });
+                            if (msgs && msgs[0]) {
+                                currentMsg = msgs[0];
+                            } else {
+                                break;
+                            }
+                        } catch {
+                            break;
+                        }
+                    } else {
+                        break;
                     }
                 }
             }
@@ -434,6 +504,7 @@ app.post("/api/search", requireAuth, async (req: any, res) => {
             type,
             title: cleanTitle,
             year: cleanYear,
+            pagedResults: allPaged,
             createdAt: Date.now(),
         });
 
@@ -517,13 +588,17 @@ app.post("/api/select", requireAuth, async (req: any, res) => {
 
         await updateDB(requestId, { status: "queued", fileSize });
 
+        const matchingPaged = session.pagedResults?.find((p: any) => p.text === buttonText || p.text.toLowerCase().includes(buttonText.toLowerCase()));
         let securedInfo: { savedMsgId: number; fileName: string; totalSize: number } | null = null;
         try {
             if (session.btnMsg) {
                 securedInfo = await secureBotFileToSavedMessages(
                     session.bot,
                     session.btnMsg,
-                    buttonText
+                    buttonText,
+                    matchingPaged?.page || 1,
+                    matchingPaged?.row,
+                    matchingPaged?.col
                 );
             }
         } catch (secErr: any) {
@@ -539,6 +614,9 @@ app.post("/api/select", requireAuth, async (req: any, res) => {
             year: session.year,
             fileSize: fileSize || undefined,
             buttonText,
+            page: matchingPaged?.page || 1,
+            buttonRow: matchingPaged?.row,
+            buttonCol: matchingPaged?.col,
             savedMsgId: securedInfo?.savedMsgId,
             fileName: securedInfo?.fileName,
             fileSizeBytes: securedInfo?.totalSize,
@@ -914,6 +992,7 @@ function getLoginPage(): string {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign In - CineGrab</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -962,6 +1041,7 @@ function getRegisterPage(): string {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Create Account - CineGrab</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -1035,6 +1115,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>CineGrab - ${headerTitle}</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">

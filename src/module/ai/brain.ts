@@ -506,27 +506,27 @@ export async function pickBestResult(
             score += 15;
         }
 
-        // ── 2. Resolution & Efficiency ──
-        if (lower.includes("1080p")) {
-            score += 40;
+        // ── 2. Resolution & Efficiency (720p IS TOP PRIORITY) ──
+        if (lower.includes("720p")) {
+            score += 65;
+            reasons.push("720p HD (Optimal Quality)");
+            if (lower.includes("265") || lower.includes("hevc")) {
+                score += 20;
+                reasons.push("H.265 efficient");
+            }
+        } else if (lower.includes("1080p")) {
+            score += 25;
             reasons.push("1080p FHD");
             if (lower.includes("265") || lower.includes("hevc")) {
-                score += 20;
-                reasons.push("H.265 efficient");
+                score += 10;
+                reasons.push("H.265");
             }
-        } else if (lower.includes("720p")) {
-            score += 35;
-            reasons.push("720p HD");
-            if (lower.includes("265") || lower.includes("hevc")) {
-                score += 20;
-                reasons.push("H.265 efficient");
-            }
-        } else if (lower.includes("2160p") || lower.includes("4k")) {
-            score += 25;
-            reasons.push("4K UHD");
         } else if (lower.includes("480p")) {
-            score += 10;
+            score += 15;
             reasons.push("480p SD");
+        } else if (lower.includes("2160p") || lower.includes("4k")) {
+            score += 5;
+            reasons.push("4K UHD");
         }
 
         // ── 3. Size Check ──

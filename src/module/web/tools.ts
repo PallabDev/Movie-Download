@@ -535,6 +535,7 @@ export async function toolDownloadMovie(args: Record<string, any>, sessionId: st
                 session?.bot || "ProSearchM11Bot",
                 msgToClick,
                 targetBtnText,
+                targetPage,
                 targetBtnRow,
                 targetBtnCol
             );
@@ -542,6 +543,24 @@ export async function toolDownloadMovie(args: Record<string, any>, sessionId: st
     } catch (secErr: any) {
         console.log(`[QUEUE] Pre-secure notice: ${secErr?.message || secErr}`);
     }
+    // ─── DEDUPLICATION GUARD: Prevent duplicate downloads for same movie within 60s ───
+    try {
+        const existingActive = await db.query.downloads.findFirst({
+            where: (d, { eq, and, or, gte }) => and(
+                eq(d.title, targetTitle),
+                or(eq(d.status, "queued"), eq(d.status, "downloading")),
+                gte(d.createdAt, new Date(Date.now() - 60 * 1000))
+            )
+        });
+        if (existingActive) {
+            harness.logActivity(`[TOOL download_movie] Already queued/downloading "${targetTitle}" (requestId: ${existingActive.requestId}). Reusing existing download.`);
+            return {
+                success: true,
+                message: `MOVIE_DOWNLOAD_QUEUED: "${targetTitle}" (${existingActive.fileSize || fileSize}) is already in the download queue.`,
+                data: { requestId: existingActive.requestId, title: targetTitle, fileSize: existingActive.fileSize || fileSize }
+            };
+        }
+    } catch {}
 
     try {
         await db.insert(schema.downloads).values({

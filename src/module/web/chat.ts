@@ -2,7 +2,7 @@ import { getHarness } from "../../../command/harness.js";
 import { db, schema } from "../../common/db/index.js";
 import { lookupMedia, cleanMediaTitle } from "../../common/tmdb/client.js";
 import { parseToolCall, KNOWN_TOOLS } from "./tool-parser.js";
-import { executeTool, SYSTEM_PROMPT, clearWorkflow, type ToolResult } from "./tools.js";
+import { executeTool, SYSTEM_PROMPT, clearWorkflow, searchSessions, type ToolResult } from "./tools.js";
 
 // ─── AGENT MEMORY (PostgreSQL) ───
 
@@ -32,6 +32,30 @@ export async function handleChat(
 
     await saveMemory(sessionId, "user", userMessage);
 
+    // ─── ANTI-HALLUCINATION FAST-PATH: DIRECT DOWNLOAD INTENTS ───
+    const session = searchSessions.get(`session_${sessionId}`);
+    const downloadNumMatch = lowerMsg.match(/^(?:download\s+(?:#?(\d+)|recommend|best|it|movie)|#?(\d+)|yes|confirm|ok)$/i);
+    const downloadMovieMatch = lowerMsg.match(/^download\s+([a-z0-9\s:–\-]+)$/i);
+
+    if (session && downloadNumMatch) {
+        const optNum = downloadNumMatch[1] || downloadNumMatch[2];
+        const optIdx = optNum ? parseInt(optNum) : undefined;
+        harness.logActivity(`[CHAT FAST-PATH] Detected direct download selection (Option #${optIdx || "recommended"}) for "${session.title}"`);
+        const result = await executeTool("download_movie", { title: session.title, optionIndex: optIdx, sessionId }, sessionId);
+        toolCalls.push({ tool: "download_movie", args: { title: session.title, optionIndex: optIdx }, result });
+    } else if (downloadMovieMatch && !session) {
+        const titleToDl = downloadMovieMatch[1].trim();
+        if (titleToDl.length > 2 && !/^(movie|it|recommend|best)$/i.test(titleToDl)) {
+            harness.logActivity(`[CHAT FAST-PATH] Direct download command for new movie: "${titleToDl}"`);
+            const sRes = await executeTool("search_movie", { title: titleToDl }, sessionId);
+            toolCalls.push({ tool: "search_movie", args: { title: titleToDl }, result: sRes });
+            if (sRes.success) {
+                const dlRes = await executeTool("download_movie", { title: titleToDl, sessionId }, sessionId);
+                toolCalls.push({ tool: "download_movie", args: { title: titleToDl }, result: dlRes });
+            }
+        }
+    }
+
     // Pre-fetch verified TMDB metadata to inject ground-truth context and prevent AI hallucinations
     let tmdbGroundTruth = "";
     try {
@@ -55,6 +79,20 @@ export async function handleChat(
         { role: "user", content: userMessage },
     ];
 
+    // If fast-path already executed tools, inform the LLM directly so it does NOT repeat them!
+    if (toolCalls.length > 0) {
+        for (const tc of toolCalls) {
+            messages.push({
+                role: "assistant",
+                content: `{"tool": "${tc.tool}", "args": ${JSON.stringify(tc.args)}}`
+            });
+            messages.push({
+                role: "user",
+                content: `Tool "${tc.tool}" executed successfully.\nResult message: ${tc.result.message}\nData: ${JSON.stringify(tc.result.data || {})}\n\nNow respond to the user with a friendly, enthusiastic confirmation message. DO NOT call any more tools.`
+            });
+        }
+    }
+
     const MAX_ITERATIONS = 8;
 
     try {
@@ -73,6 +111,18 @@ export async function handleChat(
             const parsed = parseToolCall(response);
 
             if (parsed) {
+                // If this exact tool was already executed in this turn, don't execute it again!
+                if (toolCalls.some(t => t.tool === parsed.tool)) {
+                    harness.logActivity(`[CHAT] Skipping redundant tool call "${parsed.tool}" - already executed in this turn.`);
+                    const existingTool = toolCalls.find(t => t.tool === parsed.tool)!;
+                    messages.push({ role: "assistant", content: response });
+                    messages.push({
+                        role: "user",
+                        content: `Tool "${parsed.tool}" already executed.\nResult: ${existingTool.result.message}\nData: ${JSON.stringify(existingTool.result.data || {})}\n\nPlease respond to the user in friendly Markdown. DO NOT call any more tools.`
+                    });
+                    continue;
+                }
+
                 harness.logActivity(`[CHAT] Executing parsed tool: "${parsed.tool}" with args: ${JSON.stringify(parsed.args)}`);
 
                 const result = await executeTool(parsed.tool, parsed.args, sessionId);
@@ -119,7 +169,20 @@ export async function handleChat(
                         finalReply = `Done processing your request!`;
                     }
                 } else {
-                    finalReply = `I'm ready to search and download movies or series. What would you like to find?`;
+                    finalReply = `I'm ready to search and download movies. What would you like to find?`;
+                }
+            }
+
+            // ─── ANTI-HALLUCINATION GUARD: If AI claimed download is queued but tool didn't run ───
+            const claimsQueued = /(?:added to (?:the )?download queue|queued for download|download has been queued|download started|download is queued)/i.test(finalReply);
+            const hasDownloadTool = toolCalls.some(t => t.tool.includes("download"));
+
+            if (claimsQueued && !hasDownloadTool) {
+                const activeSession = searchSessions.get(`session_${sessionId}`);
+                if (activeSession) {
+                    harness.logActivity(`[ANTI-HALLUCINATION TRIGGERED] AI claimed download was queued without executing tool. Executing download_movie now for "${activeSession.title}"!`);
+                    const forcedRes = await executeTool("download_movie", { title: activeSession.title, sessionId }, sessionId);
+                    toolCalls.push({ tool: "download_movie", args: { title: activeSession.title }, result: forcedRes });
                 }
             }
 

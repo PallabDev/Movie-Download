@@ -45,7 +45,7 @@ class MemoryQueue {
     setProcessor(fn: (job: Job) => Promise<void>) { this.processor = fn; }
 
     addJob(data: DownloadJobData): Job {
-        // If job with same requestId already exists, reuse or update
+        // 1. If job with same requestId already exists, reuse or update
         const existing = Array.from(this.jobs.values()).find(j => j.data.requestId === data.requestId);
         if (existing) {
             existing.status = "waiting";
@@ -53,6 +53,17 @@ class MemoryQueue {
             activeJobSignals.set(data.requestId, { paused: false, cancelled: false });
             setTimeout(() => this.runNext(), 0);
             return existing;
+        }
+
+        // 2. Prevent duplicate jobs for the same title and type if already active or waiting in queue
+        const duplicate = Array.from(this.jobs.values()).find(j =>
+            (j.status === "active" || j.status === "waiting") &&
+            j.data.title.toLowerCase().trim() === data.title.toLowerCase().trim() &&
+            j.data.type === data.type
+        );
+        if (duplicate) {
+            console.log(`[QUEUE DEDUP] Ignored duplicate job for "${data.title}" - already ${duplicate.status} (Job ID: ${duplicate.id})`);
+            return duplicate;
         }
 
         const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -608,31 +619,70 @@ export async function secureBotFileToSavedMessages(
     targetBot: string,
     btnMsg?: any,
     buttonText?: string,
+    targetPage: number = 1,
     buttonRow?: number,
     buttonCol?: number
 ): Promise<{ savedMsgId: number; fileName: string; totalSize: number } | null> {
     try {
         if (!btnMsg) return null;
 
+        let curMsg = btnMsg;
+
+        // If target release is on Page > 1, navigate forward by clicking Next button
+        if (targetPage > 1) {
+            console.log(`[SECURE_FILE] Target is on Page ${targetPage}. Flipping pages...`);
+            for (let p = 1; p < targetPage; p++) {
+                const curButtons = (await curMsg.getButtons()) || [];
+                let nextBtn: any = null;
+                for (const row of curButtons) {
+                    for (const btn of row) {
+                        const bt = ((btn as any).text || "").toLowerCase();
+                        if (
+                            bt.includes("next") ||
+                            bt.includes("➡️") ||
+                            bt.includes(">>") ||
+                            (/\[\d+\/\d+\]/.test(bt) && !bt.includes("prev") && !bt.includes("⬅️"))
+                        ) {
+                            nextBtn = btn;
+                            break;
+                        }
+                    }
+                    if (nextBtn) break;
+                }
+
+                if (nextBtn) {
+                    await nextBtn.click({});
+                    await sleep(1500);
+                    const msgs = await client.getMessages(targetBot, { ids: [curMsg.id] });
+                    if (msgs && msgs[0]) {
+                        curMsg = msgs[0];
+                    }
+                } else {
+                    console.log(`[SECURE_FILE] No next button found on page ${p}`);
+                    break;
+                }
+            }
+        }
+
         const initialRecent = await client.getMessages(targetBot, { limit: 15 });
         const seenIds = new Set<number>(initialRecent.map((m: any) => m.id));
 
-        console.log(`[SECURE_FILE] Clicking release button on @${targetBot} to trigger and secure file...`);
-        const buttons = await btnMsg.getButtons();
+        console.log(`[SECURE_FILE] Clicking release button on @${targetBot} (Page ${targetPage}) to trigger and secure file...`);
+        const buttons = (await curMsg.getButtons()) || [];
         if (buttonRow !== undefined && buttonCol !== undefined && buttons?.[buttonRow]?.[buttonCol]) {
             await (buttons[buttonRow][buttonCol] as any).click({});
         } else if (buttonText) {
-            try { await btnMsg.click({ text: buttonText }); } catch {
+            try { await curMsg.click({ text: buttonText }); } catch {
                 if (buttonRow !== undefined && buttonCol !== undefined) {
-                    await btnMsg.click({ i: buttonRow, j: buttonCol });
+                    await curMsg.click({ i: buttonRow, j: buttonCol });
                 }
             }
         } else if (buttonRow !== undefined && buttonCol !== undefined) {
-            await btnMsg.click({ i: buttonRow, j: buttonCol });
+            await curMsg.click({ i: buttonRow, j: buttonCol });
         }
 
-        // Poll for document message from bot (up to 15 seconds)
-        for (let i = 0; i < 7; i++) {
+        // Poll for document message from bot (up to 20 seconds)
+        for (let i = 0; i < 10; i++) {
             await sleep(2000);
             const recent = await client.getMessages(targetBot, { limit: 10 });
             for (const msg of recent) {
@@ -689,9 +739,9 @@ export function createDownloadWorker() {
             let fileName = data.fileName || "video.mp4";
             let totalSize = data.fileSizeBytes || 0;
 
-            // ─── STEP 0: CHECK SAVED MESSAGES FIRST (PRE-SECURED FILES) ───
+            // ─── TIER 1: CHECK SAVED MESSAGES BY DIRECT ID ───
             if (data.savedMsgId) {
-                console.log(`[WORKER] Checking Saved Messages for pre-secured file (ID: ${data.savedMsgId})...`);
+                console.log(`[WORKER] [TIER 1] Checking Saved Messages for pre-secured file (ID: ${data.savedMsgId})...`);
                 try {
                     const msgs = await client.getMessages("me", { ids: [data.savedMsgId] });
                     if (msgs && msgs[0] && (msgs[0].document || msgs[0].media)) {
@@ -710,8 +760,9 @@ export function createDownloadWorker() {
                 }
             }
 
+            // ─── TIER 2: CHECK SAVED MESSAGES BY TITLE/SIZE MATCH ───
             if (!mediaToDownload) {
-                // Check recent messages in Saved Messages ("me") by title/size match
+                console.log(`[WORKER] [TIER 2] Searching Saved Messages for "${data.title}"...`);
                 const matchedSaved = await findInSavedMessages(data.title, parseSizeMB(data.fileSize || ""));
                 if (matchedSaved) {
                     mediaToDownload = matchedSaved;
@@ -723,6 +774,49 @@ export function createDownloadWorker() {
                         if (fnameAttr?.fileName) fileName = fnameAttr.fileName;
                     }
                     console.log(`[WORKER] Matched existing file in Saved Messages for "${data.title}": "${fileName}" (${(totalSize / (1024 * 1024)).toFixed(0)} MB). Skipping bot search!`);
+                }
+            }
+
+            // ─── TIER 3: CHECK BOT CHAT FOR ALREADY-DELIVERED FILE BEFORE RE-QUERYING ───
+            if (!mediaToDownload) {
+                try {
+                    console.log(`[WORKER] [TIER 3] Checking @${targetBot} recent messages for delivered file...`);
+                    const botRecent = await client.getMessages(targetBot, { limit: 25 });
+                    const cleanTitle = data.title.replace(/\s*\(\d{4}\).*$/, "").toLowerCase().trim();
+                    const titleWords = cleanTitle.split(/\s+/).filter((w: string) => w.length > 2 && !/^\d{4}$/.test(w));
+                    const wantSize = parseSizeMB(data.fileSize || "");
+
+                    for (const msg of botRecent) {
+                        if (!msg.document) continue;
+                        const fnameAttr = msg.document.attributes?.find(
+                            (a: any) => a.className === "DocumentAttributeFilename"
+                        ) as any;
+                        const docName = (fnameAttr?.fileName || "").toLowerCase();
+                        const docSizeMB = Number(msg.document.size) / (1024 * 1024);
+
+                        if (docName.endsWith(".srt") || docSizeMB < 20) continue;
+                        if (wantSize > 0 && Math.abs(docSizeMB - wantSize) > 50) continue;
+
+                        if (titleWords.length > 0) {
+                            const matchCount = titleWords.filter((w: string) => docName.includes(w)).length;
+                            if (matchCount >= Math.ceil(titleWords.length * 0.6)) {
+                                console.log(`[WORKER] Found matching video document in bot chat for "${data.title}": "${fnameAttr?.fileName}". Forwarding to Saved Messages...`);
+                                await client.forwardMessages("me", { messages: [msg.id], fromPeer: targetBot });
+                                await sleep(800);
+                                const savedMsgs = await client.getMessages("me", { limit: 5 });
+                                const savedMatch = savedMsgs.find((m: any) => m.document);
+                                if (savedMatch) {
+                                    mediaToDownload = savedMatch;
+                                    fileName = fnameAttr?.fileName || fileName;
+                                    totalSize = Number(msg.document.size) || totalSize;
+                                    console.log(`[WORKER] Secured bot chat file into Saved Messages (ID: ${savedMatch.id})! Skipping bot search!`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch (bErr: any) {
+                    console.log(`[WORKER] Bot chat pre-check notice: ${bErr?.message || bErr}`);
                 }
             }
 
