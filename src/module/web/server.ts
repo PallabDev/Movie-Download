@@ -1218,8 +1218,7 @@ const pageRoutes = [
     "/jellyfin",
     "/telegram", "/bot",
     "/user", "/users",
-    "/admin",
-    "/studio", "/search"
+    "/admin"
 ];
 
 app.get(pageRoutes, (req, res) => {
@@ -1255,7 +1254,6 @@ app.get(pageRoutes, (req, res) => {
         if (role === "admin") initialView = "admin";
         else initialView = "chat";
     }
-    else if (path.startsWith("/studio") || path.startsWith("/search")) initialView = "studio";
     else initialView = "chat";
 
     res.send(getDashboardPage(user, initialView));
@@ -1418,8 +1416,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
         requested: "Requested Media",
         jellyfin: "Jellyfin Library",
         bot: "Telegram Bot",
-        admin: "User Management",
-        studio: "Search Studio"
+        admin: "User Management"
     };
 
     const headerTitle = titles[activeView] || "Jellyfin Library";
@@ -1467,10 +1464,6 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <a class="nav-link ${activeView === 'chat' ? 'active' : ''}" href="/" data-view="chat" onclick="navigateRoute(event, 'chat')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
                             <span>AI Copilot</span>
-                        </a>
-                        <a class="nav-link ${activeView === 'studio' ? 'active' : ''}" href="/studio" data-view="studio" onclick="navigateRoute(event, 'studio')">
-                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
-                            <span>Search & Download</span>
                         </a>
                         <a class="nav-link ${activeView === 'releases' ? 'active' : ''}" href="/releases" data-view="releases" onclick="navigateRoute(event, 'releases')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4v16"/><path d="M16 4v16"/><path d="M4 8h4"/><path d="M4 16h4"/><path d="M4 12h16"/><path d="M16 8h4"/><path d="M16 16h4"/></svg>
@@ -1539,10 +1532,6 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                 </div>
                 <div class="header-right">
                     ${!isUser ? `
-                    <button class="btn-header header-search-btn" onclick="navigateRoute(event, 'studio')">
-                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
-                        Search
-                    </button>
                     <button class="btn-header primary" onclick="startNewChat()">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
                         New Chat
@@ -1604,34 +1593,6 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                 </div>
             </section>
 
-            <!-- VIEW 2: SEARCH & DISCOVER STUDIO -->
-            <section class="view-container ${activeView === 'studio' ? 'active' : ''}" id="view-studio">
-                <div class="studio-wrap">
-                    <div class="studio-header">
-                        <h1>Search & Discover Studio</h1>
-                        <p>Direct search Telegram ProSearch Bots with instant quality matrix recommendations for movies.</p>
-                    </div>
-
-                    <div class="studio-search-card">
-                        <div class="search-input-group">
-                            <input type="text" id="studioSearchInput" class="form-input" placeholder="Movie Title (e.g. Interstellar, Dune, Jawan, Animal)..." onkeydown="if(event.key==='Enter') performStudioSearch()">
-                            <input type="text" id="studioYearInput" class="form-input" placeholder="Year (e.g. 2024)" onkeydown="if(event.key==='Enter') performStudioSearch()">
-                            <button class="btn-primary-action" id="btnStudioSearch" onclick="performStudioSearch()">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
-                                Search Releases
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="studio-results-area" id="studioResultsArea">
-                        <div style="text-align:center; padding: 40px; color: var(--text-muted);">
-                            <div style="font-weight: 600; color: #fff; font-size: 14px;">Ready to Search Movies</div>
-                            <div style="font-size: 12.5px; margin-top: 4px;">Enter a movie title above to discover release qualities, file sizes, and audio tracks.</div>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
             <!-- VIEW 3: LIVE DOWNLOAD STATION -->
             <section class="view-container ${activeView === 'downloads' ? 'active' : ''}" id="view-downloads">
                 <div class="download-station-wrap">
@@ -1680,7 +1641,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         </div>
                         <div class="live-downloads-grid" id="liveDownloadsGrid"></div>
                         <div id="noActiveDownloadsMsg" style="text-align:center; padding: 24px; color: var(--text-muted); background: var(--bg-surface); border-radius: var(--radius-sm); border: 1px dashed var(--border-subtle);">
-                            No active downloads in progress. Start one from AI Copilot or Search Studio.
+                            No active downloads in progress. Start one from AI Copilot or New Releases.
                         </div>
                     </div>
 

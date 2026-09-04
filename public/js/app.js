@@ -188,8 +188,7 @@ const VIEW_ROUTES = {
     requested: '/request',
     jellyfin: '/jellyfin',
     bot: '/telegram',
-    admin: '/user',
-    studio: '/studio'
+    admin: '/user'
 };
 
 const VIEW_TITLES = {
@@ -199,8 +198,7 @@ const VIEW_TITLES = {
     requested: 'Requested Media',
     jellyfin: 'Jellyfin Library',
     bot: 'Telegram Bot',
-    admin: 'User Management',
-    studio: 'Search Studio'
+    admin: 'User Management'
 };
 
 function getViewForPath(pathname) {
@@ -216,7 +214,6 @@ function getViewForPath(pathname) {
     if (p.startsWith('/user') || p.startsWith('/users') || p.startsWith('/admin')) {
         return userRole === 'admin' ? 'admin' : 'chat';
     }
-    if (p.startsWith('/studio') || p.startsWith('/search')) return 'studio';
     return 'chat';
 }
 
@@ -244,7 +241,7 @@ function switchView(viewName, updateHistory = true) {
     if (titleEl) {
         titleEl.textContent = VIEW_TITLES[viewName] || 'Dashboard';
     }
-    document.title = `CineGrab - ${VIEW_TITLES[viewName] || 'Studio'}`;
+    document.title = `CineGrab - ${VIEW_TITLES[viewName] || 'AI Copilot'}`;
 
     if (updateHistory) {
         const targetPath = VIEW_ROUTES[viewName] || '/';
@@ -757,9 +754,7 @@ function handleChatAction(action, param) {
     if (action === 'quick_prompt') {
         handleQuickPrompt(param);
     } else if (action === 'view_studio') {
-        switchView('studio');
-        document.getElementById('studioSearchInput').value = param;
-        performStudioSearch();
+        askCopilotRelease(param, '');
     }
 }
 
@@ -1545,11 +1540,11 @@ async function performJellyfinLookup(query) {
                             <svg class="tabler-icon text-blue" style="width:16px;height:16px;" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12.01" y2="8"/><polyline points="11 12 12 12 12 16 13 16"/></svg>
                             <span><strong>"${escapeHtml(q)}"</strong> is not in your Jellyfin Library.</span>
                         </div>
-                        <p style="font-size: 11.5px; color: var(--text-muted); margin-top: 3px; margin-bottom: 0;">You can discover & download this movie directly from Telegram bots via Search Studio.</p>
+                        <p style="font-size: 11.5px; color: var(--text-muted); margin-top: 3px; margin-bottom: 0;">You can discover & download this movie directly using AI Copilot.</p>
                     </div>
-                    <button class="btn-primary-action" onclick="directSearchRelease('${escapeHtml(q).replace(/'/g, "\\'")}', '')" style="padding: 5px 12px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px;">
-                        <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
-                        Search on Studio
+                    <button class="btn-primary-action" onclick="askCopilotRelease('${escapeHtml(q).replace(/'/g, "\\'")}', '')" style="padding: 5px 12px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px;">
+                        <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                        Download with AI
                     </button>
                 </div>
             `;
@@ -2318,7 +2313,7 @@ function renderReleaseCards(items) {
 
                     ${item.overview ? `<p class="card-synopsis-text" title="${escapeHtml(item.overview)}">${escapeHtml(item.overview)}</p>` : ''}
 
-                    <!-- Card Bottom Actions (1 Row Layout for Download and Copilot) -->
+                    <!-- Card Bottom Actions (Single AI Download Button) -->
                     <div class="card-bottom-actions">
                         ${isExists ? `
                             <button class="btn-card-action in-library" onclick="switchView('jellyfin')" title="Already in your Jellyfin Library">
@@ -2326,13 +2321,9 @@ function renderReleaseCards(items) {
                                 <span>In Library</span>
                             </button>
                         ` : `
-                            <button class="btn-card-action primary" onclick="directSearchRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Search & Download with Telegram Bot">
+                            <button class="btn-card-action primary" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Download movie with AI Copilot">
                                 <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                 <span>Download</span>
-                            </button>
-                            <button class="btn-card-action secondary" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Ask AI Copilot to find movie">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
-                                <span>Copilot</span>
                             </button>
                         `}
                     </div>
@@ -2445,14 +2436,7 @@ function handleReleasesSortChange() {
 }
 
 function directSearchRelease(title, year) {
-    switchView('studio');
-    const studioInput = document.getElementById('studioSearchInput');
-    const studioYear = document.getElementById('studioYearInput');
-    if (studioInput) studioInput.value = title;
-    if (studioYear) studioYear.value = year || '';
-    setStudioType('movie');
-    performStudioSearch();
-    showToast(`Searching releases for "${title}"`, 'info');
+    askCopilotRelease(title, year);
 }
 
 function askCopilotRelease(title, year) {
