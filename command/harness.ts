@@ -82,54 +82,37 @@ export class Harness {
     }
 
     async chat(messages: ChatMessage[]): Promise<string> {
-        const memory = this.getMemory();
-        const errors = this.getErrors();
-        const movieInfo = this.getMovieInfo();
+        let allMessages = messages;
+        const hasSystem = messages.some(m => m.role === "system");
+        if (!hasSystem) {
+            const memory = this.getMemory();
+            const errors = this.getErrors();
+            const movieInfo = this.getMovieInfo();
 
-        const systemMessage: ChatMessage = {
-            role: "system",
-            content: `You are an AI automation tool for downloading movies and series via Telegram bots.
-
+            const systemMessage: ChatMessage = {
+                role: "system",
+                content: `You are an AI automation tool for downloading movies via Telegram bots (@ProSearchM11Bot).
 MEMORY:
-${memory}
+${memory.slice(-400)}
 
 RECENT ERRORS:
-${errors.slice(-500)}
+${errors.slice(-300)}
 
 MOVIE INFO:
-${movieInfo}
-
-You have access to:
-- @ProSearchM11Bot for movies
-- @ProSearchY11Bot for series
-
-When a user requests a movie/series:
-1. Determine if it's a movie or series
-2. Clean the name to Title Case with year (e.g., "Bahubali 2 2017")
-3. For series, determine how many seasons/episodes exist
-4. Generate the correct search queries
-5. Always prefer 720p quality
-6. Update memory.md and movie.md with your findings
-
-Respond with JSON when you need actions taken, or plain text for conversational responses.
-When responding with actions, use this format:
-{"action": "search_movie", "query": "...", "title": "...", "year": "..."}
-{"action": "search_series", "query": "...", "title": "...", "seasons": N, "episodes_per_season": [...]}
-{"action": "download", "type": "movie"|"series", "title": "...", "year": "...", "season": N, "episode": N, "filename": "..."}
-{"action": "done", "message": "..."}`,
-        };
-
-        const allMessages = [systemMessage, ...messages];
+${movieInfo.slice(-400)}`,
+            };
+            allMessages = [systemMessage, ...messages];
+        }
 
         const response = await Promise.race([
             this.client.chat.completions.create({
                 model: this.model,
                 messages: allMessages,
                 temperature: 0.7,
-                max_tokens: 2048,
+                max_tokens: 1500,
             }),
             new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error("AI API timeout (60s)")), 60000)
+                setTimeout(() => reject(new Error("AI API timeout (35s)")), 35000)
             ),
         ]);
 
