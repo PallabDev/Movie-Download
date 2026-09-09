@@ -2620,9 +2620,45 @@ h1, h2, h3, h4, h5, h6 {
     }
 
     .chat-search-list {
-        max-height: 520px !important;
+        max-height: none !important;
+        overflow-y: visible !important;
         gap: 10px !important;
         padding-right: 0 !important;
+    }
+
+    .chat-formats-panel {
+        padding: 12px 10px !important;
+        gap: 12px !important;
+    }
+
+    .formats-grid {
+        grid-template-columns: 1fr !important;
+        gap: 10px !important;
+    }
+
+    .format-card {
+        padding: 12px !important;
+        gap: 10px !important;
+    }
+
+    .episode-row-card {
+        padding: 10px 12px !important;
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 8px !important;
+    }
+
+    .episode-qualities-row {
+        width: 100% !important;
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+    }
+
+    .btn-ep-download {
+        flex: 1 1 calc(50% - 6px) !important;
+        justify-content: center !important;
+        padding: 8px 10px !important;
     }
 
     .chat-release-card {
