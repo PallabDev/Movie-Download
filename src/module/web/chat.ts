@@ -19,6 +19,34 @@ async function saveMemory(sessionId: string, role: string, content: string) {
 
 // ─── VISUAL MEDIA CARD GENERATOR ───
 
+export function formatSearchResultsReply(title: string, results: any[]): string {
+    return `Found **${results.length} available release${results.length > 1 ? 's' : ''}** for **"${title}"** on 10Gbps CDN.\n\nPlease select an option below to view all available download formats & qualities:`;
+}
+
+export function formatSelectedMediaReply(
+    item: any,
+    mediaFormats?: any
+): string {
+    if (!item) return "Select your preferred download format or episode below:";
+    const title = item.name || "Selected Release";
+    const categories = Array.isArray(item.category) ? item.category.filter(Boolean).join(", ") : "";
+    const stars = Array.isArray(item.stars) ? item.stars.filter(Boolean).join(", ") : "";
+
+    let md = `## 🎬 ${title}\n\n`;
+    if (item.thumbnail && !item.thumbnail.includes("No-Image-Placeholder")) {
+        md += `![Poster](${item.thumbnail})\n\n`;
+    }
+    if (categories) {
+        md += `🏷️ **Categories**: ${categories}\n\n`;
+    }
+    if (stars) {
+        md += `⭐ **Cast**: ${stars}\n\n`;
+    }
+
+    md += `*Select your preferred download format or episode below:*`;
+    return md;
+}
+
 export function formatVisualMediaReply(
     searchResults: any[],
     dlResult?: ToolResult,
@@ -83,12 +111,14 @@ export async function handleChat(
 
     // ─── AUTONOMOUS FAST-PATH: DETECT SEARCH & FORMAT SELECTION ───
     const session = searchSessions.get(`session_${sessionId}`);
-    const downloadNumMatch = lowerMsg.match(/^(?:download\s+(?:#?(\d+)|recommend|best|it|movie|series)|#?(\d+)|yes|confirm|ok)$/i);
+    const optRegex = /^(?:(?:download|select|choose|view|option|get)\s+)?(?:option\s*)?#?(\d+)$/i;
+    const optMatch = lowerMsg.match(optRegex);
+    const downloadWordMatch = lowerMsg.match(/^(?:download\s+(?:recommend|best|it|movie|series)|recommend|best|yes|confirm|ok)$/i);
     const isGreeting = /^(hi|hello|hey|start|reset|clear|new|help|how are you|what can you do|\?)$/i.test(lowerMsg);
     const isAction = /^(list|status|downloads|reconnect|all)$/i.test(lowerMsg);
 
-    if (session && downloadNumMatch) {
-        const optNum = downloadNumMatch[1] || downloadNumMatch[2];
+    if (session && (optMatch || downloadWordMatch)) {
+        const optNum = optMatch ? optMatch[1] : "1";
         const optIdx = optNum ? parseInt(optNum, 10) : 1;
         const selectedItem = session.results[optIdx - 1] || session.results[0];
 
@@ -98,15 +128,17 @@ export async function handleChat(
         const formatsRes = await executeTool("get_media_formats", { targetUrl: selectedItem.url, sessionId }, sessionId);
         toolCalls.push({ tool: "get_media_formats", args: { targetUrl: selectedItem.url }, result: formatsRes });
 
-        const reply = formatVisualMediaReply([selectedItem, ...session.results.filter((_, i) => i !== optIdx - 1)], undefined, formatsRes.data?.details);
+        const reply = formatSelectedMediaReply(selectedItem, formatsRes.data?.details);
         await saveMemory(sessionId, "ai", reply.substring(0, 500));
         return {
             reply,
             toolCalls,
             meta: {
-                searchResults: { results: session.results, title: session.title },
+                selectedOption: optIdx,
+                selectedItem,
                 mediaFormats: formatsRes.data?.details,
-                targetUrl: selectedItem.url
+                targetUrl: selectedItem.url,
+                searchResults: { results: session.results, title: session.title }
             }
         };
     } else if (isOptionOrNumber && !session) {
@@ -126,21 +158,16 @@ export async function handleChat(
             toolCalls.push({ tool: "search_media", args: { query: titleToDl }, result: sRes });
 
             if (sRes.success && sRes.data?.results?.length > 0) {
-                const firstResult = sRes.data.results[0];
-                broadcastAiStatus(sessionId, { step: "resolving_links", label: `Resolving download options for "${firstResult.name}"...` });
-
-                const formatsRes = await executeTool("get_media_formats", { targetUrl: firstResult.url, sessionId }, sessionId);
-                toolCalls.push({ tool: "get_media_formats", args: { targetUrl: firstResult.url }, result: formatsRes });
-
-                const reply = formatVisualMediaReply(sRes.data.results, undefined, formatsRes.data?.details);
+                const results = sRes.data.results;
+                const searchTitle = sRes.data.title || titleToDl;
+                const reply = formatSearchResultsReply(searchTitle, results);
                 await saveMemory(sessionId, "ai", reply.substring(0, 500));
                 return {
                     reply,
                     toolCalls,
                     meta: {
-                        searchResults: { results: sRes.data.results, title: sRes.data.title },
-                        mediaFormats: formatsRes.data?.details,
-                        targetUrl: firstResult.url
+                        searchResults: { results, title: searchTitle }
+                        // DO NOT auto-fetch formats here: user must select an option first!
                     }
                 };
             }
@@ -230,16 +257,37 @@ export async function handleChat(
             let fmtTool = toolCalls.find(t => t.tool === "get_media_formats");
             const dlTool = toolCalls.find(t => t.tool === "download_media" || t.tool === "download_movie" || t.tool === "download_series");
 
-            if (sTool?.result?.success && (sTool.result.data?.results?.length || 0) > 0 && !fmtTool) {
-                const firstResult = sTool.result.data.results[0];
-                const formatsRes = await executeTool("get_media_formats", { targetUrl: firstResult.url, sessionId }, sessionId);
-                fmtTool = { tool: "get_media_formats", args: { targetUrl: firstResult.url }, result: formatsRes };
-                toolCalls.push(fmtTool);
+            if (fmtTool?.result?.success && fmtTool.result.data?.details) {
+                const details = fmtTool.result.data.details;
+                const selItem = sTool?.result?.data?.results?.[0] || { name: details.name, thumbnail: details.thumbnail };
+                finalReply = formatSelectedMediaReply(selItem, details);
+                await saveMemory(sessionId, "ai", finalReply.substring(0, 500));
+                return {
+                    reply: finalReply,
+                    toolCalls,
+                    meta: {
+                        mediaFormats: details,
+                        targetUrl: fmtTool.args?.targetUrl || details.url,
+                        searchResults: sTool?.result?.data
+                    }
+                };
             }
 
             if (sTool?.result?.success && (sTool.result.data?.results?.length || 0) > 0) {
-                finalReply = formatVisualMediaReply(sTool.result.data.results, dlTool?.result, fmtTool?.result?.data?.details);
-            } else if (!finalReply) {
+                const results = sTool.result.data.results;
+                const searchTitle = sTool.result.data.title || userMessage;
+                finalReply = formatSearchResultsReply(searchTitle, results);
+                await saveMemory(sessionId, "ai", finalReply.substring(0, 500));
+                return {
+                    reply: finalReply,
+                    toolCalls,
+                    meta: {
+                        searchResults: sTool.result.data
+                    }
+                };
+            }
+
+            if (!finalReply) {
                 if (toolCalls.length > 0) {
                     const lastTool = toolCalls[toolCalls.length - 1];
                     finalReply = lastTool.result.message ? `✅ ${lastTool.result.message}` : `Done processing your request!`;
@@ -253,9 +301,7 @@ export async function handleChat(
                 reply: finalReply,
                 toolCalls,
                 meta: {
-                    searchResults: sTool?.result?.data,
-                    mediaFormats: fmtTool?.result?.data?.details,
-                    targetUrl: sTool?.result?.data?.results?.[0]?.url
+                    searchResults: sTool?.result?.data
                 }
             };
         }

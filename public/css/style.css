@@ -561,8 +561,10 @@ h1, h2, h3, h4, h5, h6 {
     min-height: 0;
     display: none;
     flex-direction: column;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: hidden;
     position: relative;
+    width: 100%;
 }
 
 #view-chat.active {
@@ -573,15 +575,17 @@ h1, h2, h3, h4, h5, h6 {
     flex: 1 1 0%;
     min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
-    padding: 20px 16px;
+    padding: 20px 20px;
     display: flex;
     flex-direction: column;
     gap: 14px;
     scroll-behavior: smooth;
-    max-width: 860px;
+    max-width: 1040px;
     width: 100%;
     margin: 0 auto;
+    box-sizing: border-box;
 }
 
 /* Welcome Card in Chat */
@@ -649,10 +653,15 @@ h1, h2, h3, h4, h5, h6 {
 /* Chat Messages (WhatsApp-style Alignment) */
 .message-row {
     display: flex;
-    max-width: 82%;
+    max-width: 85%;
     width: auto;
     margin-bottom: 12px;
     animation: fadeInMsg 0.2s ease-out;
+}
+
+.message-row.has-panels {
+    max-width: 100% !important;
+    width: 100% !important;
 }
 
 @keyframes fadeInMsg {
@@ -677,11 +686,15 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .msg-bubble {
-    padding: 11px 16px;
+    padding: 13px 18px;
     font-size: 13.5px;
     line-height: 1.55;
     word-break: break-word;
+    overflow-wrap: break-word;
     box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
 }
 
 .message-row.user .msg-bubble {
@@ -833,11 +846,14 @@ h1, h2, h3, h4, h5, h6 {
     background: rgba(15, 20, 32, 0.85);
     border: 1px solid var(--border-medium);
     border-radius: var(--radius-md);
-    padding: 12px;
+    padding: 14px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
     backdrop-filter: blur(8px);
+    width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
 }
 
 .chat-search-header {
@@ -849,7 +865,7 @@ h1, h2, h3, h4, h5, h6 {
     padding-bottom: 8px;
     border-bottom: 1px solid var(--border-subtle);
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 6px;
 }
 
 .chat-search-hint {
@@ -860,23 +876,29 @@ h1, h2, h3, h4, h5, h6 {
 .chat-search-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    max-height: 420px;
+    gap: 8px;
+    max-height: 480px;
     overflow-y: auto;
+    overflow-x: hidden;
     padding-right: 4px;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .chat-release-card {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 9px 12px;
+    padding: 10px 14px;
     background: var(--bg-surface);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: all var(--transition-fast);
-    gap: 10px;
+    gap: 12px;
+    box-sizing: border-box;
+    width: 100%;
+    flex-wrap: wrap;
 }
 
 .chat-release-card:hover {
@@ -897,9 +919,9 @@ h1, h2, h3, h4, h5, h6 {
 
 .chat-release-left {
     display: flex;
-    align-items: center;
-    gap: 10px;
-    flex: 1;
+    align-items: flex-start;
+    gap: 12px;
+    flex: 1 1 300px;
     min-width: 0;
 }
 
@@ -908,23 +930,25 @@ h1, h2, h3, h4, h5, h6 {
     font-size: 12px;
     color: var(--accent-blue);
     min-width: 28px;
+    margin-top: 2px;
 }
 
 .chat-release-meta {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
     min-width: 0;
     flex: 1;
 }
 
 .chat-release-title {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: 13px;
+    font-weight: 600;
+    color: #ffffff;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    line-height: 1.4;
 }
 
 .chat-release-tags {
@@ -932,6 +956,7 @@ h1, h2, h3, h4, h5, h6 {
     gap: 6px;
     flex-wrap: wrap;
     align-items: center;
+    margin-top: 2px;
 }
 
 .chat-release-tags .badge {
@@ -1000,23 +1025,24 @@ h1, h2, h3, h4, h5, h6 {
 .btn-download-release {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 5px 10px;
+    gap: 6px;
+    padding: 7px 14px;
     border-radius: var(--radius-sm);
-    font-size: 11.5px;
+    font-size: 12px;
     font-weight: 600;
-    background: var(--bg-surface-elevated);
-    border: 1px solid var(--border-medium);
-    color: var(--text-primary);
+    background: var(--accent-blue);
+    border: 1px solid var(--accent-blue);
+    color: #fff;
     cursor: pointer;
     white-space: nowrap;
+    flex-shrink: 0;
     transition: all var(--transition-fast);
+    margin-left: auto;
 }
 
 .btn-download-release:hover {
-    background: var(--accent-blue);
-    border-color: var(--accent-blue);
-    color: #fff;
+    opacity: 0.9;
+    transform: translateY(-1px);
 }
 
 .btn-download-release.primary {
@@ -1027,6 +1053,47 @@ h1, h2, h3, h4, h5, h6 {
 
 .btn-download-release.primary:hover {
     opacity: 0.9;
+}
+
+.chat-other-releases-toggle-wrap {
+    margin-top: 12px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.btn-toggle-other-releases {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 14px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.btn-toggle-other-releases:hover {
+    color: #fff;
+    border-color: var(--border-medium);
+    background: var(--bg-surface-elevated);
+}
+
+.chat-release-card.active-release {
+    border-color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.12);
+}
+
+.btn-download-release.selected-btn {
+    background: rgba(16, 185, 129, 0.2);
+    border-color: rgba(16, 185, 129, 0.4);
+    color: #34d399;
 }
 
 /* Interactive Format Picker Panels (Movies, Series Batches & Episodes) */
@@ -1040,12 +1107,17 @@ h1, h2, h3, h4, h5, h6 {
     flex-direction: column;
     gap: 12px;
     backdrop-filter: blur(10px);
+    width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
 }
 
 .formats-section {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .formats-section-title {
@@ -1061,8 +1133,10 @@ h1, h2, h3, h4, h5, h6 {
 
 .formats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .format-card {
@@ -1075,6 +1149,8 @@ h1, h2, h3, h4, h5, h6 {
     border-radius: var(--radius-sm);
     gap: 10px;
     transition: all var(--transition-fast);
+    box-sizing: border-box;
+    min-width: 0;
 }
 
 .format-card:hover {
@@ -1122,6 +1198,7 @@ h1, h2, h3, h4, h5, h6 {
     font-weight: 600;
     cursor: pointer;
     white-space: nowrap;
+    flex-shrink: 0;
     transition: all var(--transition-fast);
 }
 
@@ -1154,7 +1231,10 @@ h1, h2, h3, h4, h5, h6 {
     gap: 6px;
     max-height: 280px;
     overflow-y: auto;
+    overflow-x: hidden;
     padding-right: 4px;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .episode-row-card {
@@ -1167,6 +1247,8 @@ h1, h2, h3, h4, h5, h6 {
     border-radius: var(--radius-sm);
     gap: 8px;
     flex-wrap: wrap;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .episode-row-header {
@@ -1180,6 +1262,8 @@ h1, h2, h3, h4, h5, h6 {
     gap: 6px;
     flex-wrap: wrap;
     align-items: center;
+    max-width: 100%;
+    overflow-x: visible;
 }
 
 .btn-ep-download {

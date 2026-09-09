@@ -522,7 +522,8 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
     const isAtBottom = chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight < 80;
 
     const row = document.createElement('div');
-    row.className = `message-row ${sender}`;
+    const hasPanels = !!(meta.searchResults || meta.mediaFormats);
+    row.className = `message-row ${sender} ${hasPanels ? 'has-panels' : ''}`;
 
     let formattedHtml = '';
     const safeContent = (content || '').trim();
@@ -559,20 +560,70 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
         const movieYear = meta.searchResults.year || '';
         const bestIdx = meta.searchResults.bestIdx;
 
-        // When mediaFormats is already showing Option #1, show other releases (Option #2, #3, ...)
-        const displayList = meta.mediaFormats && results.length > 1 ? results.slice(1) : results;
+        // If mediaFormats is present (Step 2: Selected Version Formats), only show a compact toggle for other releases
+        if (meta.mediaFormats) {
+            if (results.length > 1) {
+                searchResultsHtml = `
+                    <div class="chat-other-releases-toggle-wrap">
+                        <button type="button" class="btn-toggle-other-releases" onclick="toggleOtherReleases(this)">
+                            <span>🔄 View other available releases (${results.length} total)</span>
+                            <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M6 9l6 6l6 -6"/></svg>
+                        </button>
+                        <div class="chat-search-results-panel collapsible-other-releases" style="display: none; margin-top: 8px;">
+                            <div class="chat-search-list">
+                                ${results.map((r, idx) => {
+                                    const optionIndex = r.index || (idx + 1);
+                                    const isSelected = meta.selectedOption === optionIndex;
+                                    const titleText = r.name || r.text || '';
+                                    const sizeStr = r.sizeMB ? (r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${r.sizeMB} MB`) : '';
+                                    const res = (titleText.match(/\b(480p|720p|1080p|2160p|4k|400p)\b/i) || [])[1] || '720p';
+                                    const codec = (titleText.match(/\b(hevc|x265|h265|x264|h264|avc)\b/i) || [])[1] || '';
+                                    const langTag = getLanguageTag(titleText);
 
-        if (displayList.length > 0) {
+                                    return `
+                                        <div class="chat-release-card ${isSelected ? 'active-release' : ''}" onclick="handleQuickPrompt('#${optionIndex}')">
+                                            <div class="chat-release-left">
+                                                ${r.thumbnail ? `
+                                                    <img src="${escapeHtml(r.thumbnail)}" alt="Poster" class="chat-release-thumb" onerror="this.style.display='none'">
+                                                ` : `
+                                                    <span class="chat-release-index">#${optionIndex}</span>
+                                                `}
+                                                <div class="chat-release-meta">
+                                                    <div class="chat-release-title" title="${escapeHtml(titleText)}">
+                                                        <strong>Option #${optionIndex}:</strong> ${escapeHtml(titleText)}
+                                                    </div>
+                                                    <div class="chat-release-tags">
+                                                        <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 700;">⚡ 10Gbps</span>
+                                                        ${langTag ? `<span class="badge ${langTag.type}">${langTag.label}</span>` : ''}
+                                                        <span class="badge res">${escapeHtml(res.toUpperCase())}</span>
+                                                        ${sizeStr ? `<span class="badge size">${sizeStr}</span>` : ''}
+                                                        ${codec ? `<span class="badge codec">${escapeHtml(codec.toUpperCase())}</span>` : ''}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <button class="btn-download-release ${isSelected ? 'selected-btn' : ''}" onclick="event.stopPropagation(); handleQuickPrompt('#${optionIndex}')">
+                                                ${isSelected ? '✓ Selected' : `Option #${optionIndex} Formats ➔`}
+                                            </button>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+        } else {
+            // STEP 1: Search options only - user selects one
             searchResultsHtml = `
                 <div class="chat-search-results-panel">
                     <div class="chat-search-header">
-                        <span>📦 <strong>${meta.mediaFormats ? 'Other Available Releases' : escapeHtml(movieTitle)}</strong> ${movieYear ? `(${escapeHtml(movieYear)})` : ''} · <strong>${displayList.length} Options</strong></span>
-                        <span class="chat-search-hint">Click any release to view download formats</span>
+                        <span>📦 <strong>${escapeHtml(movieTitle || 'Available Releases')}</strong> ${movieYear ? `(${escapeHtml(movieYear)})` : ''} · <strong>${results.length} Options Available</strong></span>
+                        <span class="chat-search-hint">Select a release below to view download qualities</span>
                     </div>
                     <div class="chat-search-list">
-                        ${displayList.map((r, idx) => {
-                            const optionIndex = r.index || (meta.mediaFormats ? idx + 2 : idx + 1);
-                            const isRecommended = r.isBest || optionIndex === bestIdx;
+                        ${results.map((r, idx) => {
+                            const optionIndex = r.index || (idx + 1);
+                            const isRecommended = r.isBest || optionIndex === bestIdx || idx === 0;
                             const titleText = r.name || r.text || '';
                             const sizeStr = r.sizeMB ? (r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${r.sizeMB} MB`) : '';
                             const res = (titleText.match(/\b(480p|720p|1080p|2160p|4k|400p)\b/i) || [])[1] || '720p';
@@ -603,8 +654,7 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                                         </div>
                                     </div>
                                     <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); handleQuickPrompt('#${optionIndex}')">
-                                        <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                        Option #${optionIndex} Formats
+                                        Select Option #${optionIndex} ➔
                                     </button>
                                 </div>
                             `;
@@ -863,6 +913,8 @@ async function sendChatMessage() {
                 searchResults,
                 mediaFormats,
                 targetUrl,
+                selectedOption: data.meta?.selectedOption,
+                selectedItem: data.meta?.selectedItem,
                 actions: data.meta?.actions
             });
             state.chatHistory.push({ role: 'assistant', content: replyText });
@@ -875,6 +927,20 @@ async function sendChatMessage() {
         state.sendingChat = false;
         document.getElementById('btnSendChat').disabled = false;
         input.focus();
+    }
+}
+
+function toggleOtherReleases(btn) {
+    const wrap = btn.closest('.chat-other-releases-toggle-wrap');
+    if (!wrap) return;
+    const panel = wrap.querySelector('.collapsible-other-releases');
+    if (!panel) return;
+    const isHidden = panel.style.display === 'none';
+    panel.style.display = isHidden ? 'flex' : 'none';
+    const icon = btn.querySelector('svg');
+    if (icon) {
+        icon.style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
+        icon.style.transition = 'transform 0.2s ease';
     }
 }
 
