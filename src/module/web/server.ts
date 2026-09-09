@@ -1,7 +1,7 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import { db, schema } from "../../common/db/index.js";
-import { eq, or, desc, like, sql, count } from "drizzle-orm";
+import { eq, or, and, desc, like, sql, count } from "drizzle-orm";
 import { register, login, extractUser, getAllUsers, updateUser, deleteUser, type UserRole } from "../../common/auth/auth.js";
 import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries } from "../../common/jellyfin/client.js";
 import { downloadQueue, secureBotFileToSavedMessages } from "../queue/queue.js";
@@ -640,6 +640,35 @@ app.post("/api/select", requireMod, async (req: any, res) => {
 
         const isSeries = quality.isBatchPack || quality.isEpisodeList;
         const mediaType = isSeries ? "series" : "movie";
+
+        // Check if this media is already downloading or queued
+        try {
+            const existing = await db.select()
+                .from(schema.downloads)
+                .where(
+                    and(
+                        eq(schema.downloads.title, details.name),
+                        or(
+                            eq(schema.downloads.status, "queued"),
+                            eq(schema.downloads.status, "downloading")
+                        )
+                    )
+                )
+                .limit(1);
+
+            if (existing && existing.length > 0) {
+                console.log(`[SELECT DEDUP] "${details.name}" is already ${existing[0].status}. Skipping duplicate.`);
+                return res.json({
+                    success: true,
+                    requestId: existing[0].requestId,
+                    message: `"${details.name}" is already active in your download queue.`,
+                    fileSize: existing[0].fileSize || quality.fileSize,
+                    alreadyActive: true
+                });
+            }
+        } catch (dbErr: any) {
+            console.warn(`[SELECT DEDUP] Warning checking existing download: ${dbErr?.message}`);
+        }
 
         if (quality.isEpisodeList && quality.episodes && quality.episodes.length > 0) {
             const queuedEps: string[] = [];

@@ -1,6 +1,6 @@
 import { getHarness } from "../../../command/harness.js";
 import { db, schema } from "../../common/db/index.js";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, and, or } from "drizzle-orm";
 import { checkMovieExists, checkSeriesExists } from "../../common/jellyfin/client.js";
 import { downloadQueue } from "../queue/queue.js";
 import {
@@ -254,6 +254,39 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
 
         const isSeries = quality.isBatchPack || quality.isEpisodeList;
         const mediaType = isSeries ? "series" : "movie";
+
+        // Check if this media is already active or queued
+        try {
+            const existing = await db.select()
+                .from(schema.downloads)
+                .where(
+                    and(
+                        eq(schema.downloads.title, cleanName),
+                        or(
+                            eq(schema.downloads.status, "queued"),
+                            eq(schema.downloads.status, "downloading")
+                        )
+                    )
+                )
+                .limit(1);
+
+            if (existing && existing.length > 0) {
+                harness.logActivity(`[TOOL download_media] "${cleanName}" is already active/queued (${existing[0].status}). Skipping duplicate.`);
+                return {
+                    success: true,
+                    message: `MEDIA_ALREADY_DOWNLOADING: "${cleanName}" is already downloading in 720p!`,
+                    data: {
+                        requestId: existing[0].requestId,
+                        title: cleanName,
+                        type: mediaType,
+                        fileSize: existing[0].fileSize || quality.fileSize,
+                        alreadyActive: true
+                    }
+                };
+            }
+        } catch (dbErr: any) {
+            console.warn(`[TOOL download_media] Warning checking existing download: ${dbErr?.message}`);
+        }
 
         // Check if batch pack vs episode list vs movie
         if (quality.isEpisodeList && quality.episodes && quality.episodes.length > 0) {

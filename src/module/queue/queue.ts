@@ -79,6 +79,9 @@ class MemoryQueue {
         );
         if (duplicate) {
             console.log(`[QUEUE DEDUP] Ignored duplicate job for "${data.title}" - already ${duplicate.status} (Job ID: ${duplicate.id})`);
+            if (data.requestId && data.requestId !== duplicate.data.requestId) {
+                db.delete(schema.downloads).where(eq(schema.downloads.requestId, data.requestId)).catch(() => {});
+            }
             return duplicate;
         }
 

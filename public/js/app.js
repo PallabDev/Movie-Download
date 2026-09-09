@@ -980,7 +980,7 @@ function renderMovieStudioResults(data, container) {
                                     ${stars ? `<div style="font-size: 11px; color: var(--text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">Cast: ${escapeHtml(stars)}</div>` : ''}
                                 </div>
                             </div>
-                            <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); triggerStudioMovieDownload(${optIndex}, '${escapeHtml(r.url || '').replace(/'/g, "\\'")}')">
+                            <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); triggerStudioMovieDownload(${optIndex}, '${escapeHtml(r.url || '').replace(/'/g, "\\'")}', this)">
                                 <svg class="tabler-icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                 Download 720p
                             </button>
@@ -992,7 +992,17 @@ function renderMovieStudioResults(data, container) {
     `;
 }
 
-async function triggerStudioMovieDownload(optionIndex, targetUrl) {
+let isTriggeringDownload = false;
+async function triggerStudioMovieDownload(optionIndex, targetUrl, btnElement) {
+    if (isTriggeringDownload) return;
+    isTriggeringDownload = true;
+
+    if (btnElement) {
+        btnElement.disabled = true;
+        btnElement.dataset.origHtml = btnElement.innerHTML;
+        btnElement.innerHTML = `<span style="display:inline-block;animation:spin 0.8s linear infinite;">⏳</span> Queuing...`;
+    }
+
     try {
         const res = await fetch('/api/select', {
             method: 'POST',
@@ -1007,17 +1017,31 @@ async function triggerStudioMovieDownload(optionIndex, targetUrl) {
         const data = await res.json();
         if (data.success) {
             showToast(data.message || 'Download started in 720p!', 'success');
+            if (btnElement) {
+                btnElement.innerHTML = `✅ Queued 720p`;
+                btnElement.classList.remove('primary');
+            }
             switchView('downloads');
         } else {
             showToast(data.error || 'Failed to start download', 'error', 6000);
+            if (btnElement && btnElement.dataset.origHtml) {
+                btnElement.disabled = false;
+                btnElement.innerHTML = btnElement.dataset.origHtml;
+            }
         }
     } catch (err) {
         showToast(err.message, 'error');
+        if (btnElement && btnElement.dataset.origHtml) {
+            btnElement.disabled = false;
+            btnElement.innerHTML = btnElement.dataset.origHtml;
+        }
+    } finally {
+        setTimeout(() => { isTriggeringDownload = false; }, 800);
     }
 }
 
-async function triggerStudioEpisodeDownload(buttonText) {
-    await triggerStudioMovieDownload(buttonText);
+async function triggerStudioEpisodeDownload(buttonText, btnElement) {
+    await triggerStudioMovieDownload(buttonText, undefined, btnElement);
 }
 
 async function triggerStudioBulkSeasonDownload(season) {
