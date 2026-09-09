@@ -1,7 +1,7 @@
 import { getHarness } from "../../../command/harness.js";
 import { db, schema } from "../../common/db/index.js";
 import { desc, eq, and, or } from "drizzle-orm";
-import { checkMovieExists, checkSeriesExists } from "../../common/jellyfin/client.js";
+import { checkMovieExists, checkSeriesExists, checkMediaExists } from "../../common/jellyfin/client.js";
 import { downloadQueue } from "../queue/queue.js";
 import {
     searchMedia,
@@ -581,21 +581,14 @@ export async function toolCheckJellyfin(args: Record<string, any>, sessionId: st
     harness.logActivity(`[TOOL check_jellyfin] Checking Jellyfin for "${title}"`);
 
     try {
-        if (type === "series") {
-            const exists = await checkSeriesExists(title);
-            return {
-                success: true,
-                message: exists ? `EXISTS: "${title}" is already in your Jellyfin series library!` : `NOT_IN_LIBRARY: "${title}" is not in your Jellyfin series library.`,
-                data: { exists, title, type: "series" }
-            };
-        } else {
-            const exists = await checkMovieExists(title, year);
-            return {
-                success: true,
-                message: exists ? `EXISTS: "${title}" is already in your Jellyfin movie library!` : `NOT_IN_LIBRARY: "${title}" is not in your Jellyfin movie library.`,
-                data: { exists, title, type: "movie" }
-            };
-        }
+        const res = await checkMediaExists(title, type, year);
+        return {
+            success: true,
+            message: res.exists
+                ? `EXISTS: "${res.item?.Name || title}" is already in your Jellyfin ${res.type || "media"} library! You can stream it directly.`
+                : `NOT_IN_LIBRARY: "${title}" is not in your Jellyfin media library.`,
+            data: { exists: res.exists, title: res.item?.Name || title, type: res.type, item: res.item }
+        };
     } catch (err: any) {
         return { success: false, message: `JELLYFIN_ERROR: ${err.message}` };
     }

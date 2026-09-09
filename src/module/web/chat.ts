@@ -4,6 +4,7 @@ import { lookupMedia, cleanMediaTitle } from "../../common/tmdb/client.js";
 import { parseToolCall, KNOWN_TOOLS } from "./tool-parser.js";
 import { executeTool, SYSTEM_PROMPT, clearWorkflow, searchSessions, type ToolResult } from "./tools.js";
 import { broadcastAiStatus } from "./ws.js";
+import { checkMediaExists } from "../../common/jellyfin/client.js";
 
 // ─── AGENT MEMORY (PostgreSQL) ───
 
@@ -122,6 +123,33 @@ export async function handleChat(
         const optIdx = optNum ? parseInt(optNum, 10) : 1;
         const selectedItem = session.results[optIdx - 1] || session.results[0];
 
+        // Check if this media already exists in Jellyfin before providing download options
+        const jfCheck = await checkMediaExists(selectedItem.name || session.title || "");
+        if (jfCheck.exists) {
+            harness.logActivity(`[CHAT JELLYFIN CHECK] Option #${optIdx} ("${selectedItem.name}") ALREADY in Jellyfin (${jfCheck.type})`);
+            const reply = `## 🎬 ${selectedItem.name}\n\n` +
+                (selectedItem.thumbnail && !selectedItem.thumbnail.includes("No-Image-Placeholder") ? `![Poster](${selectedItem.thumbnail})\n\n` : "") +
+                `> 🍿 **Already in your Jellyfin Library!**\n> **"${jfCheck.item?.Name || selectedItem.name}"** is already stored on your media server and ready to stream in full quality. To conserve storage and bandwidth, re-downloading is not needed.`;
+
+            await saveMemory(sessionId, "ai", reply.substring(0, 500));
+            return {
+                reply,
+                toolCalls,
+                meta: {
+                    selectedOption: optIdx,
+                    selectedItem,
+                    alreadyInJellyfin: {
+                        exists: true,
+                        name: jfCheck.item?.Name || selectedItem.name,
+                        type: jfCheck.type,
+                        id: jfCheck.item?.Id,
+                        year: jfCheck.item?.ProductionYear || jfCheck.item?.Year
+                    },
+                    searchResults: { results: session.results, title: session.title }
+                }
+            };
+        }
+
         broadcastAiStatus(sessionId, { step: "resolving_links", label: `Resolving download formats for Option #${optIdx}...` });
         harness.logActivity(`[CHAT FAST-PATH] Format lookup for Option #${optIdx}: "${selectedItem.name}"`);
 
@@ -138,6 +166,7 @@ export async function handleChat(
                 selectedItem,
                 mediaFormats: formatsRes.data?.details,
                 targetUrl: selectedItem.url,
+                alreadyInJellyfin: { exists: false },
                 searchResults: { results: session.results, title: session.title }
             }
         };
@@ -154,20 +183,36 @@ export async function handleChat(
         if (titleToDl.length >= 2 && !/^(movie|series|it|recommend|best)$/i.test(titleToDl)) {
             broadcastAiStatus(sessionId, { step: "searching", label: `Searching releases for "${titleToDl}"...` });
             harness.logActivity(`[CHAT FAST-PATH] Searching releases for: "${titleToDl}"`);
-            const sRes = await executeTool("search_media", { query: titleToDl }, sessionId);
+
+            // Parallel lookup: CDN releases and Jellyfin library check
+            const [sRes, jfCheck] = await Promise.all([
+                executeTool("search_media", { query: titleToDl }, sessionId),
+                checkMediaExists(titleToDl)
+            ]);
             toolCalls.push({ tool: "search_media", args: { query: titleToDl }, result: sRes });
 
             if (sRes.success && sRes.data?.results?.length > 0) {
                 const results = sRes.data.results;
                 const searchTitle = sRes.data.title || titleToDl;
-                const reply = formatSearchResultsReply(searchTitle, results);
+                let reply = formatSearchResultsReply(searchTitle, results);
+
+                if (jfCheck.exists) {
+                    reply = `> 🍿 **Already In Jellyfin**: **"${jfCheck.item?.Name || searchTitle}"** is already present in your Jellyfin ${jfCheck.type || "media"} library! You can stream it directly, or choose a release below if you need a different version.\n\n` + reply;
+                }
+
                 await saveMemory(sessionId, "ai", reply.substring(0, 500));
                 return {
                     reply,
                     toolCalls,
                     meta: {
-                        searchResults: { results, title: searchTitle }
-                        // DO NOT auto-fetch formats here: user must select an option first!
+                        searchResults: { results, title: searchTitle },
+                        alreadyInJellyfin: jfCheck.exists ? {
+                            exists: true,
+                            name: jfCheck.item?.Name || searchTitle,
+                            type: jfCheck.type,
+                            id: jfCheck.item?.Id,
+                            year: jfCheck.item?.ProductionYear || jfCheck.item?.Year
+                        } : { exists: false }
                     }
                 };
             }

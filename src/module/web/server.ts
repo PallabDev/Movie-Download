@@ -3,7 +3,7 @@ import cookieParser from "cookie-parser";
 import { db, schema } from "../../common/db/index.js";
 import { eq, or, and, desc, like, sql, count } from "drizzle-orm";
 import { register, login, extractUser, getAllUsers, updateUser, deleteUser, type UserRole } from "../../common/auth/auth.js";
-import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries } from "../../common/jellyfin/client.js";
+import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries, checkMediaExists } from "../../common/jellyfin/client.js";
 import { downloadQueue, secureBotFileToSavedMessages } from "../queue/queue.js";
 import { getHarness } from "../../../command/harness.js";
 import { broadcastNewDownload } from "./ws.js";
@@ -679,7 +679,22 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             jobFileName = `${cleanName} (Full Season Pack).zip`;
         }
 
-        // Deduplication check
+        // Enforce Jellyfin library duplicate check before downloading
+        try {
+            const jfCheck = await checkMediaExists(cleanName, mediaType);
+            if (jfCheck.exists) {
+                console.log(`[DOWNLOAD-SPECIFIC] "${cleanName}" is already in Jellyfin library (${jfCheck.type}). Blocking duplicate download.`);
+                return res.status(409).json({
+                    success: false,
+                    alreadyInJellyfin: true,
+                    error: `"${jfCheck.item?.Name || cleanName}" already exists in your Jellyfin ${jfCheck.type || "media"} library! Re-download is prevented.`
+                });
+            }
+        } catch (jfErr: any) {
+            console.warn(`[DOWNLOAD-SPECIFIC] Jellyfin check warning: ${jfErr?.message}`);
+        }
+
+        // Deduplication check in downloads queue
         try {
             const existing = await db.select()
                 .from(schema.downloads)
@@ -1235,13 +1250,34 @@ app.get("/api/jellyfin/movies", requireAuth, async (_req, res) => {
 });
 
 app.get("/api/jellyfin/series", requireAuth, async (_req, res) => {
-    const items = await getAllSeries();
-    res.json({ items });
+    try {
+        const items = await getAllSeries();
+        res.json({ items: items || [] });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, items: [] });
+    }
 });
 
 app.get("/api/jellyfin/shows", requireAuth, async (_req, res) => {
-    const items = await getAllSeries();
-    res.json({ items });
+    try {
+        const items = await getAllSeries();
+        res.json({ items: items || [] });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, items: [] });
+    }
+});
+
+app.get("/api/jellyfin/all", requireAuth, async (_req, res) => {
+    try {
+        const [movies, series] = await Promise.all([getAllMovies(), getAllSeries()]);
+        res.json({
+            movies: movies || [],
+            series: series || [],
+            total: (movies?.length || 0) + (series?.length || 0)
+        });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message, movies: [], series: [], total: 0 });
+    }
 });
 
 app.get("/api/jellyfin/image/:id", async (req, res) => {
@@ -1868,7 +1904,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             <!-- VIEW 4: JELLYFIN MEDIA HUB -->
             <section class="view-container ${activeView === 'jellyfin' ? 'active' : ''}" id="view-jellyfin">
                 <div class="jellyfin-wrap">
-                    <!-- Compact 1-Line Header Bar on small/large screens -->
+                    <!-- Compact Header Bar on small/large screens -->
                     <div class="jf-compact-header">
                         <div class="jf-compact-title">
                             <span class="chip jellyfin">Media Server</span>
@@ -1876,8 +1912,16 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         </div>
                         <div class="jf-compact-stats">
                             <div class="jf-stat-pill">
+                                <span class="jf-stat-val tabular-nums" id="jfTotalCount">--</span>
+                                <span class="jf-stat-lbl">Total Media</span>
+                            </div>
+                            <div class="jf-stat-pill">
                                 <span class="jf-stat-val tabular-nums" id="jfMoviesCount">--</span>
-                                <span class="jf-stat-lbl">Movies in Library</span>
+                                <span class="jf-stat-lbl">Movies</span>
+                            </div>
+                            <div class="jf-stat-pill">
+                                <span class="jf-stat-val tabular-nums" id="jfSeriesCount">--</span>
+                                <span class="jf-stat-lbl">TV Shows</span>
                             </div>
                             <div class="jf-stat-pill sync">
                                 <span class="status-dot online"></span>
@@ -1888,11 +1932,11 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
 
                     <div class="studio-search-card" style="padding: 14px 16px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px;">
-                            <h3 style="font-size: 13.5px; margin: 0;">Movie Duplicate Checker</h3>
-                            <span style="font-size: 11px; color: var(--text-secondary);">Instant poster lookup & library search</span>
+                            <h3 style="font-size: 13.5px; margin: 0;">Library Duplicate Checker & Search</h3>
+                            <span style="font-size: 11px; color: var(--text-secondary);">Instant lookup for Movies & TV Shows</span>
                         </div>
                         <div style="display: flex; gap: 8px; margin-top: 10px;">
-                            <input type="text" id="jfCheckInput" class="form-input" placeholder="Type a movie name (e.g. Your Name, 3 Idiots, 2012, Dune)..." style="flex: 1; font-size: 12.5px;" oninput="handleJellyfinSearchInput(this.value)" onkeydown="if(event.key==='Enter') checkJellyfinItem()">
+                            <input type="text" id="jfCheckInput" class="form-input" placeholder="Type any movie or show (e.g. Asur, Panchayat, Inception, Gullak)..." style="flex: 1; font-size: 12.5px;" oninput="handleJellyfinSearchInput(this.value)" onkeydown="if(event.key==='Enter') checkJellyfinItem()">
                             <button class="btn-primary-action" onclick="checkJellyfinItem()" style="padding: 6px 14px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
                                 <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
                                 Check
@@ -1901,15 +1945,29 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <div id="jfCheckResultBox" style="display:none; margin-top: 10px; padding: 12px; background: var(--bg-surface-elevated); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); font-size: 12px;"></div>
                     </div>
 
-                    <!-- JELLYFIN MOVIE LIBRARY COLLECTION -->
+                    <!-- JELLYFIN MEDIA COLLECTION WITH TABS -->
                     <div class="history-card" style="margin-top: 4px;">
-                        <div class="history-toolbar">
+                        <div class="history-toolbar" style="flex-wrap: wrap; gap: 10px;">
                             <div>
-                                <h2 style="font-size: 15px;">Movies Collection</h2>
-                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Your indexed Jellyfin movie library</p>
+                                <h2 style="font-size: 15px;">Media Collection</h2>
+                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Indexed movies and TV shows on your server</p>
                             </div>
-                            <div>
-                                <button class="btn-header" onclick="loadJellyfinLibrary(true)" title="Refresh Movie Library" style="display: inline-flex; align-items: center; gap: 4px;">
+                            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                <div class="jf-filter-tabs">
+                                    <button type="button" class="jf-tab-btn active" data-filter="all" onclick="setJellyfinFilter('all')">
+                                        <span>All</span>
+                                        <span class="tab-count-badge" id="tabCountAll">0</span>
+                                    </button>
+                                    <button type="button" class="jf-tab-btn" data-filter="movies" onclick="setJellyfinFilter('movies')">
+                                        <span>Movies</span>
+                                        <span class="tab-count-badge" id="tabCountMovies">0</span>
+                                    </button>
+                                    <button type="button" class="jf-tab-btn" data-filter="series" onclick="setJellyfinFilter('series')">
+                                        <span>TV Shows</span>
+                                        <span class="tab-count-badge" id="tabCountSeries">0</span>
+                                    </button>
+                                </div>
+                                <button class="btn-header" onclick="loadJellyfinLibrary(true)" title="Refresh Library" style="display: inline-flex; align-items: center; gap: 4px;">
                                     <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
                                     Refresh
                                 </button>
@@ -1917,7 +1975,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         </div>
                         <div id="jfMoviesGrid" class="jf-movies-grid">
                             <div style="text-align: center; color: var(--text-muted); padding: 40px; width: 100%; grid-column: 1 / -1;">
-                                Loading movie library...
+                                Loading library...
                             </div>
                         </div>
                     </div>
