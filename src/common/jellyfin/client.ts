@@ -67,7 +67,7 @@ export async function searchMovies(query: string): Promise<JellyfinItem[]> {
 
 export async function searchSeries(query: string): Promise<JellyfinItem[]> {
     const data: JellyfinSearchResult | null = await jellyfinFetch("/Items", {
-        IncludeItemTypes: "Series,BoxSet",
+        IncludeItemTypes: "Series",
         Recursive: "true",
         SearchTerm: query,
         Fields: "Overview,ChildCount,RecursiveItemCount,CommunityRating,PremiereDate,ProductionYear",
@@ -205,7 +205,7 @@ export async function getLibraryStats(): Promise<{ movies: number; series: numbe
             Limit: "0",
         }),
         jellyfinFetch("/Items", {
-            IncludeItemTypes: "Series,BoxSet",
+            IncludeItemTypes: "Series",
             Recursive: "true",
             Limit: "0",
         })
@@ -234,7 +234,7 @@ export async function getAllMovies(): Promise<JellyfinItem[]> {
 
 export async function getAllSeries(): Promise<JellyfinItem[]> {
     const data: JellyfinSearchResult | null = await jellyfinFetch("/Items", {
-        IncludeItemTypes: "Series,BoxSet",
+        IncludeItemTypes: "Series",
         Recursive: "true",
         Fields: "Overview,ChildCount,RecursiveItemCount,CommunityRating,PremiereDate,ProductionYear",
         Limit: "10000",

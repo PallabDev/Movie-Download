@@ -1800,7 +1800,7 @@ function setJellyfinFilter(filter) {
 }
 
 function renderJellyfinMediaCardHtml(item) {
-    const isSeries = item.Type === 'Series' || item.Type === 'BoxSet' || Boolean(item.ChildCount);
+    const isSeries = item.Type === 'Series';
     const year = item.ProductionYear || item.Year || (item.PremiereDate ? new Date(item.PremiereDate).getFullYear() : '');
     const rating = item.CommunityRating ? Number(item.CommunityRating).toFixed(1) : null;
     const posterUrl = `/api/jellyfin/image/${item.Id}`;
@@ -1955,8 +1955,8 @@ async function performJellyfinLookup(query) {
         resultBox.style.display = 'block';
 
         if (matched.length > 0) {
-            const seriesMatches = matched.filter(m => m.Type === 'Series' || m.Type === 'BoxSet');
-            const movieMatches = matched.filter(m => m.Type !== 'Series' && m.Type !== 'BoxSet');
+            const seriesMatches = matched.filter(m => m.Type === 'Series');
+            const movieMatches = matched.filter(m => m.Type !== 'Series');
             let breakdownText = [];
             if (movieMatches.length > 0) breakdownText.push(`${movieMatches.length} ${movieMatches.length === 1 ? 'movie' : 'movies'}`);
             if (seriesMatches.length > 0) breakdownText.push(`${seriesMatches.length} ${seriesMatches.length === 1 ? 'TV show' : 'TV shows'}`);
