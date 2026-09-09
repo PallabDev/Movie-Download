@@ -25,7 +25,18 @@ import { handleChat } from "./chat.js";
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
-app.use(express.static("public"));
+
+// Disable static caching for immediate updates
+app.use((req, res, next) => {
+    if (req.url.startsWith('/css/') || req.url.startsWith('/js/')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+    }
+    next();
+});
+
+app.use(express.static("public", { maxAge: 0, etag: false }));
 
 // In-memory search sessions: searchId -> { botUsername, sentId, btnMsgId, buttons, title, type, year }
 const searchSessions = new Map<string, any>();
@@ -1543,7 +1554,30 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/style.css?v=${Date.now()}">
+    <style>
+        .msg-bubble img {
+            width: 76px !important;
+            height: 112px !important;
+            max-width: 76px !important;
+            max-height: 112px !important;
+            object-fit: cover !important;
+            border-radius: 6px !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45) !important;
+            margin: 0 !important;
+            flex-shrink: 0 !important;
+            display: block !important;
+            float: none !important;
+        }
+        .chat-release-thumb {
+            width: 44px !important;
+            height: 62px !important;
+            max-width: 44px !important;
+            max-height: 62px !important;
+            object-fit: cover !important;
+            border-radius: 5px !important;
+        }
+    </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
@@ -1972,7 +2006,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
         window.__APP_USER__ = ${userJson};
         window.__INITIAL_VIEW__ = "${activeView}";
     </script>
-    <script src="/js/app.js"></script>
+    <script src="/js/app.js?v=${Date.now()}"></script>
 </body>
 </html>`;
 }

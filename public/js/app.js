@@ -702,12 +702,15 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
         }
     }
 
+    const alreadyHasFormats = formattedHtml.includes('btn-download-format') || formattedHtml.includes('btn-ep-download');
+    const alreadyHasSearch = formattedHtml.includes('btn-download-release');
+
     row.innerHTML = `
         <div class="msg-bubble">
             ${meta.workflowChip ? `<div class="workflow-chip ${meta.workflowChip.type}">${meta.workflowChip.label}</div>` : ''}
             ${formattedHtml}
-            ${mediaFormatsHtml}
-            ${searchResultsHtml}
+            ${!alreadyHasFormats ? mediaFormatsHtml : ''}
+            ${!alreadyHasSearch ? searchResultsHtml : ''}
             ${actionButtonsHtml}
         </div>
     `;
@@ -2743,3 +2746,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(checkBotStatus, 20000);
     initWebSocket();
 });
+
+// Expose handlers globally for inline HTML buttons
+window.triggerSpecificFormatDownload = triggerSpecificFormatDownload;
+window.handleQuickPrompt = handleQuickPrompt;
+window.handleChatAction = handleChatAction;
