@@ -555,60 +555,64 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
     let searchResultsHtml = '';
     if (meta.searchResults && Array.isArray(meta.searchResults.results) && meta.searchResults.results.length > 0) {
         const results = meta.searchResults.results;
-        const total = meta.searchResults.totalResults || results.length;
         const movieTitle = meta.searchResults.title || '';
         const movieYear = meta.searchResults.year || '';
         const bestIdx = meta.searchResults.bestIdx;
 
-        searchResultsHtml = `
-            <div class="chat-search-results-panel">
-                <div class="chat-search-header">
-                    <span>🎬 <strong>${escapeHtml(movieTitle)}</strong> ${movieYear ? `(${escapeHtml(movieYear)})` : ''} · <strong>${total} Available Releases</strong></span>
-                    <span class="chat-search-hint">10Gbps CDN · Instant Autonomous Download</span>
-                </div>
-                <div class="chat-search-list">
-                    ${results.map((r, idx) => {
-                        const isRecommended = r.isBest || r.index === bestIdx || idx === 0;
-                        const titleText = r.name || r.text || '';
-                        const sizeStr = r.sizeMB ? (r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${r.sizeMB} MB`) : '';
-                        const res = (titleText.match(/\\b(480p|720p|1080p|2160p|4k|400p)\\b/i) || [])[1] || '720p';
-                        const codec = (titleText.match(/\\b(hevc|x265|h265|x264|h264|avc)\\b/i) || [])[1] || '';
-                        const langTag = getLanguageTag(titleText);
-                        const categories = Array.isArray(r.category) ? r.category : [];
+        // When mediaFormats is already showing Option #1, show other releases (Option #2, #3, ...)
+        const displayList = meta.mediaFormats && results.length > 1 ? results.slice(1) : results;
 
-                        return `
-                            <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="handleQuickPrompt('download ${r.index || idx + 1}')">
-                                <div class="chat-release-left" style="display: flex; gap: 12px; align-items: center;">
-                                    ${r.thumbnail ? `
-                                        <img src="${escapeHtml(r.thumbnail)}" alt="Poster" class="chat-release-thumb" style="width: 48px; height: 68px; object-fit: cover; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); flex-shrink: 0;" onerror="this.style.display='none'">
-                                    ` : `
-                                        <span class="chat-release-index">#${r.index || idx + 1}</span>
-                                    `}
-                                    <div class="chat-release-meta" style="flex: 1; min-width: 0;">
-                                        <div class="chat-release-title" title="${escapeHtml(titleText)}" style="font-weight: 600; font-size: 13px; line-height: 1.3; color: #fff; margin-bottom: 4px;">
-                                            ${escapeHtml(titleText)}
-                                        </div>
-                                        <div class="chat-release-tags" style="display: flex; flex-wrap: wrap; gap: 4px;">
-                                            <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 700;">⚡ 10Gbps 720p</span>
-                                            ${langTag ? `<span class="badge ${langTag.type}">${langTag.label}</span>` : ''}
-                                            <span class="badge res">${escapeHtml(res.toUpperCase())}</span>
-                                            ${sizeStr ? `<span class="badge size">${sizeStr}</span>` : ''}
-                                            ${codec ? `<span class="badge codec">${escapeHtml(codec.toUpperCase())}</span>` : ''}
-                                            ${categories.slice(0, 3).map(c => `<span class="badge" style="background: var(--bg-surface-elevated); color: var(--text-secondary);">${escapeHtml(c)}</span>`).join('')}
-                                            ${isRecommended ? `<span class="badge rec">⭐ Best Match</span>` : ''}
+        if (displayList.length > 0) {
+            searchResultsHtml = `
+                <div class="chat-search-results-panel">
+                    <div class="chat-search-header">
+                        <span>📦 <strong>${meta.mediaFormats ? 'Other Available Releases' : escapeHtml(movieTitle)}</strong> ${movieYear ? `(${escapeHtml(movieYear)})` : ''} · <strong>${displayList.length} Options</strong></span>
+                        <span class="chat-search-hint">Click any release to view download formats</span>
+                    </div>
+                    <div class="chat-search-list">
+                        ${displayList.map((r, idx) => {
+                            const optionIndex = r.index || (meta.mediaFormats ? idx + 2 : idx + 1);
+                            const isRecommended = r.isBest || optionIndex === bestIdx;
+                            const titleText = r.name || r.text || '';
+                            const sizeStr = r.sizeMB ? (r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${r.sizeMB} MB`) : '';
+                            const res = (titleText.match(/\b(480p|720p|1080p|2160p|4k|400p)\b/i) || [])[1] || '720p';
+                            const codec = (titleText.match(/\b(hevc|x265|h265|x264|h264|avc)\b/i) || [])[1] || '';
+                            const langTag = getLanguageTag(titleText);
+                            const categories = Array.isArray(r.category) ? r.category : [];
+
+                            return `
+                                <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="handleQuickPrompt('#${optionIndex}')">
+                                    <div class="chat-release-left">
+                                        ${r.thumbnail ? `
+                                            <img src="${escapeHtml(r.thumbnail)}" alt="Poster" class="chat-release-thumb" onerror="this.style.display='none'">
+                                        ` : `
+                                            <span class="chat-release-index">#${optionIndex}</span>
+                                        `}
+                                        <div class="chat-release-meta">
+                                            <div class="chat-release-title" title="${escapeHtml(titleText)}">
+                                                <strong>Option #${optionIndex}:</strong> ${escapeHtml(titleText)}
+                                            </div>
+                                            <div class="chat-release-tags">
+                                                <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 700;">⚡ 10Gbps</span>
+                                                ${langTag ? `<span class="badge ${langTag.type}">${langTag.label}</span>` : ''}
+                                                <span class="badge res">${escapeHtml(res.toUpperCase())}</span>
+                                                ${sizeStr ? `<span class="badge size">${sizeStr}</span>` : ''}
+                                                ${codec ? `<span class="badge codec">${escapeHtml(codec.toUpperCase())}</span>` : ''}
+                                                ${categories.slice(0, 2).map(c => `<span class="badge" style="background: var(--bg-surface-elevated); color: var(--text-secondary);">${escapeHtml(c)}</span>`).join('')}
+                                            </div>
                                         </div>
                                     </div>
+                                    <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); handleQuickPrompt('#${optionIndex}')">
+                                        <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                        Option #${optionIndex} Formats
+                                    </button>
                                 </div>
-                                <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); handleQuickPrompt('download ${r.index || idx + 1}')">
-                                    <svg class="tabler-icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                    Download #${r.index || idx + 1}
-                                </button>
-                            </div>
-                        `;
-                    }).join('')}
+                            `;
+                        }).join('')}
+                    </div>
                 </div>
-            </div>
-        `;
+            `;
+        }
     }
 
     let mediaFormatsHtml = '';
@@ -841,8 +845,8 @@ async function sendChatMessage() {
             addChatMessage(`⚠️ ${errText}`, 'assistant');
         } else {
             const replyText = data.reply || 'Done processing your request!';
-            let searchResults = null;
-            if (data.toolCalls && Array.isArray(data.toolCalls)) {
+            let searchResults = data.meta?.searchResults || null;
+            if (!searchResults && data.toolCalls && Array.isArray(data.toolCalls)) {
                 const sCall = data.toolCalls.find(tc =>
                     (tc.tool === 'search_media' || tc.tool === 'search_movie' || tc.tool === 'search_series') &&
                     tc.result?.data?.results?.length > 0
@@ -852,7 +856,15 @@ async function sendChatMessage() {
                 }
             }
 
-            addChatMessage(replyText, 'assistant', { searchResults });
+            const mediaFormats = data.meta?.mediaFormats || (data.toolCalls?.find(tc => tc.tool === 'get_media_formats')?.result?.data?.details);
+            const targetUrl = data.meta?.targetUrl || (data.toolCalls?.find(tc => tc.tool === 'get_media_formats')?.args?.targetUrl);
+
+            addChatMessage(replyText, 'assistant', {
+                searchResults,
+                mediaFormats,
+                targetUrl,
+                actions: data.meta?.actions
+            });
             state.chatHistory.push({ role: 'assistant', content: replyText });
             saveChatSession(text, replyText);
         }
@@ -1255,7 +1267,13 @@ async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle,
                 btnElement.classList.remove('primary');
                 btnElement.classList.add('btn-queued-success');
             }
-            switchView('downloads');
+            if (state.activeView === 'chat') {
+                if (data.downloadId && typeof addChatDownloadInitiated === 'function') {
+                    addChatDownloadInitiated(data.downloadId, customTitle || 'Media Download');
+                }
+            } else {
+                switchView('downloads');
+            }
         } else {
             showToast(data.error || 'Failed to start download', 'error', 6000);
             if (btnElement && btnElement.dataset.origHtml) {

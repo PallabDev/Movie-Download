@@ -795,6 +795,38 @@ h1, h2, h3, h4, h5, h6 {
     font-weight: 600;
 }
 
+.msg-bubble img {
+    max-width: 80px;
+    max-height: 118px;
+    width: auto;
+    height: auto;
+    object-fit: cover;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+    margin: 4px 14px 8px 0;
+    float: left;
+    display: block;
+}
+
+.msg-bubble::after {
+    content: "";
+    display: table;
+    clear: both;
+}
+
+.chat-release-thumb {
+    width: 44px !important;
+    height: 62px !important;
+    max-width: 44px !important;
+    max-height: 62px !important;
+    object-fit: cover;
+    border-radius: 5px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    flex-shrink: 0;
+    float: none !important;
+    margin: 0 !important;
+}
+
 /* Interactive Chat Search Results List */
 .chat-search-results-panel {
     margin-top: 12px;

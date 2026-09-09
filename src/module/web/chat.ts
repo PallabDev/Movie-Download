@@ -54,43 +54,8 @@ export function formatVisualMediaReply(
         } else {
             md += `⚡ **Download Queued**: ${topTitle} (${d?.fileSize || "Direct"}) is downloading at high speed via 10Gbps CDN!\n\n`;
         }
-    } else if (mediaFormats) {
-        if (mediaFormats.isSeries) {
-            if (mediaFormats.seriesBatches?.length > 0) {
-                md += `### 📦 Season Batch Packs (Complete Season in 1 File):\n`;
-                for (const b of mediaFormats.seriesBatches) {
-                    md += `- **${b.label}** (${b.fileSize}) ${b.isRecommended ? '⭐ *Recommended*' : ''}\n`;
-                }
-                md += `\n`;
-            }
-            if (mediaFormats.seriesEpisodes?.length > 0) {
-                md += `### 📺 Individual Episodes (${mediaFormats.seriesEpisodes.length} Episodes Available):\n`;
-                for (const ep of mediaFormats.seriesEpisodes.slice(0, 8)) {
-                    const qLabels = ep.qualities.map((q: any) => `${q.label} (${q.fileSize})`).join(" · ");
-                    md += `- **${ep.title}**: ${qLabels}\n`;
-                }
-                if (mediaFormats.seriesEpisodes.length > 8) {
-                    md += `*...and ${mediaFormats.seriesEpisodes.length - 8} more episodes available below.*\n`;
-                }
-                md += `\n`;
-            }
-        } else if (mediaFormats.movieFormats?.length > 0) {
-            md += `### ⚡ Available Download Formats:\n`;
-            for (const f of mediaFormats.movieFormats) {
-                md += `- **${f.label}** (${f.fileSize}) ${f.isRecommended ? '⭐ *Recommended*' : ''}\n`;
-            }
-            md += `\n`;
-        }
-        md += `*Select your preferred format or episode below to download:*\n\n`;
-    }
-
-    if (searchResults.length > 1) {
-        md += `### 📦 Other Available Releases:\n`;
-        for (let j = 1; j < Math.min(searchResults.length, 5); j++) {
-            const item = searchResults[j];
-            md += `- **Option #${j + 1}**: ${item.name}\n`;
-        }
-        md += `\n*Reply with \`#2\`, \`#3\` to view other release formats.*\n`;
+    } else {
+        md += `*Select your preferred format or episode below to download:*`;
     }
 
     return md;
