@@ -760,6 +760,9 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                     </div>
                 </div>
             `;
+        }
+    }
+
     let jellyfinBannerHtml = '';
     if (meta.alreadyInJellyfin && meta.alreadyInJellyfin.exists) {
         const jf = meta.alreadyInJellyfin;
