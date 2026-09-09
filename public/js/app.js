@@ -679,18 +679,21 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                 <div class="chat-formats-panel">
                     ${batches.length > 0 ? `
                         <div class="formats-section">
-                            <div class="formats-section-title">📦 Complete Season Batch Packs (1-Click Full Download)</div>
+                            <div class="formats-section-title">
+                                <svg class="tabler-icon" style="width:15px;height:15px;color:#38bdf8;" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M12 4v16"/><path d="M4 12h16"/></svg>
+                                <span>Complete Season Batch Packs (1-Click Full Download)</span>
+                            </div>
                             <div class="formats-grid">
                                 ${batches.map(b => `
                                     <div class="format-card ${b.isRecommended ? 'recommended' : ''}">
-                                        <div class="format-card-info">
-                                            <div class="format-card-label">${escapeHtml(b.label)}</div>
-                                            <div class="format-card-sub">
+                                        <div class="format-card-top">
+                                            <div class="format-badges-row">
                                                 <span class="badge ${b.resolution === '4K' ? 'codec' : 'res'}">${escapeHtml(b.resolution)}</span>
                                                 ${b.fileSize ? `<span class="badge size">${escapeHtml(b.fileSize)}</span>` : ''}
                                                 ${b.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
                                             </div>
                                         </div>
+                                        <div class="format-card-label">${escapeHtml(b.label)}</div>
                                         <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(b.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', true, undefined, '${escapeHtml(b.fileSize)}', this)">
                                             <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                             Download Batch
@@ -702,19 +705,24 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                     ` : ''}
 
                     ${episodes.length > 0 ? `
-                        <div class="formats-section" style="margin-top: 10px;">
-                            <div class="formats-section-title">📺 Individual Episodes (${episodes.length} Episodes)</div>
+                        <div class="formats-section" style="margin-top: 14px;">
+                            <div class="formats-section-title">
+                                <svg class="tabler-icon" style="width:15px;height:15px;color:#a855f7;" viewBox="0 0 24 24"><path d="M3 7m0 2a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z"/><path d="M16 3l-4 4l-4 -4"/></svg>
+                                <span>Individual Episodes (${episodes.length} Episodes)</span>
+                            </div>
                             <div class="episodes-grid">
                                 ${episodes.map(ep => `
                                     <div class="episode-row-card">
-                                        <div class="episode-row-header">
-                                            <strong>${escapeHtml(ep.title)}</strong>
+                                        <div class="episode-header-info">
+                                            <span class="episode-num-badge">EP ${ep.episodeNum}</span>
+                                            <span class="episode-title">${escapeHtml(ep.title)}</span>
                                         </div>
                                         <div class="episode-qualities-row">
                                             ${ep.qualities.map(q => `
-                                                <button class="btn-ep-download" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(q.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, ${ep.episodeNum}, '${escapeHtml(q.fileSize)}', this)">
-                                                    <span>${escapeHtml(q.label || q.resolution)}</span>
-                                                    ${q.fileSize ? `<small>(${escapeHtml(q.fileSize)})</small>` : ''}
+                                                <button class="btn-ep-download ${q.resolution === '720p' ? 'preferred' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(q.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, ${ep.episodeNum}, '${escapeHtml(q.fileSize)}', this)">
+                                                    <svg class="tabler-icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                                    <span class="ep-res-text">${escapeHtml(q.label || q.resolution)}</span>
+                                                    ${q.fileSize ? `<span class="ep-size-pill">${escapeHtml(q.fileSize)}</span>` : ''}
                                                 </button>
                                             `).join('')}
                                         </div>
@@ -728,18 +736,21 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
         } else if (mf.movieFormats && mf.movieFormats.length > 0) {
             mediaFormatsHtml = `
                 <div class="chat-formats-panel">
-                    <div class="formats-section-title">⚡ Available Movie Formats (Direct 10Gbps CDN)</div>
+                    <div class="formats-section-title">
+                        <svg class="tabler-icon" style="width:15px;height:15px;color:#38bdf8;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                        <span>Available Movie Formats (Direct 10Gbps CDN)</span>
+                    </div>
                     <div class="formats-grid">
                         ${mf.movieFormats.map(f => `
                             <div class="format-card ${f.isRecommended ? 'recommended' : ''}">
-                                <div class="format-card-info">
-                                    <div class="format-card-label">${escapeHtml(f.label)}</div>
-                                    <div class="format-card-sub">
+                                <div class="format-card-top">
+                                    <div class="format-badges-row">
                                         <span class="badge ${f.resolution === '4K' ? 'codec' : 'res'}">${escapeHtml(f.resolution)}</span>
                                         ${f.fileSize ? `<span class="badge size">${escapeHtml(f.fileSize)}</span>` : ''}
                                         ${f.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
                                     </div>
                                 </div>
+                                <div class="format-card-label">${escapeHtml(f.label)}</div>
                                 <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(f.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, undefined, '${escapeHtml(f.fileSize)}', this)">
                                     <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                     Download ${escapeHtml(f.resolution)}

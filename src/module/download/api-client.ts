@@ -402,6 +402,21 @@ export interface ParsedMediaDetails {
 /**
  * Parses all download keys into structured movie formats or series batch/episode collections
  */
+export function cleanFileSize(rawSize: string): string {
+    if (!rawSize) return "";
+    const cleanMatch = rawSize.trim().match(/^([\d\.]+\s*(?:GB|MB|KB))$/i);
+    if (cleanMatch) return cleanMatch[1].toUpperCase();
+
+    const sizeMatch = rawSize.match(/(?:file\s*size:?\s*|size:?\s*)([\d\.]+\s*(?:gb|mb|kb))/i)
+        || rawSize.match(/([\d\.]+\s*(?:gb|mb|kb))/i);
+    if (sizeMatch) return sizeMatch[1].toUpperCase();
+
+    return rawSize.length <= 10 && /[\d\.]+\s*(?:gb|mb|kb)/i.test(rawSize) ? rawSize.trim() : "";
+}
+
+/**
+ * Parses all download keys into structured movie formats or series batch/episode collections
+ */
 export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMediaDetails | null {
     if (!details || !details.downloads) return null;
     const downloadKeys = Object.keys(details.downloads);
@@ -414,7 +429,7 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
         const batchKeys = downloadKeys.filter(k => k.startsWith("batch_"));
         const seriesBatches: ParsedSeriesBatch[] = batchKeys.map(k => {
             const srvs = details.downloads[k] || [];
-            const fileSize = srvs[0]?.file_size || "";
+            const fileSize = cleanFileSize(srvs[0]?.file_size || "");
             let res = "720p";
             if (k.includes("4k") || k.includes("2160p")) res = "4K";
             else if (k.includes("1080p")) res = "1080p";
@@ -442,22 +457,48 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
         const epKeys = downloadKeys.filter(k => k.startsWith("episode_"));
         const epMap = new Map<number, ParsedSeriesEpisodeQuality[]>();
         for (const k of epKeys) {
-            const match = k.match(/episode_(\d+)(?:_(.*))?/i);
+            const match = k.match(/episode_(\d+)/i);
             const epNum = match ? parseInt(match[1], 10) : 1;
-            const subQuality = (match && match[2]) ? match[2].replace(/_/g, " ").toUpperCase() : "720p";
             const srvs = details.downloads[k] || [];
-            const fileSize = srvs[0]?.file_size || "";
+            const rawSrvText = srvs[0]?.file_size || "";
+            const raw = (k + " " + rawSrvText + " " + (srvs[0]?.download_url || "")).toLowerCase();
+            const fileSize = cleanFileSize(rawSrvText) || cleanFileSize(k);
+
+            let resolution = "720p";
+            let label = "720p HD";
+
+            if (raw.includes("4k") || raw.includes("2160p")) {
+                resolution = "4K";
+                label = "4K UHD";
+            } else if (raw.includes("1080p")) {
+                resolution = "1080p";
+                label = (raw.includes("hevc") || raw.includes("x265")) ? "1080p HEVC" : "1080p FHD";
+            } else if (raw.includes("720p")) {
+                resolution = "720p";
+                label = (raw.includes("hevc") || raw.includes("x265")) ? "720p HEVC" : "720p HD";
+            } else if (raw.includes("480p")) {
+                resolution = "480p";
+                label = "480p SD";
+            }
 
             if (!epMap.has(epNum)) {
                 epMap.set(epNum, []);
             }
-            epMap.get(epNum)!.push({
-                qualityKey: k,
-                label: subQuality,
-                resolution: subQuality.includes("1080") ? "1080p" : (subQuality.includes("480") ? "480p" : "720p"),
-                fileSize,
-                serverCount: srvs.length
-            });
+            const existing = epMap.get(epNum)!;
+            if (!existing.some(q => q.label === label)) {
+                existing.push({
+                    qualityKey: k,
+                    label,
+                    resolution,
+                    fileSize,
+                    serverCount: srvs.length
+                });
+            }
+        }
+
+        for (const [, quals] of epMap) {
+            const qualOrder: Record<string, number> = { "4K": 4, "1080p": 3, "720p": 2, "480p": 1 };
+            quals.sort((a, b) => (qualOrder[b.resolution] || 0) - (qualOrder[a.resolution] || 0));
         }
 
         const sortedEpNums = Array.from(epMap.keys()).sort((a, b) => a - b);
@@ -481,7 +522,7 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
         // Movies
         const movieFormats: ParsedMovieFormat[] = downloadKeys.map(k => {
             const srvs = details.downloads[k] || [];
-            const fileSize = srvs[0]?.file_size || "";
+            const fileSize = cleanFileSize(srvs[0]?.file_size || "");
             let res = "720p";
             if (k.includes("4k") || k.includes("2160p")) res = "4K";
             else if (k.includes("1080p")) res = "1080p";
@@ -493,9 +534,8 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
             else if (k.includes("1080p_hevc") || k.includes("1080p_x265")) label = "1080p Full HD HEVC";
             else if (k.includes("1080p_60fps")) label = "1080p 60FPS High Frame";
             else if (k.includes("1080p_h264") || k === "1080p") label = "1080p Full HD";
-            else if (k.includes("4k_hdr")) label = "4K Ultra HD (HDR10)";
-            else if (k.includes("4k_sdr") || k.includes("4k")) label = "4K Ultra HD";
             else if (k.includes("480p")) label = "480p SD (Compact)";
+            else if (k.includes("4k") || k.includes("2160p")) label = "4K Ultra HD HDR";
 
             return {
                 qualityKey: k,
