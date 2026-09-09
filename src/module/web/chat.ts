@@ -31,132 +31,34 @@ export function formatVisualMediaReply(
     const top = searchResults[0];
     const topTitle = top.name;
     const topThumb = top.thumbnail;
-    const targetUrl = top.url;
     const categories = Array.isArray(top.category) ? top.category.filter(Boolean).join(", ") : "";
     const stars = Array.isArray(top.stars) ? top.stars.filter(Boolean).join(", ") : "";
 
-    const escapeAttr = (str: string) => (str || "").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-    const safeUrl = escapeAttr(targetUrl);
-    const safeTitle = escapeAttr(topTitle);
-
-    let html = `
-<div style="display: flex; gap: 14px; align-items: flex-start; margin-bottom: 12px; background: rgba(255, 255, 255, 0.03); padding: 12px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08);">
-    ${topThumb && !topThumb.includes("No-Image-Placeholder") ? `
-        <img src="${topThumb}" alt="Poster" style="width: 76px !important; height: 112px !important; max-width: 76px !important; max-height: 112px !important; object-fit: cover !important; border-radius: 6px !important; box-shadow: 0 4px 12px rgba(0,0,0,0.5) !important; flex-shrink: 0 !important; float: none !important; margin: 0 !important; display: block !important;" onerror="this.style.display='none'">
-    ` : ''}
-    <div style="flex: 1; min-width: 0;">
-        <div style="font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 6px; line-height: 1.3;">🎬 ${topTitle}</div>
-        ${categories ? `<div style="font-size: 12px; color: #94a3b8; margin-bottom: 4px;">🏷️ <strong>Categories:</strong> ${categories}</div>` : ''}
-        ${stars ? `<div style="font-size: 12px; color: #94a3b8;">⭐ <strong>Cast:</strong> ${stars}</div>` : ''}
-    </div>
-</div>
-`;
+    let md = `## 🎬 ${topTitle}\n\n`;
+    if (topThumb && !topThumb.includes("No-Image-Placeholder")) {
+        md += `![Poster](${topThumb})\n\n`;
+    }
+    if (categories) {
+        md += `🏷️ **Categories**: ${categories}\n\n`;
+    }
+    if (stars) {
+        md += `⭐ **Cast**: ${stars}\n\n`;
+    }
 
     if (dlResult?.success) {
         const d = dlResult.data;
         if (d?.isBatchPack) {
-            html += `<div style="color: #34d399; font-weight: 600; margin-bottom: 10px;">⚡ Batch Season Pack Queued: Full season pack (${d.fileSize || "Season Pack"}) is downloading via 10Gbps CDN!</div>`;
+            md += `⚡ **Batch Season Pack Queued**: Full season pack (${d.fileSize || "Season Pack"}) is downloading at high speed via 10Gbps CDN!\n\n`;
         } else if (d?.queuedEpisodes?.length) {
-            html += `<div style="color: #34d399; font-weight: 600; margin-bottom: 10px;">⚡ Episodes Queued: All ${d.queuedEpisodes.length} episodes are downloading via 10Gbps CDN!</div>`;
+            md += `⚡ **Episodes Queued**: All **${d.queuedEpisodes.length} episodes** are downloading via 10Gbps CDN!\n\n`;
         } else {
-            html += `<div style="color: #34d399; font-weight: 600; margin-bottom: 10px;">⚡ Download Queued: ${topTitle} (${d?.fileSize || "Direct"}) is downloading via 10Gbps CDN!</div>`;
+            md += `⚡ **Download Queued**: ${topTitle} (${d?.fileSize || "Direct"}) is downloading at high speed via 10Gbps CDN!\n\n`;
         }
-    } else if (mediaFormats) {
-        if (mediaFormats.isSeries) {
-            const batches = mediaFormats.seriesBatches || [];
-            const episodes = mediaFormats.seriesEpisodes || [];
-
-            if (batches.length > 0) {
-                html += `
-<div style="margin-top: 10px; margin-bottom: 12px;">
-    <div style="font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px;">📦 Complete Season Batch Packs (1-Click Download)</div>
-    <div style="display: flex; flex-direction: column; gap: 6px;">
-        ${batches.map((b: any) => `
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: rgba(255,255,255,0.04); border: 1px solid ${b.isRecommended ? 'rgba(16,185,129,0.5)' : 'rgba(255,255,255,0.08)'}; border-radius: 6px; gap: 8px;">
-                <div>
-                    <div style="font-weight: 600; font-size: 13px; color: #fff;">${b.label}</div>
-                    <div style="display: flex; gap: 6px; font-size: 11px; margin-top: 2px;">
-                        <span style="background: rgba(56,189,248,0.2); color: #38bdf8; padding: 1px 5px; border-radius: 4px; font-weight: 600;">${b.resolution}</span>
-                        ${b.fileSize ? `<span style="background: rgba(192,132,252,0.2); color: #c084fc; padding: 1px 5px; border-radius: 4px; font-weight: 600;">${b.fileSize}</span>` : ''}
-                        ${b.isRecommended ? `<span style="background: rgba(52,211,153,0.2); color: #34d399; padding: 1px 5px; border-radius: 4px; font-weight: 600;">⭐ Recommended</span>` : ''}
-                    </div>
-                </div>
-                <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" style="cursor: pointer; padding: 6px 12px; border-radius: 5px; font-weight: 600; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; background: ${b.isRecommended ? '#10b981' : 'rgba(255,255,255,0.1)'}; color: ${b.isRecommended ? '#000' : '#fff'}; border: none;" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeAttr(b.qualityKey)}', '${safeTitle}', true, undefined, '${escapeAttr(b.fileSize)}', this)">
-                    ⚡ Download Batch
-                </button>
-            </div>
-        `).join('')}
-    </div>
-</div>`;
-            }
-
-            if (episodes.length > 0) {
-                html += `
-<div style="margin-top: 10px; margin-bottom: 12px;">
-    <div style="font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px;">📺 Individual Episodes (${episodes.length} Episodes)</div>
-    <div style="display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; padding-right: 4px;">
-        ${episodes.map((ep: any) => `
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; gap: 6px; flex-wrap: wrap;">
-                <span style="font-size: 12px; font-weight: 600; color: #fff;">${ep.title}</span>
-                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                    ${ep.qualities.map((q: any) => `
-                        <button class="btn-ep-download" style="cursor: pointer; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(255,255,255,0.15);" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeAttr(q.qualityKey)}', '${safeTitle}', false, ${ep.episodeNum}, '${escapeAttr(q.fileSize)}', this)">
-                            ${q.label || q.resolution} <small style="color: #94a3b8;">(${q.fileSize})</small>
-                        </button>
-                    `).join('')}
-                </div>
-            </div>
-        `).join('')}
-    </div>
-</div>`;
-            }
-        } else if (mediaFormats.movieFormats?.length > 0) {
-            html += `
-<div style="margin-top: 10px; margin-bottom: 12px;">
-    <div style="font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px;">⚡ Available Download Formats (Direct 10Gbps CDN)</div>
-    <div style="display: flex; flex-direction: column; gap: 6px;">
-        ${mediaFormats.movieFormats.map((f: any) => `
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: rgba(255,255,255,0.04); border: 1px solid ${f.isRecommended ? 'rgba(16,185,129,0.5)' : 'rgba(255,255,255,0.08)'}; border-radius: 6px; gap: 8px;">
-                <div>
-                    <div style="font-weight: 600; font-size: 13px; color: #fff;">${f.label}</div>
-                    <div style="display: flex; gap: 6px; font-size: 11px; margin-top: 2px;">
-                        <span style="background: rgba(56,189,248,0.2); color: #38bdf8; padding: 1px 5px; border-radius: 4px; font-weight: 600;">${f.resolution}</span>
-                        ${f.fileSize ? `<span style="background: rgba(192,132,252,0.2); color: #c084fc; padding: 1px 5px; border-radius: 4px; font-weight: 600;">${f.fileSize}</span>` : ''}
-                        ${f.isRecommended ? `<span style="background: rgba(52,211,153,0.2); color: #34d399; padding: 1px 5px; border-radius: 4px; font-weight: 600;">⭐ Recommended</span>` : ''}
-                    </div>
-                </div>
-                <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" style="cursor: pointer; padding: 6px 12px; border-radius: 5px; font-weight: 600; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; background: ${f.isRecommended ? '#10b981' : 'rgba(255,255,255,0.1)'}; color: ${f.isRecommended ? '#000' : '#fff'}; border: none;" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeAttr(f.qualityKey)}', '${safeTitle}', false, undefined, '${escapeAttr(f.fileSize)}', this)">
-                    ⚡ Download ${f.resolution}
-                </button>
-            </div>
-        `).join('')}
-    </div>
-</div>`;
-        }
+    } else {
+        md += `*Select your preferred download format or episode below:*`;
     }
 
-    if (searchResults.length > 1) {
-        html += `
-<div style="margin-top: 12px;">
-    <div style="font-size: 12.5px; font-weight: 700; color: #fff; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px;">📦 Other Available Releases (${searchResults.length - 1} More)</div>
-    <div style="display: flex; flex-direction: column; gap: 6px;">
-        ${searchResults.slice(1, 5).map((item: any, idx: number) => {
-            const optNum = idx + 2;
-            return `
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; gap: 8px;">
-                <div style="flex: 1; min-width: 0;">
-                    <div style="font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Option #${optNum}: ${item.name}</div>
-                </div>
-                <button class="btn-download-release" style="cursor: pointer; padding: 4px 10px; border-radius: 4px; font-size: 11.5px; font-weight: 600; background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(255,255,255,0.2); white-space: nowrap;" onclick="handleQuickPrompt('#${optNum}')">
-                    ⚡ Option #${optNum} Formats
-                </button>
-            </div>`;
-        }).join('')}
-    </div>
-</div>`;
-    }
-
-    return html;
+    return md;
 }
 
 // ─── CHAT HANDLER ───

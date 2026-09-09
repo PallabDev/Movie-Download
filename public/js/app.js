@@ -702,15 +702,12 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
         }
     }
 
-    const alreadyHasFormats = formattedHtml.includes('btn-download-format') || formattedHtml.includes('btn-ep-download');
-    const alreadyHasSearch = formattedHtml.includes('btn-download-release');
-
     row.innerHTML = `
         <div class="msg-bubble">
             ${meta.workflowChip ? `<div class="workflow-chip ${meta.workflowChip.type}">${meta.workflowChip.label}</div>` : ''}
             ${formattedHtml}
-            ${!alreadyHasFormats ? mediaFormatsHtml : ''}
-            ${!alreadyHasSearch ? searchResultsHtml : ''}
+            ${mediaFormatsHtml}
+            ${searchResultsHtml}
             ${actionButtonsHtml}
         </div>
     `;

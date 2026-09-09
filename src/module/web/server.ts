@@ -1564,10 +1564,15 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             object-fit: cover !important;
             border-radius: 6px !important;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45) !important;
-            margin: 0 !important;
+            margin: 4px 14px 8px 0 !important;
             flex-shrink: 0 !important;
             display: block !important;
-            float: none !important;
+            float: left !important;
+        }
+        .msg-bubble::after {
+            content: "" !important;
+            display: table !important;
+            clear: both !important;
         }
         .chat-release-thumb {
             width: 44px !important;
@@ -1576,6 +1581,8 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             max-height: 62px !important;
             object-fit: cover !important;
             border-radius: 5px !important;
+            float: none !important;
+            margin: 0 !important;
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
