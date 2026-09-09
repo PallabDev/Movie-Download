@@ -15,6 +15,58 @@ async function saveMemory(sessionId: string, role: string, content: string) {
     }
 }
 
+// ─── VISUAL MEDIA CARD GENERATOR ───
+
+export function formatVisualMediaReply(
+    searchResults: any[],
+    dlResult?: ToolResult
+): string {
+    if (!searchResults || searchResults.length === 0) {
+        return "No matching releases found on the 10Gbps CDN network.";
+    }
+
+    const top = searchResults[0];
+    const topTitle = top.name;
+    const topThumb = top.thumbnail;
+    const categories = Array.isArray(top.category) ? top.category.filter(Boolean).join(", ") : "";
+    const stars = Array.isArray(top.stars) ? top.stars.filter(Boolean).join(", ") : "";
+
+    let md = `## 🎬 ${topTitle}\n\n`;
+    if (topThumb && !topThumb.includes("No-Image-Placeholder")) {
+        md += `![Poster](${topThumb})\n\n`;
+    }
+    if (categories) {
+        md += `🏷️ **Categories**: ${categories}\n\n`;
+    }
+    if (stars) {
+        md += `⭐ **Cast**: ${stars}\n\n`;
+    }
+
+    if (dlResult?.success) {
+        const d = dlResult.data;
+        if (d?.isBatchPack) {
+            md += `⚡ **720p Batch Season Pack Queued**: Full season pack (${d.fileSize || "720p"}) is downloading at high speed via 10Gbps CDN!\n\n`;
+        } else if (d?.queuedEpisodes?.length) {
+            md += `⚡ **720p Episodes Queued**: All **${d.queuedEpisodes.length} episodes** are downloading in 720p via 10Gbps CDN!\n\n`;
+        } else {
+            md += `⚡ **720p Direct Download Queued**: ${topTitle} (${d?.fileSize || "720p"}) is downloading at high speed via 10Gbps CDN!\n\n`;
+        }
+    } else if (dlResult?.message) {
+        md += `⚡ **Download Status**: ${dlResult.message}\n\n`;
+    }
+
+    if (searchResults.length > 1) {
+        md += `### 📦 Other Available Releases:\n`;
+        for (let j = 1; j < Math.min(searchResults.length, 5); j++) {
+            const item = searchResults[j];
+            md += `- **Option #${j + 1}**: ${item.name}\n`;
+        }
+        md += `\n*Reply with \`#2\`, \`#3\`, etc. to switch to another release.*\n`;
+    }
+
+    return md;
+}
+
 // ─── CHAT HANDLER ───
 
 export async function handleChat(
@@ -28,8 +80,8 @@ export async function handleChat(
     broadcastAiStatus(sessionId, { step: "thinking", label: "Thinking..." });
 
     const lowerMsg = userMessage.toLowerCase().trim();
-    const isSingleNumber = /^\d+$/.test(lowerMsg);
-    if (!isSingleNumber && (/^(hi|hello|hey|start|reset|clear|new|help|\?)/.test(lowerMsg) || (lowerMsg.length < 3 && !/^[1-9]$/.test(lowerMsg)))) {
+    const isOptionOrNumber = /^#?\d+$/.test(lowerMsg);
+    if (!isOptionOrNumber && (/^(hi|hello|hey|start|reset|clear|new|help|\?)/.test(lowerMsg) || (lowerMsg.length < 3 && !/^[1-9]$/.test(lowerMsg)))) {
         clearWorkflow(sessionId);
     }
 
@@ -38,7 +90,8 @@ export async function handleChat(
     // ─── AUTONOMOUS FAST-PATH: DETECT SEARCH & DOWNLOAD INTENTS ───
     const session = searchSessions.get(`session_${sessionId}`);
     const downloadNumMatch = lowerMsg.match(/^(?:download\s+(?:#?(\d+)|recommend|best|it|movie|series)|#?(\d+)|yes|confirm|ok)$/i);
-    const downloadMediaMatch = lowerMsg.match(/^(?:download|get|find|stream|search(?:\s+for)?)\s+([a-z0-9\s:–\-'.]+)$/i);
+    const isGreeting = /^(hi|hello|hey|start|reset|clear|new|help|how are you|what can you do|\?)$/i.test(lowerMsg);
+    const isAction = /^(list|status|downloads|reconnect|all)$/i.test(lowerMsg);
 
     if (session && downloadNumMatch) {
         const optNum = downloadNumMatch[1] || downloadNumMatch[2];
@@ -47,9 +100,22 @@ export async function handleChat(
         harness.logActivity(`[CHAT FAST-PATH] Direct download selection (Option #${optIdx}) for "${session.title}"`);
         const result = await executeTool("download_media", { title: session.title, optionIndex: optIdx, sessionId }, sessionId);
         toolCalls.push({ tool: "download_media", args: { title: session.title, optionIndex: optIdx }, result });
-    } else if (downloadMediaMatch && !session) {
-        const titleToDl = downloadMediaMatch[1].trim();
-        if (titleToDl.length > 1 && !/^(movie|series|it|recommend|best)$/i.test(titleToDl)) {
+
+        const selectedItem = session.results[optIdx - 1] || session.results[0];
+        const reply = formatVisualMediaReply([selectedItem, ...session.results.filter((_, i) => i !== optIdx - 1)], result);
+        await saveMemory(sessionId, "ai", reply.substring(0, 500));
+        return { reply, toolCalls };
+    } else if (isOptionOrNumber && !session) {
+        const reply = `I'm ready to download movies & series in 720p! Please tell me the movie or series title first (e.g. *Panchayat*, *Bahubali*, *Stree 2*).`;
+        await saveMemory(sessionId, "ai", reply);
+        return { reply, toolCalls };
+    } else if (!isGreeting && !isAction && !isOptionOrNumber) {
+        // Strip common search/download prefixes
+        const titleToDl = lowerMsg
+            .replace(/^(?:download|get|find|stream|watch|search(?:\s+for)?)\s+/i, "")
+            .trim();
+
+        if (titleToDl.length >= 2 && !/^(movie|series|it|recommend|best)$/i.test(titleToDl)) {
             broadcastAiStatus(sessionId, { step: "searching", label: `Searching releases for "${titleToDl}"...` });
             harness.logActivity(`[CHAT FAST-PATH] Autonomous Search & Download for: "${titleToDl}"`);
             const sRes = await executeTool("search_media", { query: titleToDl }, sessionId);
@@ -64,39 +130,11 @@ export async function handleChat(
                     sessionId
                 }, sessionId);
                 toolCalls.push({ tool: "download_media", args: { targetUrl: firstResult.url, title: firstResult.name }, result: dlRes });
+
+                const reply = formatVisualMediaReply(sRes.data.results, dlRes);
+                await saveMemory(sessionId, "ai", reply.substring(0, 500));
+                return { reply, toolCalls };
             }
-        }
-    }
-
-    // Pre-fetch TMDB metadata for enriched context if helpful
-    let tmdbGroundTruth = "";
-    try {
-        const { title: cleanT, year: cleanY } = cleanMediaTitle(userMessage);
-        if (cleanT && cleanT.length > 2 && !/^(hi|hello|hey|help|status|reconnect|clear)/i.test(cleanT)) {
-            const mediaFacts = await lookupMedia(cleanT, cleanY);
-            if (mediaFacts && mediaFacts.found) {
-                tmdbGroundTruth = `\n\n[TMDB GROUND TRUTH FOR "${mediaFacts.title}"]:\n- Type: ${mediaFacts.type}\n- Release Year: ${mediaFacts.year}\n- Overview: ${mediaFacts.overview}`;
-            }
-        }
-    } catch {}
-
-    const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
-        { role: "system", content: SYSTEM_PROMPT + tmdbGroundTruth },
-        ...history.map(m => ({ role: m.role as "system" | "user" | "assistant", content: m.content })),
-        { role: "user", content: userMessage },
-    ];
-
-    // If fast-path already executed tools, inform the LLM directly so it can craft a stunning reply
-    if (toolCalls.length > 0) {
-        for (const tc of toolCalls) {
-            messages.push({
-                role: "assistant",
-                content: `{"tool": "${tc.tool}", "args": ${JSON.stringify(tc.args)}}`
-            });
-            messages.push({
-                role: "user",
-                content: `Tool "${tc.tool}" executed successfully.\nResult: ${tc.result.message}\nData: ${JSON.stringify(tc.result.data || {})}\n\nNow respond to the user with a friendly, visual Markdown confirmation including thumbnail poster, categories, and stating that 720p direct download is in progress. DO NOT call any more tools.`
-            });
         }
     }
 
@@ -161,7 +199,39 @@ export async function handleChat(
             }
 
             let finalReply = (response || "").trim();
-            if (!finalReply) {
+            const sTool = toolCalls.find(t => t.tool === "search_media");
+            const dlTool = toolCalls.find(t => t.tool === "download_media");
+
+            // If LLM apologized or hallucinated an issue when search actually succeeded, format visual response
+            const isApology = /apologize|technical issue|temporary issue|could not find/i.test(finalReply);
+            if ((!finalReply || isApology) && sTool?.result?.success && (sTool.result.data?.results?.length || 0) > 0) {
+                const results = sTool.result.data.results;
+                const top = results[0];
+                const topTitle = top.name;
+                const topThumb = top.thumbnail;
+                const categories = (top.category || []).join(", ");
+
+                let md = `## 🎬 ${topTitle}\n\n`;
+                if (topThumb && !topThumb.includes("No-Image-Placeholder")) {
+                    md += `![Poster](${topThumb})\n\n`;
+                }
+                if (categories) {
+                    md += `🏷️ **Categories**: ${categories}\n\n`;
+                }
+                if (dlTool?.result?.success) {
+                    md += `⚡ **720p Direct Download Queued**: High-speed 10Gbps CDN download has started in the background!\n`;
+                } else if (dlTool?.result?.message) {
+                    md += `⚡ **Status**: ${dlTool.result.message}\n`;
+                }
+
+                if (results.length > 1) {
+                    md += `\n### 📦 Other Available Releases:\n`;
+                    for (let j = 1; j < Math.min(results.length, 4); j++) {
+                        md += `- **Option #${j + 1}**: ${results[j].name}\n`;
+                    }
+                }
+                finalReply = md;
+            } else if (!finalReply) {
                 if (toolCalls.length > 0) {
                     const lastTool = toolCalls[toolCalls.length - 1];
                     if (lastTool.result.data?.queuedEpisodes?.length > 0) {
@@ -176,7 +246,7 @@ export async function handleChat(
                 }
             }
 
-            // If search tool was executed but download wasn't, and user had asked to download, auto-trigger download!
+            // If search tool was executed but download wasn't, auto-trigger 720p download
             const hasSearch = toolCalls.some(t => t.tool.includes("search"));
             const hasDownload = toolCalls.some(t => t.tool.includes("download"));
             if (hasSearch && !hasDownload) {

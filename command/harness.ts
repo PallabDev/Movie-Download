@@ -91,7 +91,7 @@ export class Harness {
 
             const systemMessage: ChatMessage = {
                 role: "system",
-                content: `You are an AI automation tool for downloading movies via Telegram bots (@ProSearchM11Bot).
+                content: `You are CineGrab AI, an autonomous movie & web series download assistant connected to high-speed 10Gbps CDN servers (via dl.pallabdev.in). Always prefer 720p direct download links.
 MEMORY:
 ${memory.slice(-400)}
 

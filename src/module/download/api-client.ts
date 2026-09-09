@@ -44,33 +44,46 @@ export interface SelectedQualityResult {
 }
 
 /**
- * Searches dl.pallabdev.in for any movie or web series
+ * Searches dl.pallabdev.in for any movie or web series with auto-retry
  */
-export async function searchMedia(query: string): Promise<SearchResultItem[]> {
+export async function searchMedia(query: string, maxRetries = 2): Promise<SearchResultItem[]> {
     const cleanQuery = (query || "").trim();
     if (!cleanQuery) return [];
 
     const url = `${DL_API_BASE_URL}/search?param=${encodeURIComponent(cleanQuery)}`;
     console.log(`[DL-API] Searching: ${url}`);
 
-    const res = await fetch(url, {
-        headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json"
-        },
-        signal: AbortSignal.timeout(25000)
-    });
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+        try {
+            const res = await fetch(url, {
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "application/json"
+                },
+                signal: AbortSignal.timeout(35000)
+            });
 
-    if (!res.ok) {
-        throw new Error(`Search API returned status ${res.status}: ${res.statusText}`);
+            if (!res.ok) {
+                throw new Error(`Search API returned status ${res.status}: ${res.statusText}`);
+            }
+
+            const data = await res.json();
+            if (!Array.isArray(data)) {
+                return [];
+            }
+
+            return data;
+        } catch (err: any) {
+            lastError = err;
+            if (attempt <= maxRetries) {
+                console.warn(`[DL-API] Search attempt ${attempt} failed (${err.message}). Retrying in 1.5s...`);
+                await new Promise(r => setTimeout(r, 1500));
+            }
+        }
     }
 
-    const data = await res.json();
-    if (!Array.isArray(data)) {
-        return [];
-    }
-
-    return data;
+    throw lastError || new Error(`Search failed for query "${cleanQuery}"`);
 }
 
 // In-memory cache for resolved download links (10 min TTL)
@@ -78,9 +91,9 @@ const downloadLinksCache = new Map<string, { data: DownloadDetails; timestamp: n
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 /**
- * Extracts direct download links for a specific movie or series permalink URL
+ * Extracts direct download links for a specific movie or series permalink URL with auto-retry
  */
-export async function getDownloadLinks(targetUrl: string, bypassCache = false): Promise<DownloadDetails> {
+export async function getDownloadLinks(targetUrl: string, bypassCache = false, maxRetries = 2): Promise<DownloadDetails> {
     if (!targetUrl) throw new Error("Target URL is required to fetch download links");
 
     const cacheKey = targetUrl.trim();
@@ -95,23 +108,36 @@ export async function getDownloadLinks(targetUrl: string, bypassCache = false): 
     const url = `${DL_API_BASE_URL}/download?param=${encodeURIComponent(targetUrl)}`;
     console.log(`[DL-API] Resolving download links: ${url}`);
 
-    const res = await fetch(url, {
-        headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json"
-        },
-        signal: AbortSignal.timeout(90000)
-    });
+    let lastError: any = null;
+    for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+        try {
+            const res = await fetch(url, {
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "application/json"
+                },
+                signal: AbortSignal.timeout(120000)
+            });
 
-    if (!res.ok) {
-        throw new Error(`Download API returned status ${res.status}: ${res.statusText}`);
+            if (!res.ok) {
+                throw new Error(`Download API returned status ${res.status}: ${res.statusText}`);
+            }
+
+            const data: DownloadDetails = await res.json();
+            if (data && data.downloads && Object.keys(data.downloads).length > 0) {
+                downloadLinksCache.set(cacheKey, { data, timestamp: Date.now() });
+            }
+            return data;
+        } catch (err: any) {
+            lastError = err;
+            if (attempt <= maxRetries) {
+                console.warn(`[DL-API] Download resolution attempt ${attempt} failed (${err.message}). Retrying in 2s...`);
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
     }
 
-    const data: DownloadDetails = await res.json();
-    if (data && data.downloads && Object.keys(data.downloads).length > 0) {
-        downloadLinksCache.set(cacheKey, { data, timestamp: Date.now() });
-    }
-    return data;
+    throw lastError || new Error(`Download link resolution failed for "${targetUrl}"`);
 }
 
 /**
