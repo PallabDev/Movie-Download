@@ -7,6 +7,8 @@ import {
     searchMedia,
     getDownloadLinks,
     selectBest720pQuality,
+    sortServersByPriority,
+    parseAvailableMediaFormats,
     type SearchResultItem,
     type DownloadDetails,
     type SelectedQualityResult
@@ -191,9 +193,72 @@ export async function toolSearchSeries(args: Record<string, any>, sessionId: str
 /**
  * 2. DOWNLOAD MEDIA (Resolves direct links & queues 720p download)
  */
+/**
+ * 2. GET MEDIA FORMATS (Resolves all formats, series batches & episodes)
+ */
+export async function toolGetMediaFormats(args: Record<string, any>, sessionId: string): Promise<ToolResult> {
+    const harness = safeHarness();
+    let { targetUrl, url, title, optionIndex, sessionKey } = args;
+
+    let targetLink = targetUrl || url;
+    let targetTitle = title;
+
+    let session = sessionKey ? searchSessions.get(sessionKey) : null;
+    if (!session && sessionId) session = searchSessions.get(`session_${sessionId}`);
+    if (!session && title) session = searchSessions.get(`title_${title.toLowerCase().trim()}`);
+
+    if (!targetLink && session && session.results.length > 0) {
+        const idx = typeof optionIndex === "number" && optionIndex >= 1 && optionIndex <= session.results.length
+            ? optionIndex - 1
+            : 0;
+        const item = session.results[idx];
+        if (item) {
+            targetLink = item.url;
+            targetTitle = targetTitle || item.name;
+        }
+    }
+
+    if (!targetLink && targetTitle) {
+        try {
+            const sRes = await searchMedia(targetTitle);
+            if (sRes && sRes.length > 0) {
+                targetLink = sRes[0].url;
+                targetTitle = targetTitle || sRes[0].name;
+            }
+        } catch {}
+    }
+
+    if (!targetLink) {
+        return {
+            success: false,
+            message: "MISSING_URL: Target URL or title could not be resolved."
+        };
+    }
+
+    try {
+        broadcastAiStatus(sessionId, { step: "resolving_links", label: `Resolving available formats & episodes...` });
+        const details = await getDownloadLinks(targetLink);
+        const parsed = parseAvailableMediaFormats(details);
+        return {
+            success: true,
+            message: `Available formats for "${details.name}" resolved successfully.`,
+            data: { details: parsed }
+        };
+    } catch (err: any) {
+        harness.logError(`[TOOL get_media_formats] Error: ${err.message}`);
+        return {
+            success: false,
+            message: `FORMAT_RESOLVE_ERROR: Failed to resolve formats: ${err.message}`
+        };
+    }
+}
+
+/**
+ * 3. DOWNLOAD MEDIA (Resolves direct links & queues selected format or 720p)
+ */
 export async function toolDownloadMedia(args: Record<string, any>, sessionId: string): Promise<ToolResult> {
     const harness = safeHarness();
-    let { targetUrl, url, title, year, optionIndex, sessionKey } = args;
+    let { targetUrl, url, title, year, optionIndex, sessionKey, qualityKey, isBatch, episodeNum, fileSize } = args;
 
     let targetLink = targetUrl || url;
     let targetTitle = title;
@@ -242,6 +307,105 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
         const details: DownloadDetails = await getDownloadLinks(targetLink);
         const cleanName = details.name || targetTitle || "Media";
 
+        // Case 1: Specific qualityKey requested (e.g. format_1080p_hevc, batch_season_pack_720p_hevc, episode_1_720p)
+        if (qualityKey && details.downloads[qualityKey]) {
+            const rawServers = details.downloads[qualityKey];
+            const servers = sortServersByPriority(rawServers);
+            const actualSize = fileSize || servers[0]?.file_size || "Direct";
+
+            const isSeriesItem = Boolean(isBatch || episodeNum !== undefined || qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"));
+            const mediaType = isSeriesItem ? "series" : "movie";
+
+            let jobTitle = cleanName;
+            let jobFileName = `${cleanName}.mkv`;
+
+            if (episodeNum !== undefined) {
+                jobTitle = `${cleanName} - Episode ${episodeNum}`;
+                jobFileName = `${cleanName} - S01E${String(episodeNum).padStart(2, "0")}.mkv`;
+            } else if (isBatch || qualityKey.startsWith("batch_")) {
+                jobTitle = `${cleanName} (Full Season Batch)`;
+                jobFileName = `${cleanName} (Full Season Pack).zip`;
+            }
+
+            // Deduplication check
+            try {
+                const existing = await db.select()
+                    .from(schema.downloads)
+                    .where(
+                        and(
+                            eq(schema.downloads.title, jobTitle),
+                            or(
+                                eq(schema.downloads.status, "queued"),
+                                eq(schema.downloads.status, "downloading")
+                            )
+                        )
+                    )
+                    .limit(1);
+
+                if (existing && existing.length > 0) {
+                    harness.logActivity(`[TOOL download_media] "${jobTitle}" is already active/queued. Skipping duplicate.`);
+                    return {
+                        success: true,
+                        message: `MEDIA_ALREADY_DOWNLOADING: "${jobTitle}" is already in your download queue!`,
+                        data: {
+                            requestId: existing[0].requestId,
+                            title: jobTitle,
+                            type: mediaType,
+                            fileSize: actualSize,
+                            alreadyActive: true
+                        }
+                    };
+                }
+            } catch (dbErr: any) {
+                console.warn(`[TOOL download_media] Warning checking existing download: ${dbErr?.message}`);
+            }
+
+            const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+            try {
+                await db.insert(schema.downloads).values({
+                    requestId,
+                    title: jobTitle,
+                    type: mediaType,
+                    status: "queued",
+                    season: isSeriesItem ? 1 : null,
+                    episode: episodeNum !== undefined ? episodeNum : null,
+                    fileSize: actualSize,
+                });
+            } catch (dbErr: any) {
+                console.warn(`[TOOL download_media] DB insert error: ${dbErr?.message}`);
+            }
+
+            downloadQueue.addJob({
+                requestId,
+                type: mediaType,
+                title: jobTitle,
+                season: isSeriesItem ? 1 : undefined,
+                episode: episodeNum !== undefined ? episodeNum : undefined,
+                servers,
+                fileSize: actualSize,
+                isBatchPack: Boolean(isBatch || qualityKey.startsWith("batch_")),
+                fileName: jobFileName,
+            });
+
+            try { broadcastNewDownload({ jobId: requestId, title: jobTitle, type: mediaType, requestedBy: "ai" }); } catch {}
+
+            return {
+                success: true,
+                message: `MEDIA_DOWNLOAD_QUEUED: "${jobTitle}" (${actualSize}) added to download queue via high-speed 10Gbps CDN.`,
+                data: {
+                    requestId,
+                    title: jobTitle,
+                    type: mediaType,
+                    fileSize: actualSize,
+                    qualityKey,
+                    isBatchPack: Boolean(isBatch || qualityKey.startsWith("batch_")),
+                    serversCount: servers.length
+                }
+            };
+        }
+
+        // Case 2: Autonomous best 720p selection fallback
         const quality = selectBest720pQuality(details);
 
         if (!quality) {
@@ -290,7 +454,6 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
 
         // Check if batch pack vs episode list vs movie
         if (quality.isEpisodeList && quality.episodes && quality.episodes.length > 0) {
-            // Queue all episodes
             const queuedEpisodes: string[] = [];
 
             for (const ep of quality.episodes) {
@@ -342,7 +505,7 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
 
         // Single movie file or Series Batch Pack
         const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const fileSize = quality.fileSize || "720p High Speed";
+        const fileSizeStr = quality.fileSize || "720p High Speed";
 
         try {
             await db.insert(schema.downloads).values({
@@ -351,7 +514,7 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                 type: mediaType,
                 status: "queued",
                 year: targetYear || "",
-                fileSize,
+                fileSize: fileSizeStr,
             });
         } catch (dbErr: any) {
             console.warn(`[TOOL download_media] Warning: DB insert failed: ${dbErr?.message || dbErr}`);
@@ -363,22 +526,22 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
             title: cleanName,
             year: targetYear || "",
             servers: quality.servers,
-            fileSize,
+            fileSize: fileSizeStr,
             isBatchPack: quality.isBatchPack,
             fileName: quality.isBatchPack ? `${cleanName} (Full Season Pack).zip` : `${cleanName}.mkv`,
         });
 
         try { broadcastNewDownload({ jobId: requestId, title: cleanName, type: mediaType, requestedBy: "ai" }); } catch {}
-        harness.logActivity(`[TOOL download_media] Queued ${mediaType} "${cleanName}" in 720p [Servers: ${quality.servers.length}, Size: ${fileSize}]`);
+        harness.logActivity(`[TOOL download_media] Queued ${mediaType} "${cleanName}" in 720p [Servers: ${quality.servers.length}, Size: ${fileSizeStr}]`);
 
         return {
             success: true,
-            message: `MEDIA_DOWNLOAD_QUEUED: "${cleanName}" (${fileSize}) added to download queue via high-speed 10Gbps CDN.`,
+            message: `MEDIA_DOWNLOAD_QUEUED: "${cleanName}" (${fileSizeStr}) added to download queue via high-speed 10Gbps CDN.`,
             data: {
                 requestId,
                 title: cleanName,
                 type: mediaType,
-                fileSize,
+                fileSize: fileSizeStr,
                 qualityKey: quality.qualityKey,
                 isBatchPack: quality.isBatchPack,
                 serversCount: quality.servers.length
@@ -408,7 +571,7 @@ export async function toolDownloadEpisode(args: Record<string, any>, sessionId: 
 }
 
 /**
- * 3. CHECK JELLYFIN LIBRARY
+ * 4. CHECK JELLYFIN LIBRARY
  */
 export async function toolCheckJellyfin(args: Record<string, any>, sessionId: string): Promise<ToolResult> {
     const { title, type, year } = args;
@@ -439,7 +602,7 @@ export async function toolCheckJellyfin(args: Record<string, any>, sessionId: st
 }
 
 /**
- * 4. LIST DOWNLOADS
+ * 5. LIST DOWNLOADS
  */
 export async function toolListDownloads(): Promise<ToolResult> {
     try {
@@ -463,6 +626,9 @@ export async function executeTool(toolName: string, args: Record<string, any>, s
         case "search_movie":
         case "search_series":
             return await toolSearchMedia(args, sessionId);
+        case "get_media_formats":
+        case "get_download_links":
+            return await toolGetMediaFormats(args, sessionId);
         case "download_media":
         case "download_movie":
         case "download_series":
@@ -476,3 +642,4 @@ export async function executeTool(toolName: string, args: Record<string, any>, s
             return { success: false, message: `UNKNOWN_TOOL: "${toolName}" is not recognized.` };
     }
 }
+

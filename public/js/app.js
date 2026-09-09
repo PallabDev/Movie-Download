@@ -611,10 +611,98 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
         `;
     }
 
+    let mediaFormatsHtml = '';
+    if (meta.mediaFormats) {
+        const mf = meta.mediaFormats;
+        const targetUrl = meta.targetUrl || mf.url || '';
+        const title = mf.name || '';
+
+        if (mf.isSeries) {
+            const batches = mf.seriesBatches || [];
+            const episodes = mf.seriesEpisodes || [];
+
+            mediaFormatsHtml = `
+                <div class="chat-formats-panel">
+                    ${batches.length > 0 ? `
+                        <div class="formats-section">
+                            <div class="formats-section-title">📦 Complete Season Batch Packs (1-Click Full Download)</div>
+                            <div class="formats-grid">
+                                ${batches.map(b => `
+                                    <div class="format-card ${b.isRecommended ? 'recommended' : ''}">
+                                        <div class="format-card-info">
+                                            <div class="format-card-label">${escapeHtml(b.label)}</div>
+                                            <div class="format-card-sub">
+                                                <span class="badge ${b.resolution === '4K' ? 'codec' : 'res'}">${escapeHtml(b.resolution)}</span>
+                                                ${b.fileSize ? `<span class="badge size">${escapeHtml(b.fileSize)}</span>` : ''}
+                                                ${b.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                            </div>
+                                        </div>
+                                        <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(b.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', true, undefined, '${escapeHtml(b.fileSize)}', this)">
+                                            <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                            Download Batch
+                                        </button>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    ${episodes.length > 0 ? `
+                        <div class="formats-section" style="margin-top: 10px;">
+                            <div class="formats-section-title">📺 Individual Episodes (${episodes.length} Episodes)</div>
+                            <div class="episodes-grid">
+                                ${episodes.map(ep => `
+                                    <div class="episode-row-card">
+                                        <div class="episode-row-header">
+                                            <strong>${escapeHtml(ep.title)}</strong>
+                                        </div>
+                                        <div class="episode-qualities-row">
+                                            ${ep.qualities.map(q => `
+                                                <button class="btn-ep-download" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(q.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, ${ep.episodeNum}, '${escapeHtml(q.fileSize)}', this)">
+                                                    <span>${escapeHtml(q.label || q.resolution)}</span>
+                                                    ${q.fileSize ? `<small>(${escapeHtml(q.fileSize)})</small>` : ''}
+                                                </button>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        } else if (mf.movieFormats && mf.movieFormats.length > 0) {
+            mediaFormatsHtml = `
+                <div class="chat-formats-panel">
+                    <div class="formats-section-title">⚡ Available Movie Formats (Direct 10Gbps CDN)</div>
+                    <div class="formats-grid">
+                        ${mf.movieFormats.map(f => `
+                            <div class="format-card ${f.isRecommended ? 'recommended' : ''}">
+                                <div class="format-card-info">
+                                    <div class="format-card-label">${escapeHtml(f.label)}</div>
+                                    <div class="format-card-sub">
+                                        <span class="badge ${f.resolution === '4K' ? 'codec' : 'res'}">${escapeHtml(f.resolution)}</span>
+                                        ${f.fileSize ? `<span class="badge size">${escapeHtml(f.fileSize)}</span>` : ''}
+                                        ${f.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                    </div>
+                                </div>
+                                <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(f.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, undefined, '${escapeHtml(f.fileSize)}', this)">
+                                    <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                    Download ${escapeHtml(f.resolution)}
+                                </button>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+    }
+
     row.innerHTML = `
         <div class="msg-bubble">
             ${meta.workflowChip ? `<div class="workflow-chip ${meta.workflowChip.type}">${meta.workflowChip.label}</div>` : ''}
             ${formattedHtml}
+            ${mediaFormatsHtml}
             ${searchResultsHtml}
             ${actionButtonsHtml}
         </div>
@@ -624,6 +712,7 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
     if (isAtBottom) chatBox.scrollTop = chatBox.scrollHeight;
     return row;
 }
+
 
 function showTypingIndicator(initialLabel = 'Thinking...') {
     removeTypingIndicator();
@@ -949,7 +1038,7 @@ function renderMovieStudioResults(data, container) {
                     <span>🎬 <strong>${escapeHtml(movieTitle)}</strong> ${movieYear ? `(${escapeHtml(movieYear)})` : ''} · <strong>${total} Available Releases</strong></span>
                     <span class="chip best" style="background: rgba(16, 185, 129, 0.2); color: #34d399; font-weight: 700;">⚡ 10Gbps Fast CDN</span>
                 </div>
-                <span class="chat-search-hint">Select any release below to download directly to your media server in 720p:</span>
+                <span class="chat-search-hint">Click any release below to choose your desired format (Movies) or batch/episodes (Series):</span>
             </div>
             <div class="chat-search-list">
                 ${results.map((r, i) => {
@@ -958,32 +1047,37 @@ function renderMovieStudioResults(data, container) {
                     const titleText = r.name || r.text || '';
                     const categories = Array.isArray(r.category) ? r.category : [];
                     const stars = Array.isArray(r.stars) ? r.stars.join(', ') : '';
+                    const safeUrl = escapeHtml(r.url || '').replace(/'/g, "\\'");
+                    const safeTitle = escapeHtml(titleText).replace(/'/g, "\\'");
 
                     return `
-                        <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="triggerStudioMovieDownload(${optIndex}, '${escapeHtml(r.url || '').replace(/'/g, "\\'")}')">
-                            <div class="chat-release-left" style="display: flex; gap: 14px; align-items: center;">
-                                ${r.thumbnail ? `
-                                    <img src="${escapeHtml(r.thumbnail)}" alt="Poster" class="chat-release-thumb" style="width: 54px; height: 78px; object-fit: cover; border-radius: 6px; box-shadow: 0 2px 10px rgba(0,0,0,0.5); flex-shrink: 0;" onerror="this.style.display='none'">
-                                ` : `
-                                    <span class="chat-release-index">#${optIndex}</span>
-                                `}
-                                <div class="chat-release-meta" style="flex: 1; min-width: 0;">
-                                    <div class="chat-release-title" title="${escapeHtml(titleText)}" style="font-weight: 600; font-size: 13.5px; line-height: 1.35; color: #fff; margin-bottom: 5px;">
-                                        ${escapeHtml(titleText)}
+                        <div class="studio-release-item" id="studioReleaseItem_${optIndex}">
+                            <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="toggleStudioFormatSelector(${optIndex}, '${safeUrl}', '${safeTitle}')">
+                                <div class="chat-release-left" style="display: flex; gap: 14px; align-items: center;">
+                                    ${r.thumbnail ? `
+                                        <img src="${escapeHtml(r.thumbnail)}" alt="Poster" class="chat-release-thumb" style="width: 54px; height: 78px; object-fit: cover; border-radius: 6px; box-shadow: 0 2px 10px rgba(0,0,0,0.5); flex-shrink: 0;" onerror="this.style.display='none'">
+                                    ` : `
+                                        <span class="chat-release-index">#${optIndex}</span>
+                                    `}
+                                    <div class="chat-release-meta" style="flex: 1; min-width: 0;">
+                                        <div class="chat-release-title" title="${escapeHtml(titleText)}" style="font-weight: 600; font-size: 13.5px; line-height: 1.35; color: #fff; margin-bottom: 5px;">
+                                            ${escapeHtml(titleText)}
+                                        </div>
+                                        <div class="chat-release-tags" style="display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 4px;">
+                                            <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 700;">⚡ 10Gbps CDN</span>
+                                            ${categories.slice(0, 3).map(c => `<span class="badge" style="background: var(--bg-surface-elevated); color: var(--text-secondary);">${escapeHtml(c)}</span>`).join('')}
+                                            ${r.post_date ? `<span class="badge" style="background: var(--bg-surface-elevated); color: var(--text-muted);">${escapeHtml(r.post_date)}</span>` : ''}
+                                            ${isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                        </div>
+                                        ${stars ? `<div style="font-size: 11px; color: var(--text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">Cast: ${escapeHtml(stars)}</div>` : ''}
                                     </div>
-                                    <div class="chat-release-tags" style="display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 4px;">
-                                        <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 700;">⚡ 720p CDN</span>
-                                        ${categories.slice(0, 3).map(c => `<span class="badge" style="background: var(--bg-surface-elevated); color: var(--text-secondary);">${escapeHtml(c)}</span>`).join('')}
-                                        ${r.post_date ? `<span class="badge" style="background: var(--bg-surface-elevated); color: var(--text-muted);">${escapeHtml(r.post_date)}</span>` : ''}
-                                        ${isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
-                                    </div>
-                                    ${stars ? `<div style="font-size: 11px; color: var(--text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">Cast: ${escapeHtml(stars)}</div>` : ''}
                                 </div>
+                                <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); toggleStudioFormatSelector(${optIndex}, '${safeUrl}', '${safeTitle}')" id="btnToggleDrawer_${optIndex}">
+                                    <svg class="tabler-icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                    Choose Format
+                                </button>
                             </div>
-                            <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); triggerStudioMovieDownload(${optIndex}, '${escapeHtml(r.url || '').replace(/'/g, "\\'")}', this)">
-                                <svg class="tabler-icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                Download 720p
-                            </button>
+                            <div id="studioFormatDrawer_${optIndex}" class="studio-format-drawer" style="display: none;"></div>
                         </div>
                     `;
                 }).join('')}
@@ -992,8 +1086,143 @@ function renderMovieStudioResults(data, container) {
     `;
 }
 
+const formatDetailsCache = new Map();
+
+async function toggleStudioFormatSelector(optionIndex, targetUrl, rawTitle) {
+    const drawer = document.getElementById(`studioFormatDrawer_${optionIndex}`);
+    const toggleBtn = document.getElementById(`btnToggleDrawer_${optionIndex}`);
+    if (!drawer) return;
+
+    if (drawer.style.display !== 'none') {
+        drawer.style.display = 'none';
+        if (toggleBtn) toggleBtn.innerHTML = `<svg class="tabler-icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg> Choose Format`;
+        return;
+    }
+
+    drawer.style.display = 'block';
+    if (toggleBtn) toggleBtn.innerHTML = `▲ Close`;
+
+    if (formatDetailsCache.has(targetUrl)) {
+        renderDrawerContent(drawer, formatDetailsCache.get(targetUrl), targetUrl, rawTitle);
+        return;
+    }
+
+    drawer.innerHTML = `
+        <div style="text-align: center; padding: 20px; color: var(--text-secondary); font-size: 12px;">
+            <div class="spinner" style="width: 18px; height: 18px; margin: 0 auto 8px;"></div>
+            Loading available download formats & episode links...
+        </div>
+    `;
+
+    try {
+        const res = await fetch('/api/media/details', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ targetUrl })
+        });
+        const data = await res.json();
+        if (data.success && data.details) {
+            formatDetailsCache.set(targetUrl, data.details);
+            renderDrawerContent(drawer, data.details, targetUrl, rawTitle);
+        } else {
+            drawer.innerHTML = `<div style="color: var(--accent-rose); font-size: 12px; padding: 10px;">${escapeHtml(data.error || 'No downloadable links found')}</div>`;
+        }
+    } catch (err) {
+        drawer.innerHTML = `<div style="color: var(--accent-rose); font-size: 12px; padding: 10px;">Failed to load formats: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
+    const title = details.name || rawTitle || 'Media';
+    const safeUrl = escapeHtml(targetUrl).replace(/'/g, "\\'");
+    const safeTitle = escapeHtml(title).replace(/'/g, "\\'");
+
+    if (details.isSeries) {
+        const batches = details.seriesBatches || [];
+        const episodes = details.seriesEpisodes || [];
+
+        drawer.innerHTML = `
+            <div class="chat-formats-panel" style="margin-top: 0; background: transparent; border: none; padding: 0;">
+                ${batches.length > 0 ? `
+                    <div class="formats-section">
+                        <div class="formats-section-title">📦 Complete Season Batch Packs (Full Download)</div>
+                        <div class="formats-grid">
+                            ${batches.map(b => `
+                                <div class="format-card ${b.isRecommended ? 'recommended' : ''}">
+                                    <div class="format-card-info">
+                                        <div class="format-card-label">${escapeHtml(b.label)}</div>
+                                        <div class="format-card-sub">
+                                            <span class="badge ${b.resolution === '4K' ? 'codec' : 'res'}">${escapeHtml(b.resolution)}</span>
+                                            ${b.fileSize ? `<span class="badge size">${escapeHtml(b.fileSize)}</span>` : ''}
+                                            ${b.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                        </div>
+                                    </div>
+                                    <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(b.qualityKey)}', '${safeTitle}', true, undefined, '${escapeHtml(b.fileSize)}', this)">
+                                        <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                        Download Batch
+                                    </button>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${episodes.length > 0 ? `
+                    <div class="formats-section" style="margin-top: 12px;">
+                        <div class="formats-section-title">📺 Single Episodes (${episodes.length} Episodes Available)</div>
+                        <div class="episodes-grid">
+                            ${episodes.map(ep => `
+                                <div class="episode-row-card">
+                                    <div class="episode-row-header">
+                                        <strong>${escapeHtml(ep.title)}</strong>
+                                    </div>
+                                    <div class="episode-qualities-row">
+                                        ${ep.qualities.map(q => `
+                                            <button class="btn-ep-download" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(q.qualityKey)}', '${safeTitle}', false, ${ep.episodeNum}, '${escapeHtml(q.fileSize)}', this)">
+                                                <span>${escapeHtml(q.label || q.resolution)}</span>
+                                                ${q.fileSize ? `<small>(${escapeHtml(q.fileSize)})</small>` : ''}
+                                            </button>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    } else if (details.movieFormats && details.movieFormats.length > 0) {
+        drawer.innerHTML = `
+            <div class="chat-formats-panel" style="margin-top: 0; background: transparent; border: none; padding: 0;">
+                <div class="formats-section-title">⚡ Available Movie Qualities (Direct 10Gbps CDN)</div>
+                <div class="formats-grid">
+                    ${details.movieFormats.map(f => `
+                        <div class="format-card ${f.isRecommended ? 'recommended' : ''}">
+                            <div class="format-card-info">
+                                <div class="format-card-label">${escapeHtml(f.label)}</div>
+                                <div class="format-card-sub">
+                                    <span class="badge ${f.resolution === '4K' ? 'codec' : 'res'}">${escapeHtml(f.resolution)}</span>
+                                    ${f.fileSize ? `<span class="badge size">${escapeHtml(f.fileSize)}</span>` : ''}
+                                    ${f.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                </div>
+                            </div>
+                            <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(f.qualityKey)}', '${safeTitle}', false, undefined, '${escapeHtml(f.fileSize)}', this)">
+                                <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                Download ${escapeHtml(f.resolution)}
+                            </button>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    } else {
+        drawer.innerHTML = `<div style="color: var(--text-muted); font-size: 12px; padding: 10px;">No specific formats found.</div>`;
+    }
+}
+
 let isTriggeringDownload = false;
-async function triggerStudioMovieDownload(optionIndex, targetUrl, btnElement) {
+async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize, btnElement) {
     if (isTriggeringDownload) return;
     isTriggeringDownload = true;
 
@@ -1004,22 +1233,27 @@ async function triggerStudioMovieDownload(optionIndex, targetUrl, btnElement) {
     }
 
     try {
-        const res = await fetch('/api/select', {
+        const res = await fetch('/api/download-specific', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({
-                searchId: state.searchResultSession,
-                optionIndex: typeof optionIndex === 'number' ? optionIndex : undefined,
-                targetUrl: targetUrl || (typeof optionIndex === 'string' ? optionIndex : undefined)
+                targetUrl,
+                qualityKey,
+                customTitle,
+                isBatch: Boolean(isBatch),
+                episodeNum,
+                fileSize
             })
         });
+
         const data = await res.json();
         if (data.success) {
-            showToast(data.message || 'Download started in 720p!', 'success');
+            showToast(data.message || 'Download started!', 'success');
             if (btnElement) {
-                btnElement.innerHTML = `✅ Queued 720p`;
+                btnElement.innerHTML = `✅ Queued`;
                 btnElement.classList.remove('primary');
+                btnElement.classList.add('btn-queued-success');
             }
             switchView('downloads');
         } else {
@@ -1040,9 +1274,14 @@ async function triggerStudioMovieDownload(optionIndex, targetUrl, btnElement) {
     }
 }
 
+async function triggerStudioMovieDownload(optionIndex, targetUrl, btnElement) {
+    await triggerSpecificFormatDownload(targetUrl, 'auto_720p', undefined, false, undefined, undefined, btnElement);
+}
+
 async function triggerStudioEpisodeDownload(buttonText, btnElement) {
     await triggerStudioMovieDownload(buttonText, undefined, btnElement);
 }
+
 
 async function triggerStudioBulkSeasonDownload(season) {
     if (!state.searchResultSession) {

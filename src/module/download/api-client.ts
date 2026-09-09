@@ -354,3 +354,168 @@ export function selectBest720pQuality(details: DownloadDetails): SelectedQuality
 
     return null;
 }
+
+export interface ParsedMovieFormat {
+    qualityKey: string;
+    label: string;
+    resolution: string;
+    fileSize: string;
+    isRecommended: boolean;
+    serverCount: number;
+}
+
+export interface ParsedSeriesBatch {
+    qualityKey: string;
+    label: string;
+    resolution: string;
+    fileSize: string;
+    isRecommended: boolean;
+    serverCount: number;
+}
+
+export interface ParsedSeriesEpisodeQuality {
+    qualityKey: string;
+    label: string;
+    resolution: string;
+    fileSize: string;
+    serverCount: number;
+}
+
+export interface ParsedSeriesEpisode {
+    episodeNum: number;
+    title: string;
+    qualities: ParsedSeriesEpisodeQuality[];
+}
+
+export interface ParsedMediaDetails {
+    name: string;
+    url: string;
+    thumbnail?: string;
+    synopsis?: string;
+    category?: string[];
+    isSeries: boolean;
+    movieFormats?: ParsedMovieFormat[];
+    seriesBatches?: ParsedSeriesBatch[];
+    seriesEpisodes?: ParsedSeriesEpisode[];
+}
+
+/**
+ * Parses all download keys into structured movie formats or series batch/episode collections
+ */
+export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMediaDetails | null {
+    if (!details || !details.downloads) return null;
+    const downloadKeys = Object.keys(details.downloads);
+    if (downloadKeys.length === 0) return null;
+
+    const isSeries = downloadKeys.some(k => k.startsWith("batch_") || k.startsWith("episode_") || k.startsWith("bonus_"));
+
+    if (isSeries) {
+        // Parse batches
+        const batchKeys = downloadKeys.filter(k => k.startsWith("batch_"));
+        const seriesBatches: ParsedSeriesBatch[] = batchKeys.map(k => {
+            const srvs = details.downloads[k] || [];
+            const fileSize = srvs[0]?.file_size || "";
+            let res = "720p";
+            if (k.includes("4k") || k.includes("2160p")) res = "4K";
+            else if (k.includes("1080p")) res = "1080p";
+            else if (k.includes("480p")) res = "480p";
+
+            let label = k.replace(/^batch_(?:season_pack_)?/, "").replace(/_/g, " ").toUpperCase() + " Batch Pack";
+            if (k.includes("720p_hevc") || k.includes("720p_x265")) label = "720p HEVC Season Batch (Compact)";
+            else if (k.includes("720p")) label = "720p Season Batch";
+            else if (k.includes("1080p_hevc") || k.includes("1080p_x265")) label = "1080p HEVC Season Batch";
+            else if (k.includes("1080p")) label = "1080p Full HD Season Batch";
+            else if (k.includes("480p")) label = "480p Season Batch";
+            else if (k.includes("4k")) label = "4K UHD Season Batch";
+
+            return {
+                qualityKey: k,
+                label,
+                resolution: res,
+                fileSize,
+                isRecommended: k.includes("720p_hevc") || (k.includes("720p") && !batchKeys.some(b => b.includes("720p_hevc"))),
+                serverCount: srvs.length
+            };
+        });
+
+        // Parse episodes
+        const epKeys = downloadKeys.filter(k => k.startsWith("episode_"));
+        const epMap = new Map<number, ParsedSeriesEpisodeQuality[]>();
+        for (const k of epKeys) {
+            const match = k.match(/episode_(\d+)(?:_(.*))?/i);
+            const epNum = match ? parseInt(match[1], 10) : 1;
+            const subQuality = (match && match[2]) ? match[2].replace(/_/g, " ").toUpperCase() : "720p";
+            const srvs = details.downloads[k] || [];
+            const fileSize = srvs[0]?.file_size || "";
+
+            if (!epMap.has(epNum)) {
+                epMap.set(epNum, []);
+            }
+            epMap.get(epNum)!.push({
+                qualityKey: k,
+                label: subQuality,
+                resolution: subQuality.includes("1080") ? "1080p" : (subQuality.includes("480") ? "480p" : "720p"),
+                fileSize,
+                serverCount: srvs.length
+            });
+        }
+
+        const sortedEpNums = Array.from(epMap.keys()).sort((a, b) => a - b);
+        const seriesEpisodes: ParsedSeriesEpisode[] = sortedEpNums.map(num => ({
+            episodeNum: num,
+            title: `Episode ${num}`,
+            qualities: epMap.get(num)!
+        }));
+
+        return {
+            name: details.name,
+            url: details.url,
+            thumbnail: details.thumbnail,
+            synopsis: details.synopsis,
+            category: details.category,
+            isSeries: true,
+            seriesBatches,
+            seriesEpisodes
+        };
+    } else {
+        // Movies
+        const movieFormats: ParsedMovieFormat[] = downloadKeys.map(k => {
+            const srvs = details.downloads[k] || [];
+            const fileSize = srvs[0]?.file_size || "";
+            let res = "720p";
+            if (k.includes("4k") || k.includes("2160p")) res = "4K";
+            else if (k.includes("1080p")) res = "1080p";
+            else if (k.includes("480p")) res = "480p";
+
+            let label = k.replace(/^format_/, "").replace(/_/g, " ").toUpperCase();
+            if (k.includes("720p_hevc") || k.includes("720p_x265")) label = "720p HEVC (10-Bit x265)";
+            else if (k.includes("720p_h264") || k === "720p") label = "720p HD";
+            else if (k.includes("1080p_hevc") || k.includes("1080p_x265")) label = "1080p Full HD HEVC";
+            else if (k.includes("1080p_60fps")) label = "1080p 60FPS High Frame";
+            else if (k.includes("1080p_h264") || k === "1080p") label = "1080p Full HD";
+            else if (k.includes("4k_hdr")) label = "4K Ultra HD (HDR10)";
+            else if (k.includes("4k_sdr") || k.includes("4k")) label = "4K Ultra HD";
+            else if (k.includes("480p")) label = "480p SD (Compact)";
+
+            return {
+                qualityKey: k,
+                label,
+                resolution: res,
+                fileSize,
+                isRecommended: k.includes("720p_hevc") || (k.includes("720p") && !downloadKeys.some(dk => dk.includes("720p_hevc"))),
+                serverCount: srvs.length
+            };
+        });
+
+        return {
+            name: details.name,
+            url: details.url,
+            thumbnail: details.thumbnail,
+            synopsis: details.synopsis,
+            category: details.category,
+            isSeries: false,
+            movieFormats
+        };
+    }
+}
+

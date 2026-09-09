@@ -19,7 +19,7 @@ import {
     syncIndianOTTReleasesToDB,
     discoverIndianOTTReleases
 } from "../../common/tmdb/client.js";
-import { searchMedia, getDownloadLinks, selectBest720pQuality, sortServersByPriority } from "../download/api-client.js";
+import { searchMedia, getDownloadLinks, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats } from "../download/api-client.js";
 import { handleChat } from "./chat.js";
 
 const app = express();
@@ -592,6 +592,153 @@ app.post("/api/search", requireMod, async (req: any, res) => {
 
     } catch (err: any) {
         console.error(`[SEARCH] Error:`, err.message);
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── MEDIA FORMAT DETAILS (Movies, Series Batches & Episodes) ───
+
+app.post("/api/media/details", requireMod, async (req: any, res) => {
+    const { targetUrl, searchId, optionIndex } = req.body;
+    let chosenUrl = targetUrl;
+
+    if (!chosenUrl && searchId) {
+        const session = searchSessions.get(searchId);
+        if (session && session.results.length > 0) {
+            const idx = typeof optionIndex === "number" && optionIndex >= 1 && optionIndex <= session.results.length
+                ? optionIndex - 1
+                : 0;
+            const item = session.results[idx];
+            if (item) chosenUrl = item.url;
+        }
+    }
+
+    if (!chosenUrl) {
+        return res.status(400).json({ error: "targetUrl or valid searchId required" });
+    }
+
+    try {
+        console.log(`[MEDIA-DETAILS] Fetching download options for: ${chosenUrl}`);
+        const details = await getDownloadLinks(chosenUrl);
+        const parsed = parseAvailableMediaFormats(details);
+        if (!parsed) {
+            return res.status(404).json({ error: "No downloadable formats found for this release." });
+        }
+        return res.json({ success: true, details: parsed });
+    } catch (err: any) {
+        console.error(`[MEDIA-DETAILS] Error:`, err.message);
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── SPECIFIC FORMAT / EPISODE DOWNLOAD ───
+
+app.post("/api/download-specific", requireMod, async (req: any, res) => {
+    const { targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize } = req.body;
+
+    if (!targetUrl || !qualityKey) {
+        return res.status(400).json({ error: "targetUrl and qualityKey are required" });
+    }
+
+    try {
+        console.log(`[DOWNLOAD-SPECIFIC] Resolving: qualityKey="${qualityKey}" for url="${targetUrl}"`);
+        const details = await getDownloadLinks(targetUrl);
+        const rawServers = details.downloads[qualityKey];
+
+        if (!rawServers || rawServers.length === 0) {
+            return res.status(404).json({ error: `Quality "${qualityKey}" has no active download servers available.` });
+        }
+
+        const servers = sortServersByPriority(rawServers);
+        const actualFileSize = fileSize || servers[0]?.file_size || "Direct Download";
+        const cleanName = details.name || customTitle || "Media";
+
+        const isSeries = Boolean(isBatch || episodeNum !== undefined || qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"));
+        const mediaType = isSeries ? "series" : "movie";
+
+        // Build distinct title & check duplicate in database
+        let jobTitle = cleanName;
+        let jobFileName = `${cleanName}.mkv`;
+
+        if (episodeNum !== undefined) {
+            jobTitle = `${cleanName} - Episode ${episodeNum}`;
+            jobFileName = `${cleanName} - S01E${String(episodeNum).padStart(2, "0")}.mkv`;
+        } else if (isBatch || qualityKey.startsWith("batch_")) {
+            jobTitle = `${cleanName} (Full Season Batch)`;
+            jobFileName = `${cleanName} (Full Season Pack).zip`;
+        }
+
+        // Deduplication check
+        try {
+            const existing = await db.select()
+                .from(schema.downloads)
+                .where(
+                    and(
+                        eq(schema.downloads.title, jobTitle),
+                        or(
+                            eq(schema.downloads.status, "queued"),
+                            eq(schema.downloads.status, "downloading")
+                        )
+                    )
+                )
+                .limit(1);
+
+            if (existing && existing.length > 0) {
+                console.log(`[DOWNLOAD-SPECIFIC DEDUP] "${jobTitle}" is already ${existing[0].status}.`);
+                return res.json({
+                    success: true,
+                    requestId: existing[0].requestId,
+                    message: `"${jobTitle}" is already active in your download station.`,
+                    fileSize: actualFileSize,
+                    alreadyActive: true
+                });
+            }
+        } catch (dbErr: any) {
+            console.warn(`[DOWNLOAD-SPECIFIC DEDUP] Warning: ${dbErr?.message}`);
+        }
+
+        const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+        await db.insert(schema.downloads).values({
+            requestId,
+            title: jobTitle,
+            type: mediaType,
+            status: "queued",
+            season: isSeries ? 1 : null,
+            episode: episodeNum !== undefined ? episodeNum : null,
+            fileSize: actualFileSize,
+            requestedBy: req.user.userId,
+        });
+
+        downloadQueue.addJob({
+            requestId,
+            type: mediaType,
+            title: jobTitle,
+            season: isSeries ? 1 : undefined,
+            episode: episodeNum !== undefined ? episodeNum : undefined,
+            servers,
+            fileSize: actualFileSize,
+            isBatchPack: Boolean(isBatch || qualityKey.startsWith("batch_")),
+            fileName: jobFileName,
+        });
+
+        broadcastNewDownload({
+            jobId: requestId,
+            title: jobTitle,
+            type: mediaType,
+            requestedBy: req.user.email,
+        });
+
+        return res.json({
+            success: true,
+            requestId,
+            message: `Download started for "${jobTitle}" (${actualFileSize}).`,
+            fileSize: actualFileSize,
+            qualityKey
+        });
+
+    } catch (err: any) {
+        console.error(`[DOWNLOAD-SPECIFIC] Error:`, err.message);
         return res.status(500).json({ error: err.message });
     }
 });
