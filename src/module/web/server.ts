@@ -1375,10 +1375,11 @@ const pageRoutes = [
     "/download", "/downloads", "/downlaod",
     "/request", "/requests", "/requested",
     "/jellyfin",
-    "/telegram", "/bot",
     "/user", "/users",
     "/admin"
 ];
+
+app.get(["/telegram", "/bot"], (req, res) => res.redirect("/"));
 
 app.get(pageRoutes, (req, res) => {
     const user = extractUser(req);
@@ -1408,7 +1409,6 @@ app.get(pageRoutes, (req, res) => {
     else if (path.startsWith("/download") || path.startsWith("/downlaod")) initialView = "downloads";
     else if (path.startsWith("/request")) initialView = "requested";
     else if (path.startsWith("/jellyfin")) initialView = "jellyfin";
-    else if (path.startsWith("/telegram") || path.startsWith("/bot")) initialView = "bot";
     else if (path.startsWith("/user") || path.startsWith("/admin")) {
         if (role === "admin") initialView = "admin";
         else initialView = "chat";
@@ -1574,7 +1574,6 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
         downloads: "Download Station",
         requested: "Requested Media",
         jellyfin: "Jellyfin Library",
-        bot: "Telegram Bot",
         admin: "User Management"
     };
 
@@ -1672,10 +1671,6 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                             <svg class="tabler-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
                             <span>Jellyfin Library</span>
                         </a>
-                        <a class="nav-link ${activeView === 'bot' ? 'active' : ''}" href="/telegram" data-view="bot" onclick="navigateRoute(event, 'bot')">
-                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M15 10l-4 4l6 6l4 -16l-18 7l4 2l2 6l3 -4"/></svg>
-                            <span>Telegram Bot</span>
-                        </a>
                         ${isAdmin ? `
                         <a class="nav-link ${activeView === 'admin' ? 'active' : ''}" href="/user" data-view="admin" onclick="navigateRoute(event, 'admin')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
@@ -1712,11 +1707,6 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                     </button>
                     <div class="header-title-wrap">
                         <h2 class="header-view-title" id="headerViewTitle">${headerTitle}</h2>
-                        ${!isUser ? `
-                        <div class="bot-status-pill" onclick="navigateRoute(event, 'bot')">
-                            <span class="status-dot connecting" id="headerBotDot"></span>
-                            <span id="headerBotStatusText" class="header-bot-status-text" style="font-size:11.5px;">Checking bot...</span>
-                        </div>` : ""}
                     </div>
                 </div>
                 <div class="header-right">
@@ -1982,39 +1972,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                 </div>
             </section>
 
-            ${!isUser ? `
-            <!-- VIEW 5: TELEGRAM BOT & 2FA CONTROL -->
-            <section class="view-container ${activeView === 'bot' ? 'active' : ''}" id="view-bot">
-                <div class="bot-center-wrap">
-                    <div class="bot-connection-card">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <div>
-                                <h2 style="font-size: 16px;">Telegram Bot Gateway</h2>
-                                <p style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">MTProto client session and authentication state.</p>
-                            </div>
-                            <button class="btn-primary-action" onclick="startBotReconnect()">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
-                                Reconnect Bot
-                            </button>
-                        </div>
-
-                        <div class="bot-state-banner">
-                            <div style="display:flex; align-items:center; gap: 10px;">
-                                <div class="status-dot connecting" id="botCenterStatusDot"></div>
-                                <div>
-                                    <strong style="font-size: 13px; color: #fff;">MTProto Client Connection</strong>
-                                    <div style="font-size: 11.5px; color: var(--text-secondary);" id="botCenterStatusDetail">Monitoring connection...</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div id="botAuthWizardArea" style="display:none;"></div>
-                </div>
-            </section>
-            ` : ""}
-
-            <!-- VIEW 6: ADMIN USER MANAGEMENT -->
+            <!-- VIEW 5: ADMIN USER MANAGEMENT -->
             ${isAdmin ? `
             <section class="view-container ${activeView === 'admin' ? 'active' : ''}" id="view-admin">
                 <div class="admin-wrap">

@@ -209,7 +209,6 @@ const VIEW_ROUTES = {
     downloads: '/download',
     requested: '/request',
     jellyfin: '/jellyfin',
-    bot: '/telegram',
     admin: '/user'
 };
 
@@ -219,7 +218,6 @@ const VIEW_TITLES = {
     downloads: 'Download Station',
     requested: 'Requested Media',
     jellyfin: 'Jellyfin Library',
-    bot: 'Telegram Bot',
     admin: 'User Management'
 };
 
@@ -232,7 +230,6 @@ function getViewForPath(pathname) {
     if (p.startsWith('/download') || p.startsWith('/downlaod')) return 'downloads';
     if (p.startsWith('/request')) return 'requested';
     if (p.startsWith('/jellyfin')) return 'jellyfin';
-    if (p.startsWith('/telegram') || p.startsWith('/bot')) return 'bot';
     if (p.startsWith('/user') || p.startsWith('/users') || p.startsWith('/admin')) {
         return userRole === 'admin' ? 'admin' : 'chat';
     }
@@ -283,7 +280,6 @@ function switchView(viewName, updateHistory = true) {
         loadJellyfinLibrary();
     }
     if (viewName === 'admin') loadAdminUsers();
-    if (viewName === 'bot') checkBotStatus();
 
     document.getElementById('appSidebar')?.classList.remove('open');
 }
@@ -2949,8 +2945,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const initialView = window.__INITIAL_VIEW__ || getViewForPath(window.location.pathname);
     switchView(initialView, false);
 
-    checkBotStatus();
-    setInterval(checkBotStatus, 20000);
     initWebSocket();
 });
 
