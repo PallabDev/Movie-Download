@@ -315,27 +315,35 @@ app.get("/api/tmdb/episodes", requireMod, async (req: any, res) => {
 
 // ─── NEW INDIAN OTT RELEASES API ───
 
-let cachedJellyfinMovies: { title: string; cleanTitle: string; year?: string; name: string }[] | null = null;
+let cachedJellyfinMedia: { movies: any[]; series: any[] } | null = null;
 let lastJellyfinFetch = 0;
 
-async function getCachedJellyfinMovies() {
+async function getCachedJellyfinMedia() {
     const now = Date.now();
-    if (cachedJellyfinMovies && now - lastJellyfinFetch < 30000) {
-        return cachedJellyfinMovies;
+    if (cachedJellyfinMedia && now - lastJellyfinFetch < 30000) {
+        return cachedJellyfinMedia;
     }
     try {
-        const jfItems = await getAllMovies();
-        cachedJellyfinMovies = (jfItems || []).map(item => ({
-            name: item.Name,
-            title: item.Name.toLowerCase().trim(),
-            cleanTitle: item.Name.toLowerCase().replace(/[^a-z0-9]/g, ""),
-            year: item.Year ? String(item.Year) : undefined,
-        }));
+        const [jfMovies, jfSeries] = await Promise.all([getAllMovies(), getAllSeries()]);
+        cachedJellyfinMedia = {
+            movies: (jfMovies || []).map(item => ({
+                name: item.Name,
+                title: item.Name.toLowerCase().trim(),
+                cleanTitle: item.Name.toLowerCase().replace(/[^a-z0-9]/g, ""),
+                year: item.Year ? String(item.Year) : undefined,
+            })),
+            series: (jfSeries || []).map(item => ({
+                name: item.Name,
+                title: item.Name.toLowerCase().trim(),
+                cleanTitle: item.Name.toLowerCase().replace(/[^a-z0-9]/g, ""),
+                year: item.Year ? String(item.Year) : undefined,
+            }))
+        };
         lastJellyfinFetch = now;
     } catch {
-        cachedJellyfinMovies = cachedJellyfinMovies || [];
+        cachedJellyfinMedia = cachedJellyfinMedia || { movies: [], series: [] };
     }
-    return cachedJellyfinMovies;
+    return cachedJellyfinMedia;
 }
 
 function checkMovieInLibrary(title: string, year?: string | null, originalTitle?: string | null, jfList: { title: string; cleanTitle: string; year?: string; name: string }[] = []): boolean {
@@ -377,6 +385,7 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
         const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 24));
         const offset = (page - 1) * limit;
 
+        const type = (req.query.type as string || "all").trim().toLowerCase();
         const provider = (req.query.provider as string || "").trim().toLowerCase();
         const industry = (req.query.industry as string || "").trim().toLowerCase();
         const search = (req.query.search as string || "").trim();
@@ -388,8 +397,16 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
             conditions.push(like(schema.ottReleases.title, `%${search}%`));
         }
 
+        if (type && type !== "all") {
+            conditions.push(eq(schema.ottReleases.mediaType, type));
+        }
+
         if (industry && industry !== "all") {
-            conditions.push(sql`LOWER(${schema.ottReleases.industry}) = ${industry}`);
+            if (industry === "south") {
+                conditions.push(sql`LOWER(${schema.ottReleases.industry}) IN ('kollywood', 'tollywood', 'mollywood', 'sandalwood')`);
+            } else {
+                conditions.push(sql`LOWER(${schema.ottReleases.industry}) = ${industry}`);
+            }
         }
 
         if (provider && provider !== "all") {
@@ -401,7 +418,7 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
 
         const whereClause = conditions.length > 0 ? sql.join(conditions, sql` AND `) : undefined;
 
-        let orderByClause = desc(schema.ottReleases.releaseDate);
+        let orderByClause = desc(sql`COALESCE(${schema.ottReleases.ottReleaseDate}, ${schema.ottReleases.releaseDate})`);
         if (sort === "rating_desc") {
             orderByClause = desc(schema.ottReleases.rating);
         } else if (sort === "popularity_desc") {
@@ -416,11 +433,13 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
             ? db.select().from(schema.ottReleases).where(whereClause).orderBy(orderByClause).limit(limit).offset(offset)
             : db.select().from(schema.ottReleases).orderBy(orderByClause).limit(limit).offset(offset);
 
-        const [totalRes, items, jfMovies] = await Promise.all([countQuery, itemsQuery, getCachedJellyfinMovies()]);
+        const [totalRes, items, jfMedia] = await Promise.all([countQuery, itemsQuery, getCachedJellyfinMedia()]);
         const total = Number(totalRes[0]?.count || 0);
 
         const enrichedReleases = items.map(item => {
-            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfMovies);
+            const isSeries = item.mediaType === "series";
+            const jfList = isSeries ? jfMedia.series : jfMedia.movies;
+            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfList);
             return {
                 ...item,
                 jellyfinExists: inJellyfin || Boolean(item.jellyfinExists),
@@ -496,8 +515,14 @@ app.post("/api/new-releases/refresh", requireMod, async (req: any, res) => {
 
 app.get("/api/new-releases/stats", requireMod, async (_req, res) => {
     try {
-        const totalRes = await db.select({ count: count() }).from(schema.ottReleases);
+        const [totalRes, moviesRes, seriesRes] = await Promise.all([
+            db.select({ count: count() }).from(schema.ottReleases),
+            db.select({ count: count() }).from(schema.ottReleases).where(eq(schema.ottReleases.mediaType, "movie")),
+            db.select({ count: count() }).from(schema.ottReleases).where(eq(schema.ottReleases.mediaType, "series")),
+        ]);
         const total = Number(totalRes[0]?.count || 0);
+        const moviesCount = Number(moviesRes[0]?.count || 0);
+        const seriesCount = Number(seriesRes[0]?.count || 0);
 
         const platforms = ["Netflix", "Amazon Prime Video", "Disney+ Hotstar", "Zee5", "Sony LIV", "JioCinema", "YouTube"];
         const platformCounts: Record<string, number> = {};
@@ -519,10 +544,54 @@ app.get("/api/new-releases/stats", requireMod, async (_req, res) => {
 
         return res.json({
             total,
+            moviesCount,
+            seriesCount,
             platformCounts,
             lastRefreshed: latestItem[0]?.updatedAt || null,
             latestReleaseDate: latestItem[0]?.releaseDate || null,
         });
+    } catch (err: any) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.get("/api/releases/trailer", requireMod, async (req: any, res) => {
+    try {
+        const tmdbId = Number(req.query.tmdbId);
+        const mediaType = req.query.type === "series" ? "series" : "movie";
+        const tmdbType = mediaType === "series" ? "tv" : "movie";
+
+        if (!tmdbId) return res.status(400).json({ error: "Missing tmdbId" });
+
+        // 1. Check DB first
+        const existing = await db
+            .select({ trailerKey: schema.ottReleases.trailerKey })
+            .from(schema.ottReleases)
+            .where(and(
+                eq(schema.ottReleases.tmdbId, tmdbId),
+                eq(schema.ottReleases.mediaType, mediaType)
+            ))
+            .limit(1);
+
+        if (existing.length > 0 && existing[0]?.trailerKey) {
+            return res.json({ trailerKey: existing[0].trailerKey });
+        }
+
+        // 2. Lookup TMDB
+        const { getMediaTrailerKey } = await import("../../common/tmdb/client.js");
+        const trailerKey = await getMediaTrailerKey(tmdbId, tmdbType);
+
+        if (trailerKey) {
+            await db
+                .update(schema.ottReleases)
+                .set({ trailerKey, updatedAt: new Date() })
+                .where(and(
+                    eq(schema.ottReleases.tmdbId, tmdbId),
+                    eq(schema.ottReleases.mediaType, mediaType)
+                ));
+        }
+
+        return res.json({ trailerKey: trailerKey || null });
     } catch (err: any) {
         return res.status(500).json({ error: err.message });
     }
@@ -1759,6 +1828,31 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         </div>
                     </div>
 
+                    <!-- Type Filter Tabs & Industry Pills -->
+                    <div class="releases-filters-bar">
+                        <div class="jf-filter-tabs">
+                            <button class="jf-tab-btn active" id="relTabAll" onclick="setReleasesTypeFilter('all')">
+                                <span>All</span>
+                                <span class="tab-badge" id="relCountAll">-</span>
+                            </button>
+                            <button class="jf-tab-btn" id="relTabMovie" onclick="setReleasesTypeFilter('movie')">
+                                <span>Movies</span>
+                                <span class="tab-badge" id="relCountMovie">-</span>
+                            </button>
+                            <button class="jf-tab-btn" id="relTabSeries" onclick="setReleasesTypeFilter('series')">
+                                <span>TV Shows</span>
+                                <span class="tab-badge" id="relCountSeries">-</span>
+                            </button>
+                        </div>
+                        <div class="releases-industry-pills">
+                            <button class="rel-industry-pill active" data-industry="all" onclick="setReleasesIndustryFilter('all')">All</button>
+                            <button class="rel-industry-pill" data-industry="bollywood" onclick="setReleasesIndustryFilter('bollywood')">Bollywood</button>
+                            <button class="rel-industry-pill" data-industry="tollywood" onclick="setReleasesIndustryFilter('tollywood')">Tollywood</button>
+                            <button class="rel-industry-pill" data-industry="south" onclick="setReleasesIndustryFilter('south')">South Cinema</button>
+                            <button class="rel-industry-pill" data-industry="hollywood" onclick="setReleasesIndustryFilter('hollywood')">Hollywood</button>
+                        </div>
+                    </div>
+
                     <!-- Cards Grid -->
                     <div class="releases-grid" id="releasesGrid">
                         <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted);">
@@ -2023,6 +2117,21 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
 
             </section>` : ""}
         </main>
+    </div>
+
+    <!-- Trailer Popup Modal -->
+    <div id="trailerModal" class="trailer-modal-backdrop" onclick="handleTrailerBackdropClick(event)">
+        <div class="trailer-modal-card">
+            <div class="trailer-modal-header">
+                <div class="trailer-modal-title" id="trailerModalTitle">Trailer</div>
+                <button class="trailer-modal-close" onclick="closeTrailerModal()" title="Close (Esc)">
+                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="trailer-player-box" id="trailerPlayerBox">
+                <!-- Video iframe dynamically inserted -->
+            </div>
+        </div>
     </div>
 
     <script>

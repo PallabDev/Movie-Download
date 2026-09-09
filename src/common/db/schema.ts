@@ -79,15 +79,17 @@ export const requestedMedia = pgTable("requested_media", {
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-// Indian OTT Releases table (Bollywood & South Indian Cinema)
+// OTT Releases table (Movies & Series across Bollywood, Tollywood, South, Hollywood & All)
 export const ottReleases = pgTable("ott_releases", {
     id: serial("id").primaryKey(),
-    tmdbId: integer("tmdb_id").notNull().unique(),
+    tmdbId: integer("tmdb_id").notNull(),
+    mediaType: varchar("media_type", { length: 20 }).default("movie").notNull(), // "movie" | "series"
     title: varchar("title", { length: 500 }).notNull(),
     originalTitle: varchar("original_title", { length: 500 }),
-    originalLanguage: varchar("original_language", { length: 10 }).notNull(), // "hi" | "ta" | "te" | "ml" | "kn" | "bn"
-    industry: varchar("industry", { length: 50 }).notNull(), // "Bollywood" | "Tollywood" | "Kollywood" | "Mollywood" | "Sandalwood" | "Bengali"
+    originalLanguage: varchar("original_language", { length: 10 }).notNull(), // "hi" | "ta" | "te" | "ml" | "kn" | "bn" | "en"
+    industry: varchar("industry", { length: 50 }).notNull(), // "Bollywood" | "Tollywood" | "Kollywood" | "Mollywood" | "Sandalwood" | "Hollywood" | "Bengali"
     releaseDate: varchar("release_date", { length: 20 }), // e.g. "2026-09-03"
+    ottReleaseDate: varchar("ott_release_date", { length: 20 }), // exact OTT streaming release date
     year: varchar("year", { length: 10 }),
     overview: text("overview"),
     posterUrl: text("poster_url"),
@@ -95,7 +97,8 @@ export const ottReleases = pgTable("ott_releases", {
     rating: real("rating").default(0),
     voteCount: integer("vote_count").default(0),
     popularity: real("popularity").default(0),
-    providers: jsonb("providers"), // array of { id, name, logo, type }
+    providers: jsonb("providers"), // array of { id, name, logoUrl, type }
+    trailerKey: varchar("trailer_key", { length: 100 }), // YouTube video ID e.g. "dQw4w9WgXcQ"
     jellyfinExists: boolean("jellyfin_exists").default(false),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),

@@ -99,6 +99,16 @@ try {
         ALTER TABLE downloads ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW() NOT NULL;
         ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW() NOT NULL;
         ALTER TABLE ott_releases ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW() NOT NULL;
+        ALTER TABLE ott_releases ADD COLUMN IF NOT EXISTS media_type VARCHAR(20) DEFAULT 'movie' NOT NULL;
+        ALTER TABLE ott_releases ADD COLUMN IF NOT EXISTS ott_release_date VARCHAR(20);
+        ALTER TABLE ott_releases ADD COLUMN IF NOT EXISTS trailer_key VARCHAR(100);
+        DO $$ 
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ott_releases_tmdb_id_key') THEN
+                ALTER TABLE ott_releases DROP CONSTRAINT ott_releases_tmdb_id_key;
+            END IF;
+        END $$;
+        CREATE UNIQUE INDEX IF NOT EXISTS ott_releases_tmdb_type_idx ON ott_releases (tmdb_id, media_type);
     `);
     console.log("[INIT] Database tables ready");
 } catch (err) {

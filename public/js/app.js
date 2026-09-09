@@ -2443,15 +2443,16 @@ async function deleteAdminUser(id) {
 }
 
 // ==========================================================================
-// NEW INDIAN OTT RELEASES MODULE (BOLLYWOOD & SOUTH INDIAN CINEMA)
+// NEW OTT RELEASES MODULE (MOVIES & SERIES ACROSS BOLLYWOOD, TOLLYWOOD, SOUTH, HOLLYWOOD)
 // ==========================================================================
 const releasesState = {
     items: [],
     page: 1,
     totalPages: 1,
     total: 0,
+    typeFilter: 'all', // 'all' | 'movie' | 'series'
     providerFilter: 'all',
-    industryFilter: 'all',
+    industryFilter: 'all', // 'all' | 'bollywood' | 'tollywood' | 'south' | 'hollywood'
     searchQuery: '',
     sortBy: 'date_desc',
     loading: false,
@@ -2507,6 +2508,13 @@ function syncReleasesStateFromUrl() {
             releasesState.page = 1;
         }
 
+        const type = params.get('type');
+        if (type && ['all', 'movie', 'series'].includes(type.toLowerCase())) {
+            releasesState.typeFilter = type.toLowerCase();
+        } else {
+            releasesState.typeFilter = 'all';
+        }
+
         const platform = params.get('platform') || params.get('provider');
         if (platform) {
             releasesState.providerFilter = platform.toLowerCase();
@@ -2529,15 +2537,12 @@ function syncReleasesStateFromUrl() {
         }
 
         // Sync UI form controls
-        const sortSelect = document.getElementById('releasesSortSelect');
-        if (sortSelect) {
-            sortSelect.value = releasesState.sortBy;
-        }
-        document.querySelectorAll('.ott-metric-card').forEach(card => {
-            const attr = (card.getAttribute('onclick') || '').toLowerCase();
-            card.classList.toggle('active', attr.includes(`'${releasesState.providerFilter}'`));
-        });
-        document.querySelectorAll('#industryFilterPills .pill-btn').forEach(btn => {
+        document.querySelectorAll('.releases-filters-bar .jf-tab-btn').forEach(btn => btn.classList.remove('active'));
+        if (releasesState.typeFilter === 'all') document.getElementById('relTabAll')?.classList.add('active');
+        else if (releasesState.typeFilter === 'movie') document.getElementById('relTabMovie')?.classList.add('active');
+        else if (releasesState.typeFilter === 'series') document.getElementById('relTabSeries')?.classList.add('active');
+
+        document.querySelectorAll('.rel-industry-pill').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.industry === releasesState.industryFilter);
         });
     } catch {}
@@ -2555,6 +2560,12 @@ function updateReleasesUrl(push = true) {
             url.searchParams.delete('page');
         }
 
+        if (releasesState.typeFilter && releasesState.typeFilter !== 'all') {
+            url.searchParams.set('type', releasesState.typeFilter);
+        } else {
+            url.searchParams.delete('type');
+        }
+
         if (releasesState.providerFilter && releasesState.providerFilter !== 'all') {
             url.searchParams.set('platform', releasesState.providerFilter);
         } else {
@@ -2568,7 +2579,6 @@ function updateReleasesUrl(push = true) {
             url.searchParams.delete('industry');
         }
 
-        // Remove any residual search params
         url.searchParams.delete('search');
 
         if (releasesState.sortBy && releasesState.sortBy !== 'date_desc') {
@@ -2588,6 +2598,29 @@ function updateReleasesUrl(push = true) {
             }
         }
     } catch {}
+}
+
+function setReleasesTypeFilter(type) {
+    releasesState.typeFilter = type;
+    releasesState.page = 1;
+
+    document.querySelectorAll('.releases-filters-bar .jf-tab-btn').forEach(btn => btn.classList.remove('active'));
+    if (type === 'all') document.getElementById('relTabAll')?.classList.add('active');
+    else if (type === 'movie') document.getElementById('relTabMovie')?.classList.add('active');
+    else if (type === 'series') document.getElementById('relTabSeries')?.classList.add('active');
+
+    loadNewReleases(1, true);
+}
+
+function setReleasesIndustryFilter(ind) {
+    releasesState.industryFilter = ind;
+    releasesState.page = 1;
+
+    document.querySelectorAll('.rel-industry-pill').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.industry === ind);
+    });
+
+    loadNewReleases(1, true);
 }
 
 async function loadNewReleases(page = null, updateUrl = true) {
@@ -2616,6 +2649,7 @@ async function loadNewReleases(page = null, updateUrl = true) {
         const queryParams = new URLSearchParams({
             page: String(releasesState.page),
             limit: '24',
+            type: releasesState.typeFilter,
             provider: releasesState.providerFilter,
             industry: releasesState.industryFilter,
             sort: releasesState.sortBy,
@@ -2629,19 +2663,15 @@ async function loadNewReleases(page = null, updateUrl = true) {
         const data = await releasesRes.json();
         const stats = await statsRes.json();
 
-        // Update stats
+        // Update stats and badges
         if (stats) {
-            const statTotal = document.getElementById('statTotalReleases');
-            const statN = document.getElementById('statNetflixCount');
-            const statP = document.getElementById('statPrimeCount');
-            const statH = document.getElementById('statHotstarCount');
-            const statZ = document.getElementById('statZee5Count');
+            const countAll = document.getElementById('relCountAll');
+            const countMovie = document.getElementById('relCountMovie');
+            const countSeries = document.getElementById('relCountSeries');
 
-            if (statTotal) statTotal.textContent = stats.total || '0';
-            if (statN) statN.textContent = stats.platformCounts?.['Netflix'] || '0';
-            if (statP) statP.textContent = stats.platformCounts?.['Amazon Prime Video'] || '0';
-            if (statH) statH.textContent = stats.platformCounts?.['Disney+ Hotstar'] || '0';
-            if (statZ) statZ.textContent = (stats.platformCounts?.['Zee5'] || 0) + (stats.platformCounts?.['Sony LIV'] || 0);
+            if (countAll) countAll.textContent = stats.total || '0';
+            if (countMovie) countMovie.textContent = stats.moviesCount || '0';
+            if (countSeries) countSeries.textContent = stats.seriesCount || '0';
 
             const lastUpdatedEl = document.getElementById('releasesLastUpdatedTag');
             if (lastUpdatedEl) {
@@ -2667,7 +2697,7 @@ async function loadNewReleases(page = null, updateUrl = true) {
                         </div>
                         <h2 style="font-size: 18px; margin-bottom: 6px; font-weight: 700;">No OTT Releases Cached Yet</h2>
                         <p style="color: var(--text-secondary); font-size: 13px; max-width: 500px; margin: 0 auto 20px;">
-                            Click below to perform an initial scan of TMDB for the latest Indian OTT releases across Netflix, Prime Video, Hotstar, Zee5, and Sony LIV.
+                            Click below to perform an initial scan of TMDB for the latest OTT releases across Bollywood, Tollywood, South Cinema, Hollywood, Netflix, Prime Video, Hotstar, and Zee5.
                         </p>
                         <button class="btn-primary-action" onclick="triggerManualReleasesRefresh(90)" style="padding: 10px 24px; font-size: 13.5px; margin: 0 auto;">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
@@ -2679,7 +2709,7 @@ async function loadNewReleases(page = null, updateUrl = true) {
                 grid.innerHTML = `
                     <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
                         <div style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 4px;">No matching releases found</div>
-                        <div style="font-size: 12.5px;">Try changing your platform, industry, or search filters.</div>
+                        <div style="font-size: 12.5px;">Try changing your type, platform, or industry filters.</div>
                     </div>
                 `;
             }
@@ -2712,23 +2742,37 @@ function renderReleaseCards(items) {
         const extraCount = providers.length > 2 ? `<span class="ott-badge more" title="${providers.slice(2).map(p => escapeHtml(p.name)).join(', ')}">+${providers.length - 2}</span>` : '';
 
         const year = item.year || (item.releaseDate ? item.releaseDate.slice(0, 4) : '');
-        const formattedDate = item.releaseDate ? new Date(item.releaseDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recent';
+
+        // User requirement: "one improv don't show thier normal release date in case of movie if you found the ott release date show that"
+        const displayDate = item.ottReleaseDate || item.releaseDate;
+        const formattedDate = displayDate ? new Date(displayDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recent';
+        const isOttDate = Boolean(item.ottReleaseDate);
 
         const isExists = Boolean(item.jellyfinExists);
+        const isSeries = item.mediaType === 'series';
 
         return `
             <div class="movie-release-card ${isExists ? 'in-library' : ''}">
                 <div class="card-poster-wrap">
                     <img src="${posterSrc}" alt="${escapeHtml(item.title)}" class="card-poster-img" loading="lazy" onerror="this.src='https://via.placeholder.com/300x450/111827/ffffff?text=Poster+Unavailable'">
                     <div class="poster-overlay-gradient"></div>
+                    
+                    <!-- Hover Play Trailer Button -->
+                    <button class="card-play-trailer-btn" onclick="openTrailerModal('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${item.trailerKey || ''}', ${item.tmdbId}, '${item.mediaType || 'movie'}', event)" title="Watch Trailer">
+                        <svg viewBox="0 0 24 24"><path d="M6 4v16a1 1 0 0 0 1.524 .852l13 -8a1 1 0 0 0 0 -1.704l-13 -8a1 1 0 0 0 -1.524 .852z"/></svg>
+                    </button>
+
                     <div class="card-top-badges">
                         <span class="badge-rating">
                             <svg class="tabler-icon star-icon" viewBox="0 0 24 24"><path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></svg>
                             ${rating}
                         </span>
-                        ${isExists ? `<span class="badge-jellyfin-in" title="Already available in your Jellyfin Movie Library"><svg class="tabler-icon" style="width:11px;height:11px;stroke-width:3;display:inline-block;vertical-align:middle;margin-right:2px;" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>In Library</span>` : ''}
+                        ${isExists ? `<span class="badge-jellyfin-in" title="Already available in your Jellyfin Library"><svg class="tabler-icon" style="width:11px;height:11px;stroke-width:3;display:inline-block;vertical-align:middle;margin-right:2px;" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>In Library</span>` : ''}
                     </div>
-                    <div class="card-industry-tag">${escapeHtml(item.industry || 'Cinema')}</div>
+                    <div style="position:absolute; bottom:8px; left:8px; display:flex; gap:5px; z-index:3;">
+                        <span class="card-type-tag ${isSeries ? 'series' : 'movie'}">${isSeries ? 'TV Series' : 'Movie'}</span>
+                        <span class="card-industry-tag" style="position:static;">${escapeHtml(item.industry || 'Cinema')}</span>
+                    </div>
                 </div>
                 
                 <div class="card-body-content">
@@ -2738,7 +2782,7 @@ function renderReleaseCards(items) {
                     </div>
                     
                     <div class="card-date-row">
-                        <span class="card-date-label">OTT Launch:</span>
+                        <span class="card-date-label">${isOttDate ? 'OTT Launch:' : 'Released:'}</span>
                         <span class="card-date-val">${escapeHtml(formattedDate)}</span>
                     </div>
 
@@ -2750,7 +2794,7 @@ function renderReleaseCards(items) {
 
                     ${item.overview ? `<p class="card-synopsis-text" title="${escapeHtml(item.overview)}">${escapeHtml(item.overview)}</p>` : ''}
 
-                    <!-- Card Bottom Actions (Single AI Download Button) -->
+                    <!-- Card Bottom Actions -->
                     <div class="card-bottom-actions">
                         ${isExists ? `
                             <button class="btn-card-action in-library" onclick="switchView('jellyfin')" title="Already in your Jellyfin Library">
@@ -2758,7 +2802,7 @@ function renderReleaseCards(items) {
                                 <span>In Library</span>
                             </button>
                         ` : `
-                            <button class="btn-card-action primary" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Download movie with AI Copilot">
+                            <button class="btn-card-action primary" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Download with AI Copilot">
                                 <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                 <span>Download</span>
                             </button>
@@ -2880,7 +2924,7 @@ function askCopilotRelease(title, year) {
     switchView('chat');
     const chatInput = document.getElementById('chatInput');
     if (chatInput) {
-        chatInput.value = `Search and download ${title} ${year ? year : ''}`.trim();
+        chatInput.value = `${title} ${year ? year : ''}`.trim();
         sendChatMessage();
     }
 }
@@ -2948,9 +2992,99 @@ document.addEventListener('DOMContentLoaded', () => {
     initWebSocket();
 });
 
+// ==========================================================================
+// TRAILER POPUP MODAL
+// ==========================================================================
+let currentTrailerKey = null;
+
+async function openTrailerModal(title, trailerKey, tmdbId, mediaType, event) {
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+
+    const modal = document.getElementById('trailerModal');
+    const titleEl = document.getElementById('trailerModalTitle');
+    const playerBox = document.getElementById('trailerPlayerBox');
+    if (!modal || !playerBox) return;
+
+    if (titleEl) {
+        titleEl.innerHTML = `
+            <svg class="tabler-icon" viewBox="0 0 24 24" style="width:16px;height:16px;color:#ef4444;display:inline-block;vertical-align:middle;margin-right:4px;"><path d="M2 8a4 4 0 0 1 4 -4h12a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4h-12a4 4 0 0 1 -4 -4v-8z"/><path d="M10 9l5 3l-5 3z"/></svg>
+            <span>${escapeHtml(title)} — Official Trailer</span>
+        `;
+    }
+
+    playerBox.innerHTML = `
+        <div style="color: var(--text-muted); font-size: 13px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px;">
+            <div class="spinner"></div>
+            <div>Loading trailer...</div>
+        </div>
+    `;
+
+    modal.classList.add('active');
+
+    let key = trailerKey;
+    if (!key && tmdbId) {
+        try {
+            const res = await fetch(`/api/releases/trailer?tmdbId=${tmdbId}&type=${mediaType || 'movie'}`, { credentials: 'include' });
+            const data = await res.json();
+            key = data.trailerKey;
+        } catch {}
+    }
+
+    if (key) {
+        currentTrailerKey = key;
+        playerBox.innerHTML = `
+            <iframe 
+                src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(key)}?autoplay=1&rel=0&modestbranding=1" 
+                title="${escapeHtml(title)} Trailer"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                allowfullscreen>
+            </iframe>
+        `;
+    } else {
+        playerBox.innerHTML = `
+            <div style="color: var(--text-muted); font-size: 13.5px; text-align: center; padding: 40px 20px;">
+                <div style="font-size: 32px; margin-bottom: 8px;">🎬</div>
+                <div style="color: #fff; font-weight: 600; margin-bottom: 4px;">No Official Trailer Available</div>
+                <div style="font-size: 12px; margin-bottom: 16px;">We couldn't retrieve a verified trailer for this title yet.</div>
+                <a href="https://www.youtube.com/results?search_query=${encodeURIComponent(title + ' trailer')}" target="_blank" rel="noopener noreferrer" class="btn-header primary" style="display: inline-flex; text-decoration: none;">
+                    Search on YouTube
+                </a>
+            </div>
+        `;
+    }
+}
+
+function closeTrailerModal() {
+    const modal = document.getElementById('trailerModal');
+    const playerBox = document.getElementById('trailerPlayerBox');
+    if (modal) modal.classList.remove('active');
+    if (playerBox) playerBox.innerHTML = '';
+    currentTrailerKey = null;
+}
+
+function handleTrailerBackdropClick(e) {
+    if (e.target && e.target.id === 'trailerModal') {
+        closeTrailerModal();
+    }
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeTrailerModal();
+    }
+});
+
 // Expose handlers globally for inline HTML buttons
 window.triggerSpecificFormatDownload = triggerSpecificFormatDownload;
 window.handleQuickPrompt = handleQuickPrompt;
 window.handleChatAction = handleChatAction;
 window.setJellyfinFilter = setJellyfinFilter;
+window.setReleasesTypeFilter = setReleasesTypeFilter;
+window.setReleasesIndustryFilter = setReleasesIndustryFilter;
+window.openTrailerModal = openTrailerModal;
+window.closeTrailerModal = closeTrailerModal;
+window.handleTrailerBackdropClick = handleTrailerBackdropClick;
 
