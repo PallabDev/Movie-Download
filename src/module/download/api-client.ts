@@ -218,8 +218,10 @@ export function selectBest720pQuality(details: DownloadDetails): SelectedQuality
     const isSeries = downloadKeys.some(k => k.startsWith("batch_") || k.startsWith("episode_") || k.startsWith("bonus_"));
 
     if (isSeries) {
-        // 1. Try to find a 720p Batch Season Pack first (Highest priority for series)
-        const batch720Key = downloadKeys.find(k => k.startsWith("batch_") && k.includes("720p"));
+        // 1. Try to find a 720p HEVC Batch Season Pack first (1.8GB compact direct file), then standard 720p Batch Pack
+        const batch720Key = downloadKeys.find(k => k.startsWith("batch_") && (k.includes("720p_hevc") || k.includes("720p_x265")))
+            || downloadKeys.find(k => k.startsWith("batch_") && k.includes("720p"));
+
         if (batch720Key && details.downloads[batch720Key]?.length > 0) {
             const servers = sortServersByPriority(details.downloads[batch720Key]);
             const fileSize = servers[0]?.file_size || details.downloads[batch720Key][0]?.file_size;
@@ -325,12 +327,12 @@ export function selectBest720pQuality(details: DownloadDetails): SelectedQuality
     }
 
     // Movie Handling: Look for 720p keys
-    // Priority: format_720p_h264 > format_720p_hevc > 720p > format_1080p_h264 > format_1080p_hevc > 480p
+    // Priority: format_720p_hevc > format_720p_h264 > 720p > format_1080p_hevc > format_1080p_h264 > 480p
     const preferredMovieKeys = [
+        downloadKeys.find(k => k.includes("720p") && (k.includes("hevc") || k.includes("x265"))),
         downloadKeys.find(k => k.includes("720p") && (k.includes("h264") || k.includes("x264") || !k.includes("hevc"))),
-        downloadKeys.find(k => k.includes("720p") && k.includes("hevc")),
         downloadKeys.find(k => k.includes("720p")),
-        downloadKeys.find(k => k.includes("1080p") && (k.includes("h264") || k.includes("x264"))),
+        downloadKeys.find(k => k.includes("1080p") && (k.includes("hevc") || k.includes("x265"))),
         downloadKeys.find(k => k.includes("1080p")),
         downloadKeys.find(k => k.includes("480p")),
         downloadKeys[0]
