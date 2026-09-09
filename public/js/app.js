@@ -65,6 +65,28 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
+async function safeApiFetch(url, options = {}) {
+    try {
+        const res = await fetch(url, { credentials: 'include', ...options });
+        const text = await res.text();
+        let data = null;
+        try {
+            data = JSON.parse(text);
+        } catch {
+            if (!res.ok) {
+                return { success: false, error: `Server returned HTTP ${res.status} (${res.statusText || 'Error'})` };
+            }
+            return { success: false, error: 'Unexpected server response format' };
+        }
+        if (!res.ok) {
+            return { success: false, error: data?.error || data?.message || `HTTP ${res.status}` };
+        }
+        return data;
+    } catch (err) {
+        return { success: false, error: err.message || 'Network error' };
+    }
+}
+
 function getLanguageTag(text) {
     if (!text) return null;
     const lower = text.toLowerCase();
@@ -542,35 +564,44 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
             <div class="chat-search-results-panel">
                 <div class="chat-search-header">
                     <span>🎬 <strong>${escapeHtml(movieTitle)}</strong> ${movieYear ? `(${escapeHtml(movieYear)})` : ''} · <strong>${total} Available Releases</strong></span>
-                    <span class="chat-search-hint">Click any release below to download:</span>
+                    <span class="chat-search-hint">10Gbps CDN · Instant Autonomous Download</span>
                 </div>
                 <div class="chat-search-list">
-                    ${results.map(r => {
-                        const isRecommended = r.isBest || r.index === bestIdx;
-                        const sizeStr = r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${r.sizeMB} MB`;
-                        const res = (r.text.match(/\\b(480p|720p|1080p|2160p|4k|400p)\\b/i) || [])[1] || 'HD';
-                        const codec = (r.text.match(/\\b(hevc|x265|h265|x264|h264|avc)\\b/i) || [])[1] || '';
-                        const langTag = getLanguageTag(r.text);
+                    ${results.map((r, idx) => {
+                        const isRecommended = r.isBest || r.index === bestIdx || idx === 0;
+                        const titleText = r.name || r.text || '';
+                        const sizeStr = r.sizeMB ? (r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${r.sizeMB} MB`) : '';
+                        const res = (titleText.match(/\\b(480p|720p|1080p|2160p|4k|400p)\\b/i) || [])[1] || '720p';
+                        const codec = (titleText.match(/\\b(hevc|x265|h265|x264|h264|avc)\\b/i) || [])[1] || '';
+                        const langTag = getLanguageTag(titleText);
+                        const categories = Array.isArray(r.category) ? r.category : [];
 
                         return `
-                            <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="handleQuickPrompt('download ${r.index}')">
-                                <div class="chat-release-left">
-                                    <span class="chat-release-index">#${r.index}</span>
-                                    <div class="chat-release-meta">
-                                        <div class="chat-release-title" title="${escapeHtml(r.text)}">${escapeHtml(r.text)}</div>
-                                        <div class="chat-release-tags">
+                            <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="handleQuickPrompt('download ${r.index || idx + 1}')">
+                                <div class="chat-release-left" style="display: flex; gap: 12px; align-items: center;">
+                                    ${r.thumbnail ? `
+                                        <img src="${escapeHtml(r.thumbnail)}" alt="Poster" class="chat-release-thumb" style="width: 48px; height: 68px; object-fit: cover; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); flex-shrink: 0;" onerror="this.style.display='none'">
+                                    ` : `
+                                        <span class="chat-release-index">#${r.index || idx + 1}</span>
+                                    `}
+                                    <div class="chat-release-meta" style="flex: 1; min-width: 0;">
+                                        <div class="chat-release-title" title="${escapeHtml(titleText)}" style="font-weight: 600; font-size: 13px; line-height: 1.3; color: #fff; margin-bottom: 4px;">
+                                            ${escapeHtml(titleText)}
+                                        </div>
+                                        <div class="chat-release-tags" style="display: flex; flex-wrap: wrap; gap: 4px;">
+                                            <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 700;">⚡ 10Gbps 720p</span>
                                             ${langTag ? `<span class="badge ${langTag.type}">${langTag.label}</span>` : ''}
                                             <span class="badge res">${escapeHtml(res.toUpperCase())}</span>
-                                            <span class="badge size">${sizeStr}</span>
+                                            ${sizeStr ? `<span class="badge size">${sizeStr}</span>` : ''}
                                             ${codec ? `<span class="badge codec">${escapeHtml(codec.toUpperCase())}</span>` : ''}
-                                            ${isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
-                                            <span class="badge page">Page ${r.page || 1}</span>
+                                            ${categories.slice(0, 3).map(c => `<span class="badge" style="background: var(--bg-surface-elevated); color: var(--text-secondary);">${escapeHtml(c)}</span>`).join('')}
+                                            ${isRecommended ? `<span class="badge rec">⭐ Best Match</span>` : ''}
                                         </div>
                                     </div>
                                 </div>
-                                <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); handleQuickPrompt('download ${r.index}')">
+                                <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); handleQuickPrompt('download ${r.index || idx + 1}')">
                                     <svg class="tabler-icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                    Download #${r.index}
+                                    Download #${r.index || idx + 1}
                                 </button>
                             </div>
                         `;
@@ -723,7 +754,10 @@ async function sendChatMessage() {
             const replyText = data.reply || 'Done processing your request!';
             let searchResults = null;
             if (data.toolCalls && Array.isArray(data.toolCalls)) {
-                const sCall = data.toolCalls.find(tc => tc.tool === 'search_movie' && tc.result?.data?.results?.length > 0);
+                const sCall = data.toolCalls.find(tc =>
+                    (tc.tool === 'search_media' || tc.tool === 'search_movie' || tc.tool === 'search_series') &&
+                    tc.result?.data?.results?.length > 0
+                );
                 if (sCall) {
                     searchResults = sCall.result.data;
                 }
@@ -906,45 +940,49 @@ function renderMovieStudioResults(data, container) {
     const total = results.length;
     const movieTitle = data.title || '';
     const movieYear = data.year || '';
-    const bestIdx = data.bestIdx;
+    const bestIdx = data.bestIdx || 0;
 
     container.innerHTML = `
         <div class="chat-search-results-panel studio-panel-wrap">
             <div class="chat-search-header">
                 <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 8px;">
                     <span>🎬 <strong>${escapeHtml(movieTitle)}</strong> ${movieYear ? `(${escapeHtml(movieYear)})` : ''} · <strong>${total} Available Releases</strong></span>
-                    <span class="chip best">${total} Found</span>
+                    <span class="chip best" style="background: rgba(16, 185, 129, 0.2); color: #34d399; font-weight: 700;">⚡ 10Gbps Fast CDN</span>
                 </div>
-                <span class="chat-search-hint">Click any release below to download directly to your streaming server:</span>
+                <span class="chat-search-hint">Select any release below to download directly to your media server in 720p:</span>
             </div>
             <div class="chat-search-list">
                 ${results.map((r, i) => {
                     const optIndex = r.index || (i + 1);
-                    const isRecommended = r.isBest || optIndex === (bestIdx + 1) || optIndex === bestIdx || (i === bestIdx);
-                    const sizeStr = r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${Number(r.sizeMB).toFixed(0)} MB`;
-                    const res = (r.text.match(/\\b(480p|720p|1080p|2160p|4k|400p)\\b/i) || [])[1] || 'HD';
-                    const codec = (r.text.match(/\\b(hevc|x265|h265|x264|h264|avc)\\b/i) || [])[1] || '';
-                    const langTag = getLanguageTag(r.text);
+                    const isRecommended = i === bestIdx || optIndex === 1;
+                    const titleText = r.name || r.text || '';
+                    const categories = Array.isArray(r.category) ? r.category : [];
+                    const stars = Array.isArray(r.stars) ? r.stars.join(', ') : '';
 
                     return `
-                        <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="triggerStudioMovieDownload('${escapeHtml(r.text).replace(/'/g, "\\'")}')">
-                            <div class="chat-release-left">
-                                <span class="chat-release-index">#${optIndex}</span>
-                                <div class="chat-release-meta">
-                                    <div class="chat-release-title" title="${escapeHtml(r.text)}">${escapeHtml(r.text)}</div>
-                                    <div class="chat-release-tags">
-                                        ${langTag ? `<span class="badge ${langTag.type}">${langTag.label}</span>` : ''}
-                                        <span class="badge res">${escapeHtml(res.toUpperCase())}</span>
-                                        <span class="badge size">${sizeStr}</span>
-                                        ${codec ? `<span class="badge codec">${escapeHtml(codec.toUpperCase())}</span>` : ''}
-                                        ${isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
-                                        <span class="badge page">Page ${r.page || 1}</span>
+                        <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="triggerStudioMovieDownload(${optIndex}, '${escapeHtml(r.url || '').replace(/'/g, "\\'")}')">
+                            <div class="chat-release-left" style="display: flex; gap: 14px; align-items: center;">
+                                ${r.thumbnail ? `
+                                    <img src="${escapeHtml(r.thumbnail)}" alt="Poster" class="chat-release-thumb" style="width: 54px; height: 78px; object-fit: cover; border-radius: 6px; box-shadow: 0 2px 10px rgba(0,0,0,0.5); flex-shrink: 0;" onerror="this.style.display='none'">
+                                ` : `
+                                    <span class="chat-release-index">#${optIndex}</span>
+                                `}
+                                <div class="chat-release-meta" style="flex: 1; min-width: 0;">
+                                    <div class="chat-release-title" title="${escapeHtml(titleText)}" style="font-weight: 600; font-size: 13.5px; line-height: 1.35; color: #fff; margin-bottom: 5px;">
+                                        ${escapeHtml(titleText)}
                                     </div>
+                                    <div class="chat-release-tags" style="display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 4px;">
+                                        <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 700;">⚡ 720p CDN</span>
+                                        ${categories.slice(0, 3).map(c => `<span class="badge" style="background: var(--bg-surface-elevated); color: var(--text-secondary);">${escapeHtml(c)}</span>`).join('')}
+                                        ${r.post_date ? `<span class="badge" style="background: var(--bg-surface-elevated); color: var(--text-muted);">${escapeHtml(r.post_date)}</span>` : ''}
+                                        ${isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                    </div>
+                                    ${stars ? `<div style="font-size: 11px; color: var(--text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">Cast: ${escapeHtml(stars)}</div>` : ''}
                                 </div>
                             </div>
-                            <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); triggerStudioMovieDownload('${escapeHtml(r.text).replace(/'/g, "\\'")}')">
+                            <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); triggerStudioMovieDownload(${optIndex}, '${escapeHtml(r.url || '').replace(/'/g, "\\'")}')">
                                 <svg class="tabler-icon" style="width:15px;height:15px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                Download #${optIndex}
+                                Download 720p
                             </button>
                         </div>
                     `;
@@ -954,95 +992,21 @@ function renderMovieStudioResults(data, container) {
     `;
 }
 
-function renderSeriesStudioResults(data, container) {
-    const seasons = data.uniqueSeasons || [1];
-    const episodes = data.seriesEpisodes || [];
-
-    container.innerHTML = `
-        <div class="series-studio-container">
-            <div>
-                <h3 style="font-size: 15px;">${escapeHtml(data.title)}</h3>
-                <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">
-                    ${seasons.length} Season(s) · ${episodes.length} Episodes
-                </div>
-            </div>
-            
-            <div class="seasons-tab-bar" id="seasonsTabBar">
-                ${seasons.map((s, idx) => `
-                    <button class="season-tab ${idx === 0 ? 'active' : ''}" onclick="switchStudioSeasonTab(${s})">
-                        Season ${s}
-                    </button>
-                `).join('')}
-            </div>
-
-            <div id="seasonContentArea"></div>
-        </div>
-    `;
-
-    switchStudioSeasonTab(seasons[0], episodes);
-}
-
-function switchStudioSeasonTab(seasonNum, allEps = null) {
-    document.querySelectorAll('.season-tab').forEach(tab => {
-        tab.classList.toggle('active', tab.textContent.trim() === `Season ${seasonNum}`);
-    });
-
-    const contentArea = document.getElementById('seasonContentArea');
-    if (!contentArea) return;
-
-    const seasonEps = (allEps || []).filter(e => e.season === seasonNum);
-    const totalSizeMB = seasonEps.reduce((sum, e) => sum + (e.sizeMB || 0), 0);
-    const totalSizeLabel = totalSizeMB > 1024 ? (totalSizeMB / 1024).toFixed(1) + ' GB' : totalSizeMB.toFixed(0) + ' MB';
-
-    contentArea.innerHTML = `
-        <div class="season-bulk-banner">
-            <div>
-                <strong style="font-size: 13px; color: #fff;">Season ${seasonNum}</strong>
-                <div style="font-size: 11.5px; color: var(--text-secondary);">
-                    ${seasonEps.length} Episodes (${totalSizeLabel})
-                </div>
-            </div>
-            <button class="btn-primary-action" style="padding: 6px 12px; font-size: 12px;" onclick="triggerStudioBulkSeasonDownload(${seasonNum})">
-                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                Download Season ${seasonNum}
-            </button>
-        </div>
-
-        <div class="episodes-list-grid" style="margin-top: 12px;">
-            ${seasonEps.map(ep => `
-                <div class="episode-item-card">
-                    <div>
-                        <div class="ep-num">${escapeHtml(ep.label)}</div>
-                        <div class="ep-size">${(ep.sizeMB || 0).toFixed(0)} MB</div>
-                    </div>
-                    <button class="btn-header" style="padding: 4px 8px; font-size: 11px;" onclick="triggerStudioEpisodeDownload('${escapeHtml(ep.text)}')">
-                        Download
-                    </button>
-                </div>
-            `).join('')}
-        </div>
-    `;
-}
-
-async function triggerStudioMovieDownload(buttonText) {
-    if (!state.searchResultSession) {
-        showToast('Session expired. Search again.', 'error');
-        return;
-    }
+async function triggerStudioMovieDownload(optionIndex, targetUrl) {
     try {
         const res = await fetch('/api/select', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ searchId: state.searchResultSession, buttonText })
+            body: JSON.stringify({
+                searchId: state.searchResultSession,
+                optionIndex: typeof optionIndex === 'number' ? optionIndex : undefined,
+                targetUrl: targetUrl || (typeof optionIndex === 'string' ? optionIndex : undefined)
+            })
         });
         const data = await res.json();
         if (data.success) {
-            if (data.warning) {
-                showToast(data.warning, 'warning', 6000);
-            } else {
-                showToast('Download started', 'success');
-            }
+            showToast(data.message || 'Download started in 720p!', 'success');
             switchView('downloads');
         } else {
             showToast(data.error || 'Failed to start download', 'error', 6000);
@@ -1185,45 +1149,40 @@ async function loadDownloadHistory(page = 1) {
 }
 
 async function pauseDownload(requestId) {
-    try {
-        const res = await fetch(`/api/downloads/${requestId}/pause`, { method: 'POST', credentials: 'include' });
-        const data = await res.json();
-        if (data.success) {
-            showToast('Download paused', 'info');
-            loadDownloadHistory();
-        }
-    } catch (e) {
-        showToast(e.message, 'error');
+    if (!requestId) return;
+    const data = await safeApiFetch(`/api/downloads/${requestId}/pause`, { method: 'POST' });
+    if (data.success) {
+        showToast('Download paused', 'info');
+        loadDownloadHistory();
+    } else {
+        showToast(data.error || 'Failed to pause download', 'error');
     }
 }
 
 async function resumeDownload(requestId) {
-    try {
-        const res = await fetch(`/api/downloads/${requestId}/resume`, { method: 'POST', credentials: 'include' });
-        const data = await res.json();
-        if (data.success) {
-            showToast('Download resumed', 'success');
-            loadDownloadHistory();
-        }
-    } catch (e) {
-        showToast(e.message, 'error');
+    if (!requestId) return;
+    const data = await safeApiFetch(`/api/downloads/${requestId}/resume`, { method: 'POST' });
+    if (data.success) {
+        showToast('Download resumed', 'success');
+        loadDownloadHistory();
+    } else {
+        showToast(data.error || 'Failed to resume download', 'error');
     }
 }
 
 async function retryDownload(requestId) {
-    try {
-        const res = await fetch(`/api/downloads/${requestId}/retry`, { method: 'POST', credentials: 'include' });
-        const data = await res.json();
-        if (data.success) {
-            showToast('Download retry queued', 'info');
-            loadDownloadHistory();
-        }
-    } catch (e) {
-        showToast(e.message, 'error');
+    if (!requestId) return;
+    const data = await safeApiFetch(`/api/downloads/${requestId}/retry`, { method: 'POST' });
+    if (data.success) {
+        showToast('Download retry queued', 'info');
+        loadDownloadHistory();
+    } else {
+        showToast(data.error || 'Failed to retry download', 'error');
     }
 }
 
 async function cancelDownload(requestId) {
+    if (!requestId) return;
     const confirmed = await showConfirmModal({
         title: 'Remove Download Entry',
         message: 'Are you sure you want to remove this download entry from the list?',
@@ -1231,15 +1190,12 @@ async function cancelDownload(requestId) {
         type: 'danger'
     });
     if (!confirmed) return;
-    try {
-        const res = await fetch(`/api/downloads/${requestId}`, { method: 'DELETE', credentials: 'include' });
-        const data = await res.json();
-        if (data.success) {
-            showToast('Download removed', 'info');
-            loadDownloadHistory();
-        }
-    } catch (e) {
-        showToast(e.message, 'error');
+    const data = await safeApiFetch(`/api/downloads/${requestId}`, { method: 'DELETE' });
+    if (data.success) {
+        showToast('Download removed', 'info');
+        loadDownloadHistory();
+    } else {
+        showToast(data.error || 'Failed to remove download', 'error');
     }
 }
 
@@ -1251,15 +1207,12 @@ async function clearFailedDownloads() {
         type: 'warning'
     });
     if (!confirmed) return;
-    try {
-        const res = await fetch('/api/downloads/clear/failed', { method: 'DELETE', credentials: 'include' });
-        const data = await res.json();
-        if (data.success) {
-            showToast('Cleared failed downloads', 'info');
-            loadDownloadHistory();
-        }
-    } catch (e) {
-        showToast(e.message, 'error');
+    const data = await safeApiFetch('/api/downloads/clear/failed', { method: 'DELETE' });
+    if (data.success) {
+        showToast('Cleared failed downloads', 'info');
+        loadDownloadHistory();
+    } else {
+        showToast(data.error || 'Failed to clear failed downloads', 'error');
     }
 }
 
@@ -1271,15 +1224,12 @@ async function clearAllDownloads() {
         type: 'danger'
     });
     if (!confirmed) return;
-    try {
-        const res = await fetch('/api/downloads/clear/all', { method: 'DELETE', credentials: 'include' });
-        const data = await res.json();
-        if (data.success) {
-            showToast('Cleared download history', 'info');
-            loadDownloadHistory();
-        }
-    } catch (e) {
-        showToast(e.message, 'error');
+    const data = await safeApiFetch('/api/downloads/clear/all', { method: 'DELETE' });
+    if (data.success) {
+        showToast('Cleared download history', 'info');
+        loadDownloadHistory();
+    } else {
+        showToast(data.error || 'Failed to clear download history', 'error');
     }
 }
 

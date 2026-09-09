@@ -40,7 +40,7 @@ export const mediaRequestWorkflow = inngest.createFunction(
         // ── STEP 1: Process User Request with TMDB to find whether it is Movie or Series ──
         const tmdbMeta = await step.run("step-1-tmdb-classify", async () => {
             harness.logActivity(`[INNGEST STEP 1] TMDB lookup & classification for: "${rawTitle}"`);
-            const meta = await lookupMedia(rawTitle);
+            const meta = await lookupMedia(rawTitle, requestedYear || cleaned.year);
             return meta;
         });
 

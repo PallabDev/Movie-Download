@@ -1,6 +1,7 @@
 import "node:process";
 import { TelegramClient } from "teleproto";
 import { StoreSession } from "teleproto/sessions/index.js";
+import { ConnectionTCPObfuscated } from "teleproto/network/connection/TCPObfuscated.js";
 
 import { env } from "../../common/utils/env.js";
 
@@ -11,9 +12,24 @@ const apiHash = env.TG_API_HASH;
 const session = new StoreSession("bot-session");
 
 const client = new TelegramClient(session, apiId, apiHash, {
+    connection: ConnectionTCPObfuscated,
     connectionRetries: 5,
     autoReconnect: true,
 });
+
+// Patch getDC to bypass unreachable mediaOnly IPs on certain ISP routing networks (e.g. 91.108.56.114)
+const _origGetDC = client.getDC.bind(client);
+client.getDC = async function (dcId: number, downloadDC: boolean = false) {
+    try {
+        const res = await _origGetDC(dcId, downloadDC);
+        if (res?.ipAddress === "91.108.56.114") {
+            return await _origGetDC(dcId, false);
+        }
+        return res;
+    } catch {
+        return await _origGetDC(dcId, false);
+    }
+};
 
 let _connected = false;
 let _connecting = false;

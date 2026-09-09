@@ -300,9 +300,9 @@ export function cleanMediaTitle(query: string): { title: string; year?: string; 
         year = yearMatch[1];
     }
 
-    // Clean common search noise and typos (e.g. downlaod, dwonlaod, saerch)
+    // Clean common search noise, phrases and typos (e.g. downlaod, dwonlaod, saerch)
     q = q
-        .replace(/\b(?:how many|how much|part is released|parts|part|till date|from internet|search|saerch|serach|download|downlaod|dwonlaod|dowload|dwnld|donwload|downlod|dwload|downlaoding|downloading|find|watch|all seasons|all episodes|full movie|hd|720p|1080p|4k|web series|series|tv show|show|movie|film|option\s*\d+)\b/gi, " ")
+        .replace(/\b(?:search\s+and\s+download|download\s+and\s+search|find\s+and\s+download|search\s+for|look\s+for|please\s+download|can\s+you\s+download|how many|how much|part is released|parts|part|till date|from internet|search|saerch|serach|download|downlaod|dwonlaod|dowload|dwnld|donwload|downlod|dwload|downlaoding|downloading|find|watch|get|play|stream|all seasons|all episodes|full movie|hd|720p|1080p|4k|web series|series|tv show|show|movie|film|option\s*\d+)\b/gi, " ")
         .replace(/(?:\[|\b)S\d{1,2}[\s._-]*E\d{1,2}(?:\]|\b)/gi, " ")
         .replace(/\bSeason\s*\d{1,2}\b/gi, " ")
         .replace(/\bS\d{1,2}\b/gi, " ")
@@ -310,6 +310,11 @@ export function cleanMediaTitle(query: string): { title: string; year?: string; 
         .replace(/[:\-–—]/g, " ")
         .replace(/\s+/g, " ")
         .trim();
+
+    // Clean leading/trailing leftover conjunctions/prepositions (e.g. "and Love Oh Love" -> "Love Oh Love")
+    q = q.replace(/^(?:and|for|the|to|with|in|a|an)\s+/i, "")
+         .replace(/\s+(?:and|for|to|with|in)$/i, "")
+         .trim();
 
     return {
         title: q || query.trim(),
@@ -320,15 +325,74 @@ export function cleanMediaTitle(query: string): { title: string; year?: string; 
 }
 
 /**
+ * Helper to score a TMDB candidate against a search target and target year
+ */
+function scoreCandidate(c: any, target: string, year?: string): number {
+    let score = 0;
+    const candTitle = (c.title || c.name || c.original_title || c.original_name || "").toLowerCase().trim();
+    const cleanTarget = target.toLowerCase().trim();
+    const candYear = (c.release_date || c.first_air_date || "").slice(0, 4);
+
+    // 1. Title matching
+    if (candTitle === cleanTarget) {
+        score += 120; // Exact match!
+    } else {
+        const normCand = candTitle.replace(/[^a-z0-9]/g, "");
+        const normTarget = cleanTarget.replace(/[^a-z0-9]/g, "");
+        if (normCand && normCand === normTarget) {
+            score += 110;
+        } else if (normCand.startsWith(normTarget) || normTarget.startsWith(normCand)) {
+            score += 60;
+        } else if (candTitle.includes(cleanTarget) || cleanTarget.includes(candTitle)) {
+            score += 40;
+        } else {
+            const tWords = cleanTarget.split(/\s+/).filter(w => w.length > 1);
+            const matches = tWords.filter(w => candTitle.includes(w)).length;
+            score += (matches / Math.max(tWords.length, 1)) * 30;
+        }
+    }
+
+    // 2. Year matching
+    if (year) {
+        if (candYear === year) {
+            score += 90; // Exact release year match
+        } else if (candYear && Math.abs(parseInt(candYear, 10) - parseInt(year, 10)) <= 1) {
+            score += 30; // Within 1 year
+        } else if (candYear) {
+            score -= 30; // Year mismatch
+        }
+    }
+
+    // 3. Media Type Preference (Movies slightly favored for equal matches)
+    if (c.media_type === "movie") {
+        score += 15;
+    }
+
+    // 4. Popularity & Vote count weighting (ensures major titles are recognized)
+    if (c.popularity) {
+        score += Math.min(c.popularity * 0.2, 40);
+    }
+    if (c.vote_count) {
+        if (c.vote_count > 1000) score += 30;
+        else if (c.vote_count > 100) score += 20;
+        else if (c.vote_count > 10) score += 10;
+        else if (c.vote_count > 0) score += 3;
+    }
+
+    return score;
+}
+
+/**
  * Comprehensive Smart Media Lookup:
  * Searches TMDB, identifies if it is a movie or series, gets exact release year,
  * per-season counts, franchise/collection parts, synopsis, cast, and poster.
  */
-export async function lookupMedia(rawQuery: string): Promise<TMDBMediaLookupResult | null> {
+export async function lookupMedia(rawQuery: string, optionalYear?: string | number): Promise<TMDBMediaLookupResult | null> {
     const { title: cleanTitle, year: extractedYear } = cleanMediaTitle(rawQuery);
     const searchTarget = cleanTitle || rawQuery.trim();
+    const targetYear = optionalYear ? String(optionalYear) : extractedYear;
 
-    console.log(`[TMDB] Looking up media for: "${rawQuery}" -> Cleaned: "${searchTarget}" (Year: ${extractedYear || "none"})`);
+    console.log(`[TMDB] Looking up media for: "${rawQuery}" -> Cleaned: "${searchTarget}" (Year: ${targetYear || "none"})`);
 
     // 1. Check if it's a known movie franchise/collection (e.g., "Baahubali", "Harry Potter")
     const collectionSearch = await searchCollection(searchTarget);
@@ -341,24 +405,38 @@ export async function lookupMedia(rawQuery: string): Promise<TMDBMediaLookupResu
         }
     }
 
-    // 2. Perform multi-search
-    const multi = await searchMulti(searchTarget);
-    const candidates = (multi.results || []).filter((r: any) => r.media_type === "movie" || r.media_type === "tv");
+    // 2. Perform multi-search and direct movie search
+    const [multi, movieDirect] = await Promise.all([
+        searchMulti(searchTarget),
+        searchMovie(searchTarget, targetYear)
+    ]);
 
-    // If multi search had no direct results, try direct TV search and movie search
-    if (candidates.length === 0) {
-        const [tvRes, movieRes] = await Promise.all([
-            searchTV(searchTarget, extractedYear),
-            searchMovie(searchTarget, extractedYear),
-        ]);
+    const candidatesMap = new Map<string, any>();
 
-        if (tvRes.results?.length) {
-            candidates.push(...tvRes.results.map((r: any) => ({ ...r, media_type: "tv" })));
-        }
-        if (movieRes.results?.length) {
-            candidates.push(...movieRes.results.map((r: any) => ({ ...r, media_type: "movie" })));
+    // Add multi-search candidates
+    for (const r of (multi.results || [])) {
+        if (r.media_type === "movie" || r.media_type === "tv") {
+            candidatesMap.set(`${r.media_type}_${r.id}`, r);
         }
     }
+
+    // Add movie direct search candidates
+    for (const r of (movieDirect.results || [])) {
+        const key = `movie_${r.id}`;
+        if (!candidatesMap.has(key)) {
+            candidatesMap.set(key, { ...r, media_type: "movie" });
+        }
+    }
+
+    // If still empty, try direct TV search
+    if (candidatesMap.size === 0) {
+        const tvRes = await searchTV(searchTarget, targetYear);
+        for (const r of (tvRes.results || [])) {
+            candidatesMap.set(`tv_${r.id}`, { ...r, media_type: "tv" });
+        }
+    }
+
+    const candidates = Array.from(candidatesMap.values());
 
     if (candidates.length === 0 && matchedCollection) {
         // We found a collection even if single movie didn't hit
@@ -399,15 +477,9 @@ export async function lookupMedia(rawQuery: string): Promise<TMDBMediaLookupResu
         return null;
     }
 
-    // Pick best matching candidate (prioritize year if provided)
-    let bestCandidate = candidates[0];
-    if (extractedYear) {
-        const yearMatch = candidates.find((c: any) => {
-            const date = c.release_date || c.first_air_date || "";
-            return date.startsWith(extractedYear);
-        });
-        if (yearMatch) bestCandidate = yearMatch;
-    }
+    // Rank candidates using scoreCandidate
+    candidates.sort((a, b) => scoreCandidate(b, searchTarget, targetYear) - scoreCandidate(a, searchTarget, targetYear));
+    const bestCandidate = candidates[0];
 
     // Process TV series
     if (bestCandidate.media_type === "tv") {

@@ -1,7 +1,7 @@
 // TOOL CALL PARSER - Robust parser for AI output formats
 
 export const KNOWN_TOOLS = [
-    "web_search", "search_movie", "search_series", "download_series", "download_movie", "download_episode",
+    "search_media", "download_media", "web_search", "search_movie", "search_series", "download_series", "download_movie", "download_episode",
     "download_season", "check_jellyfin", "list_downloads", "request_media", "bot_reconnect",
     "bot_auth_phone", "bot_auth_code", "bot_auth_password", "bot_auth_status",
     "tmdb_search", "get_series_seasons", "get_season_episodes"

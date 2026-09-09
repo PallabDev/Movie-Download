@@ -1,7 +1,7 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import { db, schema } from "../../common/db/index.js";
-import { eq, desc, like, sql, count } from "drizzle-orm";
+import { eq, or, desc, like, sql, count } from "drizzle-orm";
 import { register, login, extractUser, getAllUsers, updateUser, deleteUser, type UserRole } from "../../common/auth/auth.js";
 import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries } from "../../common/jellyfin/client.js";
 import { downloadQueue, secureBotFileToSavedMessages } from "../queue/queue.js";
@@ -19,6 +19,7 @@ import {
     syncIndianOTTReleasesToDB,
     discoverIndianOTTReleases
 } from "../../common/tmdb/client.js";
+import { searchMedia, getDownloadLinks, selectBest720pQuality, sortServersByPriority } from "../download/api-client.js";
 import { handleChat } from "./chat.js";
 
 const app = express();
@@ -516,18 +517,16 @@ app.get("/api/new-releases/stats", requireMod, async (_req, res) => {
     }
 });
 
-// ─── SEARCH (Direct Studio & AI Workflow) ───
+// ─── SEARCH (Direct Studio & AI Workflow via dl.pallabdev.in) ───
 
 app.post("/api/search", requireMod, async (req: any, res) => {
     let { title, type, year } = req.body;
-    if (!title || !type) return res.status(400).json({ error: "Title and type required" });
-    if (type !== "movie" && type !== "series") return res.status(400).json({ error: "Type must be movie or series" });
+    if (!title) return res.status(400).json({ error: "Title required" });
 
-    const harness = getHarness();
     const searchId = `srch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     try {
-        console.log(`[SEARCH] Analyzing "${title}" (type: ${type})`);
+        console.log(`[SEARCH] Searching dl.pallabdev.in for "${title}" (type: ${type || "all"})`);
 
         // 1. Resolve canonical details via TMDB
         let cleanTitle = title;
@@ -540,210 +539,24 @@ app.post("/api/search", requireMod, async (req: any, res) => {
                 cleanTitle = tmdb.title;
                 cleanYear = tmdb.year || cleanYear;
                 mediaMetadata = tmdb;
-                if (tmdb.type === "series" && type === "movie") {
-                    type = "series";
-                }
             }
         } catch (e: any) {
             console.warn(`[SEARCH] TMDB resolution fallback: ${e.message}`);
         }
 
-        const query = type === "movie"
-            ? `${cleanTitle} ${cleanYear}`.trim()
-            : cleanTitle;
+        const query = cleanTitle;
+        const results = await searchMedia(query);
 
-        console.log(`[SEARCH] Query: "${query}"`);
-
-        const bot = type === "movie" ? "ProSearchM11Bot" : "ProSearchY11Bot";
-        const botClient = (await import("../../module/bot/bot.js")).default;
-        const results: { text: string; sizeMB: number; season?: number; episode?: number }[] = [];
-        const allPaged: { globalIndex: number; text: string; sizeMB: number; page: number; row: number; col: number }[] = [];
-        let primaryBtnMsg: any = null;
-
-        if (type === "movie") {
-            console.log(`[SEARCH] Sending movie query to @${bot}: "${query}"`);
-            const sent = await botClient.sendMessage(bot, { message: query });
-            await new Promise(r => setTimeout(r, 4000));
-
-            let btnMsg: any = null;
-            let messages = await botClient.getMessages(bot, { limit: 10 });
-            for (const msg of messages) {
-                if (msg.id === sent.id) continue;
-                const buttons = await msg.getButtons();
-                if (buttons && buttons.length > 0) { btnMsg = msg; break; }
-            }
-
-            if (!btnMsg) {
-                await new Promise(r => setTimeout(r, 3000));
-                messages = await botClient.getMessages(bot, { limit: 10 });
-                for (const msg of messages) {
-                    if (msg.id === sent.id) continue;
-                    const buttons = await msg.getButtons();
-                    if (buttons && buttons.length > 0) { btnMsg = msg; break; }
-                }
-            }
-
-            if (btnMsg) {
-                primaryBtnMsg = btnMsg;
-                let currentMsg = btnMsg;
-                const seenTexts = new Set<string>();
-                const MAX_PAGES = 10;
-
-                for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
-                    const buttons = (await currentMsg.getButtons()) || [];
-                    let nextBtn: any = null;
-
-                    for (let r = 0; r < buttons.length; r++) {
-                        for (let c = 0; c < buttons[r].length; c++) {
-                            const btn = buttons[r][c];
-                            const text = ((btn as any).text || "").trim();
-                            if (!text) continue;
-
-                            const lower = text.toLowerCase();
-                            const isNav =
-                                lower.includes("next") ||
-                                lower.includes("prev") ||
-                                lower.includes("page") ||
-                                lower.includes("back") ||
-                                lower.includes("close") ||
-                                lower.includes("update") ||
-                                lower.includes("channel") ||
-                                /^\s*(⬅️|➡️|◀️|▶️|<<|>>|\d+\/\d+)/i.test(lower) ||
-                                /\[\d+\/\d+\]/.test(lower);
-
-                            if (isNav) {
-                                if (
-                                    lower.includes("next") ||
-                                    lower.includes("➡️") ||
-                                    lower.includes("▶️") ||
-                                    lower.includes(">>") ||
-                                    (/\[\d+\/\d+\]/.test(lower) && !lower.includes("prev") && !lower.includes("⬅️"))
-                                ) {
-                                    const pageMatch = lower.match(/\[(\d+)\/(\d+)\]/);
-                                    if (pageMatch && parseInt(pageMatch[1], 10) >= parseInt(pageMatch[2], 10)) {
-                                        // Last page
-                                    } else {
-                                        nextBtn = btn;
-                                    }
-                                }
-                                continue;
-                            }
-
-                            if (lower.includes("srt") || lower.includes("sub") || lower.includes(".txt") || lower.includes(".zip")) continue;
-
-                            const sizeMB = extractSizeMB(text);
-                            if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
-
-                            if (!seenTexts.has(text)) {
-                                seenTexts.add(text);
-                                allPaged.push({
-                                    globalIndex: allPaged.length + 1,
-                                    text,
-                                    sizeMB,
-                                    page: pageNum,
-                                    row: r,
-                                    col: c,
-                                });
-                                results.push({ text, sizeMB });
-                            }
-                        }
-                    }
-
-                    if (nextBtn && pageNum < MAX_PAGES) {
-                        try {
-                            await nextBtn.click({});
-                            await new Promise(res => setTimeout(res, 1500));
-                            const msgs = await botClient.getMessages(bot, { ids: [btnMsg.id] });
-                            if (msgs && msgs[0]) {
-                                currentMsg = msgs[0];
-                            } else {
-                                break;
-                            }
-                        } catch {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-            }
-        } else {
-            // TV Series: Strictly query episode-by-episode using TMDB episode counts (format: Name SXXEXX)
-            const targetSeasons: number[] = [];
-            const multiMatch = title.match(/(?:seasons?|s)\s*([\d\s,–\-and]+)/i);
-            if (multiMatch) {
-                const nums = multiMatch[1].match(/\d+/g);
-                if (nums) targetSeasons.push(...nums.map(Number));
-            } else {
-                const sMatch = title.match(/\bS(\d{1,2})\b/i) || title.match(/\bSeason\s*(\d{1,2})\b/i);
-                if (sMatch) targetSeasons.push(parseInt(sMatch[1], 10));
-            }
-
-            if (targetSeasons.length === 0) {
-                const totalS = mediaMetadata?.totalSeasons || 1;
-                for (let i = 1; i <= totalS; i++) targetSeasons.push(i);
-            }
-
-            console.log(`[SEARCH] Series episode-by-episode search for "${cleanTitle}" across seasons [${targetSeasons.join(", ")}]`);
-
-            for (const s of targetSeasons) {
-                const epCount = mediaMetadata?.episodesPerSeason?.[s - 1] || 10;
-                for (let e = 1; e <= epCount; e++) {
-                    const epTag = `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}`;
-                    const queryText = `${cleanTitle} ${epTag}`;
-                    try {
-                        const sent = await botClient.sendMessage(bot, { message: queryText });
-                        let matched = false;
-                        for (let attempt = 0; attempt < 4; attempt++) {
-                            await new Promise(r => setTimeout(r, 1500));
-                            const msgs = await botClient.getMessages(bot, { limit: 10 });
-                            for (const msg of msgs) {
-                                if (msg.id <= sent.id) continue;
-                                const buttons = await msg.getButtons();
-                                if (buttons && buttons.length > 0) {
-                                    if (!primaryBtnMsg) primaryBtnMsg = msg;
-                                    for (const row of buttons) {
-                                        for (const btn of row) {
-                                            const text = (btn as any).text || "";
-                                            if (!text) continue;
-                                            const lower = text.toLowerCase();
-                                            if (lower.includes("srt") || lower.includes("sub")) continue;
-                                            const sizeMB = extractSizeMB(text);
-                                            if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
-                                            results.push({ text, sizeMB, season: s, episode: e });
-                                        }
-                                    }
-                                    matched = true;
-                                    break;
-                                }
-                                const text = msg.message || "";
-                                if (text.toLowerCase().includes("no results found") || text.toLowerCase().includes("not found")) {
-                                    matched = true;
-                                    break;
-                                }
-                            }
-                            if (matched) break;
-                        }
-                    } catch (err: any) {
-                        console.error(`[SEARCH] Error querying "${queryText}":`, err.message);
-                    }
-                }
-            }
-        }
-
-        if (results.length === 0 || !primaryBtnMsg) {
-            return res.json({ searchId, status: "no_results", message: "Bot did not respond with results", results: [], mediaMetadata });
+        if (!results || results.length === 0) {
+            return res.json({ searchId, status: "no_results", message: "No releases found", results: [], mediaMetadata });
         }
 
         searchSessions.set(searchId, {
-            bot,
-            sentId: 0,
-            btnMsgId: primaryBtnMsg.id,
-            btnMsg: primaryBtnMsg,
-            type,
+            searchId,
             title: cleanTitle,
             year: cleanYear,
-            pagedResults: allPaged,
+            type: type || "movie",
+            results,
             createdAt: Date.now(),
         });
 
@@ -751,34 +564,30 @@ app.post("/api/search", requireMod, async (req: any, res) => {
             if (Date.now() - v.createdAt > 30 * 60 * 1000) searchSessions.delete(k);
         }
 
-        let bestIdx = -1;
-        let bestReason = "";
-        if (results.length > 0) {
-            const best = await pickBestResult(cleanTitle, type, results as any);
-            bestIdx = best.index;
-            bestReason = best.reason;
-        }
-
-        let seriesEpisodes: any[] = [];
-        let uniqueSeasons: number[] = [];
-        if (type === "series" && results.length > 0) {
-            seriesEpisodes = groupByEpisode(results);
-            uniqueSeasons = [...new Set(seriesEpisodes.map(e => e.season))].sort((a, b) => a - b);
-        }
-
-        const formattedResults = (allPaged.length > 0 ? allPaged : results.map((r, i) => ({ globalIndex: i + 1, ...r, page: 1 }))).map((r, i) => ({
-            index: r.globalIndex || i + 1,
-            text: r.text,
-            sizeMB: r.sizeMB,
-            page: (r as any).page || 1,
-            isBest: i === bestIdx,
-            reason: i === bestIdx ? bestReason : ""
+        const formattedResults = results.map((r, i) => ({
+            index: i + 1,
+            text: r.name,
+            name: r.name,
+            url: r.url,
+            thumbnail: r.thumbnail || "",
+            category: r.category || [],
+            director: r.director || [],
+            stars: r.stars || [],
+            imdb_id: r.imdb_id || "",
+            post_date: r.post_date || "",
+            isBest: i === 0,
+            reason: i === 0 ? "Top Matching Release" : ""
         }));
 
-        console.log(`[SEARCH] Found ${results.length} results, best: #${bestIdx + 1} (${bestReason}), episodes: ${seriesEpisodes.length}`);
+        console.log(`[SEARCH] Found ${results.length} releases for "${cleanTitle}"`);
         return res.json({
-            searchId, status: "results", title: cleanTitle, year: cleanYear,
-            results: formattedResults, bestIdx, bestReason, seriesEpisodes, uniqueSeasons, mediaMetadata
+            searchId,
+            status: "results",
+            title: cleanTitle,
+            year: cleanYear,
+            results: formattedResults,
+            bestIdx: 0,
+            mediaMetadata
         });
 
     } catch (err: any) {
@@ -790,93 +599,128 @@ app.post("/api/search", requireMod, async (req: any, res) => {
 // ─── SELECT & DOWNLOAD ───
 
 app.post("/api/select", requireMod, async (req: any, res) => {
-    const { searchId, buttonText } = req.body;
-    if (!searchId || !buttonText) return res.status(400).json({ error: "searchId and buttonText required" });
+    const { searchId, optionIndex, targetUrl, buttonText } = req.body;
+    let chosenUrl = targetUrl;
+    let chosenTitle = "Media";
+    let chosenYear = "";
 
-    const session = searchSessions.get(searchId);
-    if (!session) return res.status(400).json({ error: "Search session expired or not found" });
+    const session = searchId ? searchSessions.get(searchId) : null;
+    if (session && session.results.length > 0) {
+        const idx = typeof optionIndex === "number" && optionIndex >= 1 && optionIndex <= session.results.length
+            ? optionIndex - 1
+            : 0;
+        const item = session.results[idx];
+        if (item) {
+            chosenUrl = chosenUrl || item.url;
+            chosenTitle = item.name;
+            chosenYear = session.year || "";
+        }
+    }
 
-    const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    if (!chosenUrl && buttonText && session) {
+        const match = session.results.find((r: any) => r.name === buttonText || r.name.toLowerCase().includes(buttonText.toLowerCase()));
+        if (match) {
+            chosenUrl = match.url;
+            chosenTitle = match.name;
+        }
+    }
+
+    if (!chosenUrl) {
+        return res.status(400).json({ error: "targetUrl or valid searchId required" });
+    }
 
     try {
-        // ─── HARNESS RULE 1: LANGUAGE RESTRICTION (ONLY BENGALI, HINDI, ENGLISH) ───
-        const langCheck = isAllowedDownloadLanguage(buttonText || session.title);
-        if (!langCheck.allowed) {
-            return res.status(400).json({
-                error: `You can't download this movie release (${langCheck.detectedLanguage}). Only Hindi, Bengali, and English (or Dual/Multi Audio) languages are supported.`
+        console.log(`[SELECT] Resolving download links for: ${chosenUrl}`);
+        const details = await getDownloadLinks(chosenUrl);
+        const quality = selectBest720pQuality(details);
+
+        if (!quality) {
+            return res.status(404).json({ error: "No downloadable servers found for this item." });
+        }
+
+        const isSeries = quality.isBatchPack || quality.isEpisodeList;
+        const mediaType = isSeries ? "series" : "movie";
+
+        if (quality.isEpisodeList && quality.episodes && quality.episodes.length > 0) {
+            const queuedEps: string[] = [];
+            for (const ep of quality.episodes) {
+                const epReqId = `req_${Date.now()}_ep${ep.episodeNum}_${Math.random().toString(36).slice(2, 6)}`;
+                await db.insert(schema.downloads).values({
+                    requestId: epReqId,
+                    title: details.name,
+                    type: "series",
+                    status: "queued",
+                    season: 1,
+                    episode: ep.episodeNum,
+                    fileSize: ep.servers[0]?.file_size || "720p",
+                    requestedBy: req.user.userId,
+                });
+
+                downloadQueue.addJob({
+                    requestId: epReqId,
+                    type: "series",
+                    title: details.name,
+                    season: 1,
+                    episode: ep.episodeNum,
+                    servers: ep.servers,
+                    fileSize: ep.servers[0]?.file_size || "720p",
+                    fileName: `${details.name} - S01E${String(ep.episodeNum).padStart(2, "0")}.mkv`,
+                });
+
+                broadcastNewDownload({
+                    jobId: epReqId,
+                    title: `${details.name} - Episode ${ep.episodeNum}`,
+                    type: "series",
+                    requestedBy: req.user.email,
+                });
+
+                queuedEps.push(`Episode ${ep.episodeNum}`);
+            }
+
+            return res.json({
+                success: true,
+                message: `Queued ${queuedEps.length} episodes for "${details.name}" in 720p.`,
+                queuedEpisodes: queuedEps,
             });
         }
 
-        // ─── HARNESS RULE 2: RESOLUTION CHECK (>720p BAN WARNING) ───
-        const resCheck = checkResolutionHarnessRule(buttonText);
-        if (resCheck.isHighRes) {
-            const harness = getHarness();
-            harness.logActivity(`[HARNESS RULE WARNING] High resolution download (${resCheck.resolution}) queued for "${session.title}" - Ban warning issued.`);
-        }
+        const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const fileSize = quality.fileSize || "720p";
 
-        const typeLabel = session.type === "movie" ? "movie" : "series";
         await db.insert(schema.downloads).values({
             requestId,
-            title: session.title,
-            year: session.year || null,
-            type: typeLabel,
+            title: details.name,
+            year: chosenYear || null,
+            type: mediaType,
             status: "queued",
+            fileSize,
             requestedBy: req.user.userId,
+        });
+
+        downloadQueue.addJob({
+            requestId,
+            type: mediaType,
+            title: details.name,
+            year: chosenYear || undefined,
+            servers: quality.servers,
+            fileSize,
+            isBatchPack: quality.isBatchPack,
+            fileName: quality.isBatchPack ? `${details.name} (Full Season Pack).zip` : `${details.name}.mkv`,
         });
 
         broadcastNewDownload({
             jobId: requestId,
-            title: session.title,
-            type: typeLabel,
+            title: details.name,
+            type: mediaType,
             requestedBy: req.user.email,
         });
-
-        const sizeMatch = buttonText.match(/\[([\d.]+)\s*(GB|MB)\]/i);
-        const fileSize = sizeMatch ? sizeMatch[1] + " " + sizeMatch[2].toUpperCase() : null;
-
-        await updateDB(requestId, { status: "queued", fileSize });
-
-        const matchingPaged = session.pagedResults?.find((p: any) => p.text === buttonText || p.text.toLowerCase().includes(buttonText.toLowerCase()));
-        let securedInfo: { savedMsgId: number; fileName: string; totalSize: number } | null = null;
-        try {
-            if (session.btnMsg) {
-                securedInfo = await secureBotFileToSavedMessages(
-                    session.bot,
-                    session.btnMsg,
-                    buttonText,
-                    matchingPaged?.page || 1,
-                    matchingPaged?.row,
-                    matchingPaged?.col
-                );
-            }
-        } catch (secErr: any) {
-            console.log(`[SELECT] Pre-secure notice: ${secErr?.message || secErr}`);
-        }
-
-        downloadQueue.addJob({
-            requestId,
-            bot: session.bot,
-            btnMsgId: session.btnMsg?.id || 0,
-            type: session.type,
-            title: session.title,
-            year: session.year,
-            fileSize: fileSize || undefined,
-            buttonText,
-            page: matchingPaged?.page || 1,
-            buttonRow: matchingPaged?.row,
-            buttonCol: matchingPaged?.col,
-            savedMsgId: securedInfo?.savedMsgId,
-            fileName: securedInfo?.fileName,
-            fileSizeBytes: securedInfo?.totalSize,
-        });
-
-        searchSessions.delete(searchId);
 
         return res.json({
             success: true,
             requestId,
-            message: `Download queued for "${session.title}"`,
-            warning: resCheck.isHighRes ? resCheck.warningMessage : null,
+            message: `Download queued for "${details.name}" (${fileSize}) in 720p.`,
+            fileSize,
+            qualityKey: quality.qualityKey,
         });
 
     } catch (err: any) {
@@ -885,87 +729,107 @@ app.post("/api/select", requireMod, async (req: any, res) => {
     }
 });
 
+// Direct Download Endpoint
+app.post("/api/download", requireMod, async (req: any, res) => {
+    return app._router.handle(Object.assign(req, { url: "/api/select" }), res);
+});
+
 // ─── SERIES BULK DOWNLOAD ───
 
 app.post("/api/select-all-episodes", requireMod, async (req: any, res) => {
-    const { searchId, season } = req.body;
-    if (!searchId) return res.status(400).json({ error: "searchId required" });
+    const { searchId, targetUrl } = req.body;
+    let chosenUrl = targetUrl;
+    const session = searchId ? searchSessions.get(searchId) : null;
+    if (session && session.results.length > 0) {
+        chosenUrl = chosenUrl || session.results[0].url;
+    }
 
-    const session = searchSessions.get(searchId);
-    if (!session) return res.status(400).json({ error: "Search session expired" });
-    if (session.type !== "series") return res.status(400).json({ error: "Not a series" });
-
-    const seasonNum = season || 1;
+    if (!chosenUrl) return res.status(400).json({ error: "targetUrl or valid searchId required" });
 
     try {
-        const btnMsg = session.btnMsg;
-        const buttons = (await btnMsg.getButtons())!;
-        const allResults: { text: string; sizeMB: number }[] = [];
-        for (const row of buttons) {
-            for (const btn of row) {
-                const text = (btn as any).text || "";
-                if (!text) continue;
-                const lower = text.toLowerCase();
-                if (lower.includes("srt") || lower.includes("sub")) continue;
-                const sizeMB = extractSizeMB(text);
-                if (sizeMB < 10 && !lower.includes("mp4") && !lower.includes("mkv")) continue;
-                allResults.push({ text, sizeMB });
-            }
+        const details = await getDownloadLinks(chosenUrl);
+        const quality = selectBest720pQuality(details);
+
+        if (!quality) {
+            return res.status(404).json({ error: "No download links found." });
         }
 
-        const grouped = groupByEpisode(allResults);
-        const seasonEps = grouped.filter(e => e.season === seasonNum);
-
-        console.log(`[BULK] Season ${seasonNum}: ${seasonEps.length} episodes found`);
-
-        const queued: { episode: number; title: string; status: string; sizeMB: number }[] = [];
-
-        for (const ep of seasonEps) {
+        if (quality.isBatchPack) {
             const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-            const epLabel = `${session.title} ${ep.label}`;
+            const fileSize = quality.fileSize || "Full Season Pack 720p";
 
-            try {
+            await db.insert(schema.downloads).values({
+                requestId,
+                title: details.name,
+                type: "series",
+                status: "queued",
+                fileSize,
+                requestedBy: req.user.userId,
+            });
+
+            downloadQueue.addJob({
+                requestId,
+                type: "series",
+                title: details.name,
+                servers: quality.servers,
+                fileSize,
+                isBatchPack: true,
+                fileName: `${details.name} (Full Season Pack).zip`,
+            });
+
+            broadcastNewDownload({
+                jobId: requestId,
+                title: `${details.name} (Batch Pack)`,
+                type: "series",
+                requestedBy: req.user.email,
+            });
+
+            return res.json({
+                success: true,
+                message: `Batch Season Pack queued for "${details.name}" (${fileSize}).`,
+                isBatchPack: true,
+            });
+        }
+
+        if (quality.isEpisodeList && quality.episodes) {
+            const queued: any[] = [];
+            for (const ep of quality.episodes) {
+                const epReqId = `req_${Date.now()}_ep${ep.episodeNum}_${Math.random().toString(36).slice(2, 6)}`;
                 await db.insert(schema.downloads).values({
-                    requestId,
-                    title: epLabel,
-                    year: session.year || null,
+                    requestId: epReqId,
+                    title: details.name,
                     type: "series",
                     status: "queued",
-                    season: ep.season,
-                    episode: ep.episode,
-                    fileSize: `${ep.sizeMB.toFixed(0)} MB`,
+                    season: 1,
+                    episode: ep.episodeNum,
+                    fileSize: ep.servers[0]?.file_size || "720p",
                     requestedBy: req.user.userId,
                 });
 
                 downloadQueue.addJob({
-                    requestId,
-                    bot: session.bot,
-                    btnMsgId: btnMsg.id,
+                    requestId: epReqId,
                     type: "series",
-                    title: epLabel,
-                    year: session.year,
-                    buttonText: ep.text,
+                    title: details.name,
+                    season: 1,
+                    episode: ep.episodeNum,
+                    servers: ep.servers,
+                    fileSize: ep.servers[0]?.file_size || "720p",
+                    fileName: `${details.name} - S01E${String(ep.episodeNum).padStart(2, "0")}.mkv`,
                 });
 
-                queued.push({ episode: ep.episode, title: ep.label, status: "queued", sizeMB: ep.sizeMB });
-            } catch (epErr: any) {
-                console.error(`[BULK] Error on ${ep.label}:`, epErr.message);
-                queued.push({ episode: ep.episode, title: ep.label, status: "error", sizeMB: 0 });
+                queued.push({ episode: ep.episodeNum, title: `Episode ${ep.episodeNum}`, status: "queued" });
             }
+
+            return res.json({
+                success: true,
+                title: details.name,
+                total: queued.length,
+                queued: queued.length,
+                episodes: queued,
+            });
         }
 
-        searchSessions.delete(searchId);
-
-        const totalSize = queued.reduce((sum, q) => sum + q.sizeMB, 0);
-        return res.json({
-            success: true,
-            title: session.title,
-            season: seasonNum,
-            total: seasonEps.length,
-            queued: queued.filter(q => q.status === "queued").length,
-            totalSizeMB: Math.round(totalSize),
-            episodes: queued,
-        });
+        return res.json({ success: true, message: `Processed download for "${details.name}"` });
 
     } catch (err: any) {
         console.error(`[BULK] Error:`, err.message);
@@ -1007,43 +871,115 @@ app.get("/api/downloads", requireMod, async (req: any, res) => {
 // ─── DOWNLOAD ACTIONS ───
 
 app.post("/api/downloads/:id/pause", requireMod, async (req: any, res) => {
-    const { id } = req.params;
-    downloadQueue.pauseJob(id);
-    await db.update(schema.downloads).set({ status: "paused" }).where(eq(schema.downloads.requestId, id));
-    res.json({ success: true, message: "Download paused" });
+    try {
+        const { id } = req.params;
+        downloadQueue.pauseJob(id);
+        await db.update(schema.downloads).set({ status: "paused", updatedAt: new Date() }).where(
+            or(eq(schema.downloads.requestId, id), ...(isNaN(Number(id)) ? [] : [eq(schema.downloads.id, Number(id))]))
+        );
+        res.json({ success: true, message: "Download paused" });
+    } catch (err: any) {
+        console.error("[PAUSE] Error:", err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 app.post("/api/downloads/:id/resume", requireMod, async (req: any, res) => {
-    const { id } = req.params;
-    downloadQueue.resumeJob(id);
-    await db.update(schema.downloads).set({ status: "queued" }).where(eq(schema.downloads.requestId, id));
-    res.json({ success: true, message: "Download resumed" });
+    try {
+        const { id } = req.params;
+        const resumed = downloadQueue.resumeJob(id);
+        if (!resumed) {
+            const rows = await db.select().from(schema.downloads).where(
+                or(eq(schema.downloads.requestId, id), ...(isNaN(Number(id)) ? [] : [eq(schema.downloads.id, Number(id))]))
+            );
+            if (rows && rows[0]) {
+                const row = rows[0];
+                downloadQueue.addJob({
+                    requestId: row.requestId,
+                    bot: (row as any).botUsername || "ProSearchM11Bot",
+                    btnMsgId: 0,
+                    type: (row.type as any) || "movie",
+                    title: row.title,
+                    fileSize: row.fileSize || undefined,
+                    fileName: row.title + ".mp4",
+                });
+            }
+        }
+        await db.update(schema.downloads).set({ status: "queued", updatedAt: new Date() }).where(
+            or(eq(schema.downloads.requestId, id), ...(isNaN(Number(id)) ? [] : [eq(schema.downloads.id, Number(id))]))
+        );
+        res.json({ success: true, message: "Download resumed" });
+    } catch (err: any) {
+        console.error("[RESUME] Error:", err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 app.post("/api/downloads/:id/retry", requireMod, async (req: any, res) => {
-    const { id } = req.params;
-    downloadQueue.retryJob(id);
-    await db.update(schema.downloads).set({ status: "queued", error: null }).where(eq(schema.downloads.requestId, id));
-    res.json({ success: true, message: "Download retry queued" });
+    try {
+        const { id } = req.params;
+        const retried = downloadQueue.retryJob(id);
+        if (!retried) {
+            const rows = await db.select().from(schema.downloads).where(
+                or(eq(schema.downloads.requestId, id), ...(isNaN(Number(id)) ? [] : [eq(schema.downloads.id, Number(id))]))
+            );
+            if (rows && rows[0]) {
+                const row = rows[0];
+                downloadQueue.addJob({
+                    requestId: row.requestId,
+                    bot: (row as any).botUsername || "ProSearchM11Bot",
+                    btnMsgId: 0,
+                    type: (row.type as any) || "movie",
+                    title: row.title,
+                    fileSize: row.fileSize || undefined,
+                    fileName: row.title + ".mp4",
+                });
+            }
+        }
+        await db.update(schema.downloads).set({ status: "queued", error: null, updatedAt: new Date() }).where(
+            or(eq(schema.downloads.requestId, id), ...(isNaN(Number(id)) ? [] : [eq(schema.downloads.id, Number(id))]))
+        );
+        res.json({ success: true, message: "Download retry queued" });
+    } catch (err: any) {
+        console.error("[RETRY] Error:", err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 app.delete("/api/downloads/:id", requireMod, async (req: any, res) => {
-    const { id } = req.params;
-    downloadQueue.cancelJob(id);
-    await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(eq(schema.downloads.requestId, id));
-    res.json({ success: true, message: "Download cancelled and removed" });
+    try {
+        const { id } = req.params;
+        downloadQueue.cancelJob(id);
+        await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(
+            or(eq(schema.downloads.requestId, id), ...(isNaN(Number(id)) ? [] : [eq(schema.downloads.id, Number(id))]))
+        );
+        res.json({ success: true, message: "Download cancelled and removed" });
+    } catch (err: any) {
+        console.error("[CANCEL] Error:", err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 app.delete("/api/downloads/clear/failed", requireMod, async (_req: any, res) => {
-    downloadQueue.clearFailed();
-    await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(eq(schema.downloads.status, "failed"));
-    res.json({ success: true, message: "Failed downloads cleared" });
+    try {
+        downloadQueue.clearFailed();
+        await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(eq(schema.downloads.status, "failed"));
+        res.json({ success: true, message: "Failed downloads cleared" });
+    } catch (err: any) {
+        console.error("[CLEAR_FAILED] Error:", err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 app.delete("/api/downloads/clear/all", requireMod, async (_req: any, res) => {
-    downloadQueue.clearFailed();
-    await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(sql`${schema.downloads.status} IN ('completed', 'failed', 'cancelled', 'paused')`);
-    res.json({ success: true, message: "Download history cleared" });
+    try {
+        downloadQueue.clearFailed();
+        await db.update(schema.downloads).set({ status: "deleted", updatedAt: new Date() }).where(sql`${schema.downloads.status} IN ('completed', 'failed', 'cancelled', 'paused')`);
+        res.json({ success: true, message: "Download history cleared" });
+    } catch (err: any) {
+        console.error("[CLEAR_ALL] Error:", err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 // ─── REQUESTED MEDIA API ───
