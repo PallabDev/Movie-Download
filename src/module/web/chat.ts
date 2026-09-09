@@ -138,6 +138,24 @@ export async function handleChat(
         }
     }
 
+    // Pre-fetch TMDB metadata for enriched context if helpful
+    let tmdbGroundTruth = "";
+    try {
+        const { title: cleanT, year: cleanY } = cleanMediaTitle(userMessage);
+        if (cleanT && cleanT.length > 2 && !/^(hi|hello|hey|help|status|reconnect|clear)/i.test(cleanT)) {
+            const mediaFacts = await lookupMedia(cleanT, cleanY);
+            if (mediaFacts && mediaFacts.found) {
+                tmdbGroundTruth = `\n\n[TMDB GROUND TRUTH FOR "${mediaFacts.title}"]:\n- Type: ${mediaFacts.type}\n- Release Year: ${mediaFacts.year}\n- Overview: ${mediaFacts.overview}`;
+            }
+        }
+    } catch {}
+
+    const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+        { role: "system", content: SYSTEM_PROMPT + tmdbGroundTruth },
+        ...history.map(m => ({ role: m.role as "system" | "user" | "assistant", content: m.content })),
+        { role: "user", content: userMessage },
+    ];
+
     const MAX_ITERATIONS = 8;
 
     try {
