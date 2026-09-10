@@ -119,6 +119,40 @@ class CloudflareScraper:
         return f"{parsed_base.scheme}://{parsed_base.netloc}{path}"
 
     @classmethod
+    def extract_episode_number(cls, text: str) -> Optional[int]:
+        """
+        Extracts a clean episode number (1-300) from text while strictly excluding
+        common video resolutions (480, 720, 1080, 2160) and resolutions followed by 'p'.
+        """
+        if not text:
+            return None
+        invalid_nums = {480, 720, 1080, 2160}
+        
+        # 1. Standard pattern: S01E02, S1.E2, S01 - E02
+        m1 = re.search(r"\b[sS]\d{1,2}\s*[ ._-]?\s*[eE]([0-9]{1,3})\b", text)
+        if m1:
+            val = int(m1.group(1))
+            if val not in invalid_nums and 0 < val <= 300:
+                return val
+
+        # 2. Standalone E01, E02, E1, E12 (e.g. "E01 - Drive", "Kota.Factory.E01")
+        for m in re.finditer(r"\b[eE]([0-9]{1,3})\b", text):
+            val = int(m.group(1))
+            if val not in invalid_nums and 0 < val <= 300:
+                return val
+
+        # 3. Explicit episode notation: EP 01, Episode 1, Ep.02
+        for m in re.finditer(r"\b(?:episode|ep)\s*[-._]?\s*([0-9]{1,3})\b", text, re.I):
+            val = int(m.group(1))
+            end_pos = m.end()
+            if end_pos < len(text) and text[end_pos:end_pos+1].lower() == 'p':
+                continue
+            if val not in invalid_nums and 0 < val <= 300:
+                return val
+
+        return None
+
+    @classmethod
     async def search_movies(
         cls, 
         query: str, 
@@ -386,9 +420,11 @@ class CloudflareScraper:
                     h_text = elem.get_text(" ", strip=True)
                     if any(k in h_text.lower() for k in ["episode", "ep", "bonus", "zip", "pack", "batch", "season", "download links"]):
                         current_heading = h_text
-                        ep_m = re.search(r"(?:bonus\s*)?(?:episode|ep)\s*[-._]?\s*([0-9]{1,3})", h_text, re.I)
-                        if ep_m:
-                            current_episode = ep_m.group(0).upper()
+                        ep_val = cls.extract_episode_number(h_text)
+                        if ep_val is not None:
+                            current_episode = f"EPISODE {ep_val:02d}"
+                        else:
+                            current_episode = ""
 
                 elif elem.name == "a":
                     a = elem
@@ -410,12 +446,19 @@ class CloudflareScraper:
                     if ("hdhub4u" in parsed_href.netloc or not parsed_href.netloc) and not any(k in href for k in ["download", "drive", "archives", "id="]):
                         continue
 
-                    parent = a.find_parent(["p", "div", "h3", "h4", "li", "span"])
+                    parent = a.find_parent(["p", "div", "h3", "h4", "li", "span", "tr"])
                     parent_text = parent.get_text(" ", strip=True) if parent else ""
+
+                    # Category / Noise filter: ignore anchors that are just genre/category tags
+                    text_clean = text.strip().lower()
+                    genre_words = {"comedy", "drama", "action", "romance", "thriller", "horror", "sci-fi", "bollywood", "hollywood", "web-series", "hindi", "english", "300mb movies", "hd movies"}
+                    if (text_clean in genre_words or text_clean in [c.lower() for c in categories]) and not any(k in href_lower for k in ["hubcloud", "hubdrive", "pixeldrain"]):
+                        if not any(k in parent_text.lower() for k in ["mb", "gb", "pack", "episode", "ep", "e0", "e1", "720p", "1080p", "480p", "4k", "drive", "instant", "download"]):
+                            continue
 
                     # Contextual label construction
                     label = text
-                    if not label or label.lower() in ["drive", "instant", "watch", "download", "watch online", "link", "click here", "direct", "stream"]:
+                    if not label or label.lower() in ["drive", "instant", "watch", "download", "watch online", "link", "click here", "direct", "stream", "hubcloud", "gdrive"]:
                         context_parts = []
                         if current_episode and current_episode.lower() not in parent_text.lower():
                             context_parts.append(current_episode)
@@ -444,12 +487,13 @@ class CloudflareScraper:
                     is_batch = False
                     category_type = "movie"
                     if is_tv_series:
+                        ep_val = cls.extract_episode_number(f"{label} {parent_text} {current_episode}")
                         if any(k in combined_info for k in ["bonus"]):
                             category_type = "bonus_episode"
                         elif any(k in combined_info for k in ["pack", "zip", "all episode", "season pack", "full series", "complete season"]):
                             is_batch = True
                             category_type = "batch_pack"
-                        elif any(k in label.lower() for k in ["episode", "ep"]) or current_episode:
+                        elif ep_val is not None:
                             category_type = "episode"
                         elif size or quality in ["480p", "720p", "1080p", "4K / 2160p"]:
                             # Top level resolution links in series without episode numbers are full season batch packs!
@@ -650,9 +694,12 @@ class CloudflareScraper:
                 file_size = ""
                 for td in soup.find_all(["td", "div", "span"]):
                     t = td.get_text(strip=True)
-                    if re.search(r"[0-9.]+\s*(?:MB|GB)", t):
-                        file_size = t
+                    m_sz = re.search(r"([0-9.]+\s*(?:MB|GB|mb|gb))", t)
+                    if m_sz and len(t) < 40:
+                        file_size = m_sz.group(1).strip()
                         break
+                    elif m_sz and not file_size:
+                        file_size = m_sz.group(1).strip()
 
                 hubcloud_url = None
                 for a in soup.find_all("a"):
@@ -773,11 +820,14 @@ class CloudflareScraper:
             
             filename = soup1.title.string.strip() if soup1.title else "Movie Download File"
             file_size = ""
-            for td in soup1.find_all("td"):
+            for td in soup1.find_all(["td", "p", "div", "span"]):
                 t = td.get_text(strip=True)
-                if re.search(r"[0-9.]+\s*(?:MB|GB)", t):
-                    file_size = t
+                m_sz = re.search(r"([0-9.]+\s*(?:MB|GB|mb|gb))", t)
+                if m_sz and len(t) < 40:
+                    file_size = m_sz.group(1).strip()
                     break
+                elif m_sz and not file_size:
+                    file_size = m_sz.group(1).strip()
 
             # Find generator link (e.g. gamerxyt.com/hubcloud.php?...)
             gen_link = None
@@ -920,35 +970,34 @@ class CloudflareScraper:
         section_lower = section_label.lower()
         combined = f"{opt_label} {opt_quality} {section_label} {srv_name} {srv_type} {res_filename} {full_url_decoded}".lower()
 
-        # 1. Detect Batch / Season Pack
-        is_batch = opt_is_batch or (opt_type == "batch_pack")
-        if not is_batch:
-            if any(k in opt_lower for k in ["pack", "all episode", "season pack", "full series", "complete season", "zip [all"]):
-                is_batch = True
-            elif any(k in url_lower or k in srv_lower for k in ["season.pack", "complete.season", "all.episodes", "complete.s0"]):
-                is_batch = True
-            elif is_tv_series and not any(k in opt_lower for k in ["episode", "ep", "bonus", "part"]):
-                if re.search(r"\[[0-9.]+\s*(?:mb|gb)\]", opt_lower) or any(k in opt_lower for k in ["480p", "720p", "1080p", "2160p", "4k"]):
-                    is_batch = True
+        # 1. Detect Episode Number
+        ep_search_text = f"{opt_label} {section_label} {srv_name} {res_filename} {full_url_decoded}"
+        ep_num = cls.extract_episode_number(ep_search_text)
 
-        # 2. Detect Episode (Episode 1, Ep 02, Bonus Ep 1, Bonus Clip of Ep 04, etc.)
+        # 2. Detect Batch / Season Pack
+        is_batch = False
+        if "bonus" in combined:
+            is_batch = False
+        elif ep_num is not None:
+            is_batch = False
+        elif opt_is_batch or (opt_type == "batch_pack"):
+            is_batch = True
+        elif any(k in opt_lower for k in ["pack", "all episode", "season pack", "full series", "complete season", "zip [all"]):
+            is_batch = True
+        elif any(k in url_lower or k in srv_lower for k in ["season.pack", "complete.season", "all.episodes", "complete.s0"]):
+            is_batch = True
+        elif is_tv_series:
+            if re.search(r"\[[0-9.]+\s*(?:mb|gb)\]", opt_lower) or any(k in opt_lower for k in ["480p", "720p", "1080p", "2160p", "4k"]):
+                is_batch = True
+
+        # 3. Detect Episode (Episode 1, Ep 02, Bonus Ep 1, Bonus Clip of Ep 04, etc.)
         episode_tag = ""
-        if "bonus" in opt_lower or "bonus" in url_lower or "bonus" in section_lower:
-            num = ""
-            b_num_match = re.search(r"bonus.*?(?:ep|episode|e)?\s*([0-9]{1,3})", f"{opt_lower} {url_lower} {section_lower} {srv_lower}")
-            if b_num_match:
-                num = f"{int(b_num_match.group(1)):02d}"
+        if "bonus" in combined:
+            b_num_match = re.search(r"bonus.*?(?:ep|episode|e)?\s*([0-9]{1,3})", combined)
+            num = f"{int(b_num_match.group(1)):02d}" if b_num_match else ""
             episode_tag = f"bonus_ep_{num}" if num else "bonus_episode"
-        elif not is_batch:
-            ep_match = re.search(r"\b(?:s\d{1,2}\s*)?(?:ep|episode)\s*[-._]?\s*([0-9]{1,3})\b", f"{opt_lower} {section_lower} {url_lower} {srv_lower}")
-            if not ep_match:
-                ep_match = re.search(r"\bs\d{1,2}\s*e([0-9]{1,3})\b", f"{opt_lower} {url_lower} {srv_lower}")
-            if not ep_match:
-                ep_match = re.search(r"\be([0-9]{2,3})\b", f"{url_lower}")
-                
-            if ep_match:
-                ep_num = int(ep_match.group(1))
-                episode_tag = f"episode_{ep_num:02d}"
+        elif not is_batch and ep_num is not None:
+            episode_tag = f"episode_{ep_num:02d}"
 
         # 3. Detect Resolution
         resolution = "direct"
