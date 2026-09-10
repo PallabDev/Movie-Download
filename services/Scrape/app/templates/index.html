@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HDHub4u Multi-Scraper &amp; 10Gbps Direct Download Engine</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <div class="brand">
+                <div class="brand-icon">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                    </svg>
+                </div>
+                <div class="brand-title">
+                    <h1>HDHub4u Multi-Scraper</h1>
+                    <p>Dynamic Discovery &bull; Episode-Wise Downloads &bull; Batch Season Packs &bull; 10Gbps CDN</p>
+                </div>
+            </div>
+            <div class="live-domain-badge" id="domain-badge" title="Discovered dynamically from https://hdhub4u.bi/">
+                <span class="pulse-dot"></span>
+                <span id="domain-badge-text">Discovering Domain from hdhub4u.bi...</span>
+            </div>
+        </header>
+
+        <!-- Main Search Section -->
+        <section class="hero-search-section">
+            <h2 class="hero-title">Search Movies &amp; Series <span>10Gbps Direct Links</span></h2>
+            <p class="hero-subtitle">
+                Enter any movie or series title below. Our multi-stage scraper auto-discovers active working domains, categorizes full season batch packs, organizes episode-wise downloads, and extracts instant 10Gbps downloading links.
+            </p>
+
+            <!-- Glowing Search Bar -->
+            <form id="search-form" onsubmit="handleSearchSubmit(event)">
+                <div class="search-wrapper">
+                    <svg class="search-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    <input 
+                        type="text" 
+                        id="search-input" 
+                        class="search-input" 
+                        placeholder="Search movies, web series, anime (e.g., Latent, Panchayat, Mirzapur, Bahubali)..." 
+                        autocomplete="off"
+                        required
+                    >
+                    <button type="submit" class="btn-search" id="btn-search">
+                        <span id="search-spinner" class="spinner" style="display: none;"></span>
+                        <span id="search-btn-text">Search</span>
+                    </button>
+                </div>
+            </form>
+
+            <!-- Quick Suggestion Chips -->
+            <div class="quick-chips">
+                <span class="chip-label">Quick Search:</span>
+                <button class="chip-btn" onclick="quickSearch('latent')">🎤 India's Got Latent</button>
+                <button class="chip-btn" onclick="quickSearch('panchayat')">🌾 Panchayat (All Seasons)</button>
+                <button class="chip-btn" onclick="quickSearch('mirzapur')">🔫 Mirzapur</button>
+                <button class="chip-btn" onclick="quickSearch('bahubali 2017')">🔥 Bahubali</button>
+                <button class="chip-btn" onclick="quickSearch('money heist')">🏦 Money Heist</button>
+                <button class="chip-btn" onclick="quickSearch('stree 2')">👻 Stree 2</button>
+            </div>
+        </section>
+
+        <!-- Search Results Section -->
+        <main>
+            <div class="results-header" id="results-header" style="display: none;">
+                <div class="results-count">
+                    <span>Search Results:</span>
+                    <span class="count-pill" id="results-count-pill">0 Items</span>
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-muted);" id="search-time-info"></div>
+            </div>
+
+            <!-- Movie Cards Grid -->
+            <div class="movie-grid" id="movie-grid">
+                <!-- Movie cards populated here -->
+            </div>
+        </main>
+
+        <!-- Movie Details & Final Link Resolution Modal -->
+        <div class="modal-overlay" id="movie-modal">
+            <div class="modal-container">
+                <div class="modal-header">
+                    <h2>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                        </svg>
+                        <span id="modal-title">Download Options</span>
+                    </h2>
+                    <button class="btn-close-modal" onclick="closeModal()" title="Close">&times;</button>
+                </div>
+                <div class="modal-body" id="modal-content">
+                    <!-- Dynamic movie details, storyline, screenshots, batch packs, and episode-wise options -->
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            HDHub4u Multi-Stage Scraper &bull; Powered by FastAPI, uv, curl_cffi &amp; Docker &bull; Instant 10Gbps Link Extraction
+        </footer>
+    </div>
+
+    <script>
+        let currentDomain = "{{ default_domain }}";
+
+        // Step 1: Discover Active Working Domain
+        async function fetchActiveDomain() {
+            try {
+                const res = await fetch('/api/domain');
+                const data = await res.json();
+                if (data.active_domain) {
+                    currentDomain = data.active_domain;
+                    document.getElementById('domain-badge-text').innerText = `Live Domain: ${currentDomain.replace('https://', '')}`;
+                }
+            } catch (err) {
+                document.getElementById('domain-badge-text').innerText = `Live Domain: ${currentDomain.replace('https://', '')}`;
+            }
+        }
+
+        // Step 2: Search Movies
+        function quickSearch(query) {
+            document.getElementById('search-input').value = query;
+            executeSearch(query);
+        }
+
+        function handleSearchSubmit(e) {
+            e.preventDefault();
+            const query = document.getElementById('search-input').value.trim();
+            if (query) executeSearch(query);
+        }
+
+        async function executeSearch(query) {
+            const btnText = document.getElementById('search-btn-text');
+            const spinner = document.getElementById('search-spinner');
+            const btn = document.getElementById('btn-search');
+            const grid = document.getElementById('movie-grid');
+            const header = document.getElementById('results-header');
+
+            btn.disabled = true;
+            btnText.innerText = 'Searching...';
+            spinner.style.display = 'inline-block';
+            header.style.display = 'flex';
+
+            grid.innerHTML = `
+                <div style="grid-column: 1/-1; text-align: center; padding: 4rem 1rem;">
+                    <div class="spinner" style="width: 36px; height: 36px; border-width: 3px;"></div>
+                    <p style="color: var(--text-secondary); margin-top: 1rem; font-size: 1rem;">Querying active domain &amp; fetching all results...</p>
+                </div>
+            `;
+
+            const startTime = performance.now();
+            try {
+                const res = await fetch(`/api/search?param=${encodeURIComponent(query)}&fetch_all=true`);
+                const rawData = await res.json();
+                const duration = Math.round(performance.now() - startTime);
+
+                const items = Array.isArray(rawData) ? rawData : (rawData.items || []);
+
+                document.getElementById('results-count-pill').innerText = `${items.length} Found`;
+                document.getElementById('search-time-info').innerText = `${duration}ms • Fetched ${items.length} items`;
+
+                renderMovieGrid(items);
+            } catch (err) {
+                grid.innerHTML = `
+                    <div class="empty-state" style="grid-column: 1/-1;">
+                        <h3>Search Error</h3>
+                        <p>${err.message}</p>
+                    </div>
+                `;
+            } finally {
+                btn.disabled = false;
+                btnText.innerText = 'Search';
+                spinner.style.display = 'none';
+            }
+        }
+
+        function renderMovieGrid(items) {
+            const grid = document.getElementById('movie-grid');
+            if (!items || items.length === 0) {
+                grid.innerHTML = `
+                    <div class="empty-state" style="grid-column: 1/-1;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="8" x2="12" y2="12"></line>
+                            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                        </svg>
+                        <h3>No results found</h3>
+                        <p>Try searching for another movie or series keyword.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            items.forEach(item => {
+                const title = item.name || item.title || 'Untitled';
+                const permalink = item.url || item.permalink || '';
+                const thumbnail = item.thumbnail || 'https://upload.wikimedia.org/wikipedia/commons/6/65/No-Image-Placeholder.svg';
+                const tags = (item.category || []).slice(0, 3).map(c => `<span class="tag-badge">${c}</span>`).join('');
+                const cast = (item.stars || []).slice(0, 3).join(', ');
+
+                html += `
+                    <div class="movie-card">
+                        <div class="poster-container">
+                            <img class="poster-img" src="${thumbnail}" alt="${title}" onerror="this.src='https://upload.wikimedia.org/wikipedia/commons/6/65/No-Image-Placeholder.svg'">
+                            ${item.imdb_id ? `<span class="imdb-badge">${item.imdb_id}</span>` : ''}
+                        </div>
+                        <div class="card-body">
+                            <div>
+                                <h3 class="movie-title" title="${title}">${title}</h3>
+                                <div class="tag-list">${tags}</div>
+                                ${cast ? `<div class="card-cast"><strong>Cast:</strong> ${cast}</div>` : ''}
+                            </div>
+                            <button class="btn-select-movie" onclick="selectMovie('${permalink}')">
+                                <span>⚡ Get All Download Links</span>
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+            grid.innerHTML = html;
+        }
+
+        // Step 3: Select Item & Categorize Batch Packs and Episode-wise Downloads
+        let allCurrentOptions = [];
+        let currentFilter = 'all';
+
+        async function selectMovie(movieUrl) {
+            const modal = document.getElementById('movie-modal');
+            const modalTitle = document.getElementById('modal-title');
+            const content = document.getElementById('modal-content');
+
+            modal.style.display = 'flex';
+            modalTitle.innerText = 'Extracting Download Options...';
+            content.innerHTML = `
+                <div style="text-align: center; padding: 4rem 1rem;">
+                    <div class="spinner" style="width: 36px; height: 36px; border-width: 3px;"></div>
+                    <p style="color: var(--text-secondary); margin-top: 1rem; font-size: 1rem;">Bypassing protection &amp; parsing batch packs &amp; episodes...</p>
+                </div>
+            `;
+
+            try {
+                const res = await fetch(`/api/movie?url=${encodeURIComponent(movieUrl)}`);
+                const data = await res.json();
+
+                modalTitle.innerText = data.title || 'Download Options';
+                allCurrentOptions = data.download_options || [];
+
+                const batchPacks = allCurrentOptions.filter(o => o.is_batch || o.category_type === 'batch_pack');
+                const episodes = allCurrentOptions.filter(o => !o.is_batch && o.category_type !== 'batch_pack');
+
+                let batchHtml = '';
+                if (batchPacks.length > 0) {
+                    batchHtml = `
+                        <div class="batch-section">
+                            <div class="batch-section-header">
+                                <span class="batch-title-icon">⚡</span>
+                                <h3>Full Season Batch Packs (Zip)</h3>
+                                <span class="priority-badge">High Priority</span>
+                            </div>
+                            <p class="batch-section-desc">Download complete season in a single click batch archive.</p>
+                            <div class="options-list">
+                                ${batchPacks.map((opt, idx) => renderOptionRow(opt, idx, true)).join('')}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                let episodesHtml = '';
+                if (episodes.length > 0) {
+                    // Collect episode filter tags
+                    const epTags = [];
+                    episodes.forEach(e => {
+                        const labelLower = (e.label || '').toLowerCase();
+                        let tag = 'Episode';
+                        const match = labelLower.match(/(?:bonus\s*)?(?:episode|ep)\s*[-._]?\s*([0-9]{1,3})/);
+                        if (labelLower.includes('bonus')) {
+                            tag = 'Bonus Episodes';
+                        } else if (match) {
+                            tag = `Episode ${parseInt(match[1])}`;
+                        }
+                        if (!epTags.includes(tag)) epTags.push(tag);
+                    });
+
+                    let filterBarHtml = '';
+                    if (epTags.length > 1) {
+                        filterBarHtml = `
+                            <div class="episode-filter-bar">
+                                <button class="filter-chip active" onclick="filterEpisodes('all', this)">All (${episodes.length})</button>
+                                ${epTags.map(t => `<button class="filter-chip" onclick="filterEpisodes('${t}', this)">${t}</button>`).join('')}
+                            </div>
+                        `;
+                    }
+
+                    episodesHtml = `
+                        <div class="episodes-section">
+                            <div class="section-heading">
+                                <span>📺 ${batchPacks.length > 0 ? 'Individual Episode Downloads' : 'Available Download Options'} (${episodes.length})</span>
+                            </div>
+                            ${filterBarHtml}
+                            <div class="options-list" id="episodes-list">
+                                ${episodes.map((opt, idx) => renderOptionRow(opt, batchPacks.length + idx, false)).join('')}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                let screenshotsHtml = '';
+                if (data.screenshots && data.screenshots.length > 0) {
+                    screenshotsHtml = `
+                        <div style="margin-top: 1.5rem;">
+                            <h4 style="font-size: 0.9rem; color: #fff; margin-bottom: 0.5rem;">Screenshots:</h4>
+                            <div class="screenshots-preview">
+                                ${data.screenshots.map(s => `<img class="screenshot-thumb" src="${s}" alt="Preview" loading="lazy">`).join('')}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                content.innerHTML = `
+                    <div class="movie-summary-box">
+                        ${data.poster ? `<img class="modal-poster" src="${data.poster}" alt="Poster" onerror="this.style.display='none'">` : ''}
+                        <div class="movie-summary-info">
+                            <h3>${data.title}</h3>
+                            ${data.category && data.category.length > 0 ? `
+                                <div class="tag-list" style="margin: 0.4rem 0 0.6rem;">
+                                    ${data.category.map(c => `<span class="tag-badge">${c}</span>`).join('')}
+                                </div>
+                            ` : ''}
+                            ${data.synopsis ? `<p>${data.synopsis}</p>` : ''}
+                            <a href="${data.page_url}" target="_blank" rel="noopener noreferrer" style="color: var(--accent-cyan); font-size: 0.78rem; display: inline-block; margin-top: 6px; text-decoration: underline;">
+                                View on HDHub4u &rarr;
+                            </a>
+                        </div>
+                    </div>
+
+                    ${batchHtml}
+                    ${episodesHtml}
+                    ${screenshotsHtml}
+                `;
+
+            } catch (err) {
+                content.innerHTML = `
+                    <div class="empty-state">
+                        <h3>Failed to scrape details</h3>
+                        <p>${err.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        function renderOptionRow(opt, idx, isBatch) {
+            let epBadge = '';
+            const labelLower = (opt.label || '').toLowerCase();
+            if (labelLower.includes('bonus')) {
+                epBadge = `<span class="bonus-badge">⭐ BONUS</span>`;
+            } else if (opt.is_batch) {
+                epBadge = `<span class="batch-badge">⚡ SEASON PACK</span>`;
+            } else {
+                const match = labelLower.match(/(?:episode|ep)\s*[-._]?\s*([0-9]{1,3})/);
+                if (match) {
+                    epBadge = `<span class="ep-badge">EP ${match[1]}</span>`;
+                }
+            }
+
+            return `
+                <div class="option-row ${isBatch ? 'option-row-batch' : ''}" id="option-row-${idx}" data-label="${encodeURIComponent(opt.label)}">
+                    <div class="option-meta">
+                        <div style="display: flex; gap: 0.4rem; align-items: center;">
+                            ${epBadge}
+                            <span class="quality-badge">${opt.quality}</span>
+                        </div>
+                        ${opt.size ? `<span class="size-badge">${opt.size}</span>` : ''}
+                    </div>
+                    <div class="option-label">${opt.label}</div>
+                    
+                    <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;">
+                        <button class="btn-extract-link ${isBatch ? 'btn-extract-batch' : ''}" id="btn-extract-${idx}" onclick="extractFinalLink('${opt.link_url}', ${idx})">
+                            <span>⚡ Extract 10Gbps Direct Links</span>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                        </button>
+                        <button class="btn-copy-url" onclick="copyText('${opt.link_url}')">Copy Source Link</button>
+                    </div>
+
+                    <!-- Target area for resolved direct links -->
+                    <div id="resolved-area-${idx}" class="resolved-servers-box" style="display: none;"></div>
+                </div>
+            `;
+        }
+
+        function filterEpisodes(filterTag, btnElem) {
+            document.querySelectorAll('.episode-filter-bar .filter-chip').forEach(c => c.classList.remove('active'));
+            if (btnElem) btnElem.classList.add('active');
+
+            const rows = document.querySelectorAll('#episodes-list .option-row');
+            rows.forEach(r => {
+                const label = decodeURIComponent(r.getAttribute('data-label') || '').toLowerCase();
+                if (filterTag === 'all') {
+                    r.style.display = 'block';
+                } else if (filterTag === 'Bonus Episodes') {
+                    r.style.display = label.includes('bonus') ? 'block' : 'none';
+                } else {
+                    const epNumMatch = filterTag.match(/\d+/);
+                    if (epNumMatch) {
+                        const num = epNumMatch[0];
+                        const match = label.match(/(?:episode|ep)\s*[-._]?\s*([0-9]{1,3})/);
+                        if (match && parseInt(match[1]) === parseInt(num)) {
+                            r.style.display = 'block';
+                        } else {
+                            r.style.display = 'none';
+                        }
+                    } else {
+                        r.style.display = 'block';
+                    }
+                }
+            });
+        }
+
+        // Step 4: Extract Final Direct Download Link (10Gbps & Direct CDN .mkv/.zip)
+        async function extractFinalLink(linkUrl, idx) {
+            const targetArea = document.getElementById(`resolved-area-${idx}`);
+            const btnExtract = document.getElementById(`btn-extract-${idx}`);
+
+            targetArea.style.display = 'flex';
+            targetArea.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 0.6rem; color: var(--accent-cyan); font-size: 0.85rem; padding: 0.5rem 0;">
+                    <span class="spinner" style="width: 14px; height: 14px; border-width: 2px;"></span>
+                    <span>Bypassing mediator countdowns &amp; extracting direct 10Gbps download links...</span>
+                </div>
+            `;
+
+            if (btnExtract) {
+                btnExtract.disabled = true;
+                btnExtract.innerHTML = `<span class="spinner" style="width: 12px; height: 12px; border-width: 2px;"></span> Resolving...`;
+            }
+
+            try {
+                const res = await fetch(`/api/resolve?url=${encodeURIComponent(linkUrl)}`);
+                const data = await res.json();
+                const dls = data.final_downloads || [];
+
+                if (dls.length === 0) {
+                    targetArea.innerHTML = `
+                        <div style="color: var(--accent-rose); font-size: 0.82rem;">
+                            Could not auto-resolve final direct servers. You can open the source link directly.
+                        </div>
+                    `;
+                    return;
+                }
+
+                let serversHtml = '';
+                dls.forEach(dl => {
+                    const isFastCdn = dl.server_type.includes('CDN') || dl.server_type.includes('10Gbps');
+                    serversHtml += `
+                        <div class="direct-server-card">
+                            <div>
+                                <div class="server-title">${dl.server_type}</div>
+                                <div class="server-sub">${dl.server_name}</div>
+                            </div>
+                            <div class="server-actions">
+                                <button class="btn-copy-url" onclick="copyText('${dl.download_url}')">Copy URL</button>
+                                <a href="${dl.download_url}" target="_blank" rel="noopener noreferrer" class="btn-download-direct">
+                                    <span>⚡ Download Now</span>
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                                </a>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                targetArea.innerHTML = `
+                    <div style="font-size: 0.8rem; font-weight: 600; color: #a5b4fc; margin-bottom: 0.3rem;">
+                        ⚡ Direct Download Links Ready (Click to start downloading):
+                    </div>
+                    ${serversHtml}
+                `;
+
+                if (btnExtract) {
+                    btnExtract.style.display = 'none';
+                }
+
+            } catch (err) {
+                targetArea.innerHTML = `<div style="color: var(--accent-rose); font-size: 0.82rem;">Resolution error: ${err.message}</div>`;
+                if (btnExtract) {
+                    btnExtract.disabled = false;
+                    btnExtract.innerHTML = `<span>⚡ Retry Extract</span>`;
+                }
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('movie-modal').style.display = 'none';
+        }
+
+        document.getElementById('movie-modal').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+
+        function copyText(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                const toast = document.createElement('div');
+                toast.innerText = '📋 Link copied to clipboard!';
+                toast.style.position = 'fixed';
+                toast.style.bottom = '24px';
+                toast.style.right = '24px';
+                toast.style.background = '#10b981';
+                toast.style.color = '#fff';
+                toast.style.padding = '10px 18px';
+                toast.style.borderRadius = '8px';
+                toast.style.fontWeight = '600';
+                toast.style.fontSize = '0.9rem';
+                toast.style.zIndex = '9999';
+                toast.style.boxShadow = '0 10px 25px rgba(0,0,0,0.5)';
+                document.body.appendChild(toast);
+                setTimeout(() => toast.remove(), 2500);
+            });
+        }
+
+        // On Load: Discover active domain only
+        window.addEventListener('DOMContentLoaded', async () => {
+            await fetchActiveDomain();
+        });
+    </script>
+</body>
+</html>

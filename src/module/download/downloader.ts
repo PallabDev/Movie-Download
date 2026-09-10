@@ -155,6 +155,10 @@ export async function downloadHttpStream(
                 "Accept": "*/*",
             };
 
+            if (directUrl.includes("workers.dev") || directUrl.includes("hubcloud")) {
+                headers["Referer"] = "https://gamerxyt.com/";
+            }
+
             if (existingBytes > 0) {
                 headers["Range"] = `bytes=${existingBytes}-`;
             }

@@ -19,6 +19,21 @@ services:
       timeout: 5s
       retries: 5
 
+  scrape:
+    build:
+      context: ./services/Scrape
+      dockerfile: Dockerfile
+    container_name: movie-scrape
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   app:
     build: .
     container_name: movie-app
@@ -34,6 +49,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://movieuser:moviepass@postgres:5432/moviedownloader
       - DOCKER=true
+      - DL_API_BASE_URL=http://scrape:8000
       - INNGEST_BASE_URL=http://movie-inngest:8288
       - INNGEST_EVENT_KEY=
       - INNGEST_SIGNING_KEY=
@@ -43,6 +59,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      scrape:
+        condition: service_started
 
   inngest:
     image: inngest/inngest:latest

@@ -3,7 +3,7 @@
  * Search and resolve 10Gbps CDN download links for movies and TV series
  */
 
-export const DL_API_BASE_URL = process.env.DL_API_BASE_URL || "https://dl.pallabdev.in";
+export const DL_API_BASE_URL = process.env.DL_API_BASE_URL || "http://localhost:8000";
 
 export interface SearchResultItem {
     name: string;
@@ -155,9 +155,9 @@ export function normalizeDirectStreamUrl(url: string): string {
 
 /**
  * Sorts server list by speed and reliability priority:
- * 1. Cloudflare R2 / Workers CDN (FSL Server, Direct CDN, *.r2.cloudflarestorage.com, *.workers.dev)
- * 2. Fast direct CDNs (cdn.cocktail.beer, cdn.bunker.monster, cdn.pongala.life)
- * 3. 10Gbps High Speed (pixel.hubcloud.cx, gpdl.hubcloud.cx)
+ * 1. Google 10Gbps Video CDN (*.googleusercontent.com, *.googleapis.com)
+ * 2. Cloudflare R2 / Workers CDN (*.r2.cloudflarestorage.com, *.r2.dev, *.workers.dev)
+ * 3. Fast direct CDNs (cdn.cocktail.beer, cdn.bunker.monster, cdn.pongala.life)
  * 4. Pixeldrain (pixeldrain.com/api/file)
  * 5. Other Direct Servers
  */
@@ -170,10 +170,11 @@ export function sortServersByPriority(servers: DownloadServer[]): DownloadServer
         const type = (srv.server_type || "").toLowerCase();
         const url = (srv.download_url || "").toLowerCase();
 
-        if (url.includes("r2.cloudflarestorage.com") || url.includes("workers.dev")) score += 100;
+        if (url.includes("googleusercontent.com") || url.includes("googleapis.com")) score += 120;
+        if (url.includes("r2.cloudflarestorage.com") || url.includes("r2.dev") || url.includes("workers.dev")) score += 110;
         if (url.includes("cdn.cocktail.beer") || url.includes("cdn.bunker.monster") || url.includes("cdn.pongala.life")) score += 90;
         if (name.includes("fsl") || type.includes("fast cdn")) score += 80;
-        if (name.includes("10gbps") || type.includes("10gbps")) score += 70;
+        if (name.includes("10gbps") || type.includes("10gbps")) score += 75;
         if (url.includes("pixeldrain")) score += 60;
         if (url.includes("hubcdn") || url.includes("fuckingfast")) score += 40;
         if (url.includes("hubcloud")) score += 30;
