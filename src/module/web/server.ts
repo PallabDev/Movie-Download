@@ -17,7 +17,8 @@ import {
     searchMovie as tmdbSearchMovie,
     searchTV as tmdbSearchTV,
     syncIndianOTTReleasesToDB,
-    discoverIndianOTTReleases
+    discoverIndianOTTReleases,
+    fetchCuratedOTTMedia
 } from "../../common/tmdb/client.js";
 import { searchMedia, getDownloadLinks, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats } from "../download/api-client.js";
 import { handleChat } from "./chat.js";
@@ -404,6 +405,8 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
         if (industry && industry !== "all") {
             if (industry === "south") {
                 conditions.push(sql`LOWER(${schema.ottReleases.industry}) IN ('kollywood', 'tollywood', 'mollywood', 'sandalwood')`);
+            } else if (industry === "k-drama" || industry === "kdrama" || industry === "korean") {
+                conditions.push(sql`LOWER(${schema.ottReleases.industry}) IN ('k-drama', 'kdrama', 'korean')`);
             } else {
                 conditions.push(sql`LOWER(${schema.ottReleases.industry}) = ${industry}`);
             }
@@ -594,6 +597,98 @@ app.get("/api/releases/trailer", requireMod, async (req: any, res) => {
         return res.json({ trailerKey: trailerKey || null });
     } catch (err: any) {
         return res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── CURATED TRENDING & POPULAR OTT MEDIA APIS ───
+
+app.get("/api/trending", requireMod, async (req: any, res) => {
+    try {
+        const window = (req.query.window as string || "3m").toLowerCase() as "3m" | "12m" | "10y";
+        const type = (req.query.type as string || "all").toLowerCase() as "all" | "movie" | "series";
+        const industry = (req.query.industry as string || "all").toLowerCase() as any;
+        const page = Math.max(1, Number(req.query.page) || 1);
+        const search = (req.query.search as string || "").trim();
+
+        const result = await fetchCuratedOTTMedia({
+            mode: "trending",
+            window,
+            type,
+            industry,
+            page,
+            search,
+            limit: 100,
+        });
+
+        const jfMedia = await getCachedJellyfinMedia();
+        const enrichedItems = result.items.map(item => {
+            const isSeries = item.mediaType === "series";
+            const jfList = isSeries ? jfMedia.series : jfMedia.movies;
+            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfList);
+            return {
+                ...item,
+                jellyfinExists: inJellyfin,
+            };
+        });
+
+        return res.json({
+            success: true,
+            items: enrichedItems,
+            pagination: {
+                page: result.page,
+                pageSize: result.pageSize,
+                total: result.total,
+                totalPages: result.totalPages,
+            },
+        });
+    } catch (err: any) {
+        console.error("[API TRENDING] Error:", err);
+        return res.status(500).json({ success: false, error: err.message, items: [] });
+    }
+});
+
+app.get("/api/popular", requireMod, async (req: any, res) => {
+    try {
+        const window = (req.query.window as string || "3m").toLowerCase() as "3m" | "12m" | "10y";
+        const type = (req.query.type as string || "all").toLowerCase() as "all" | "movie" | "series";
+        const industry = (req.query.industry as string || "all").toLowerCase() as any;
+        const page = Math.max(1, Number(req.query.page) || 1);
+        const search = (req.query.search as string || "").trim();
+
+        const result = await fetchCuratedOTTMedia({
+            mode: "popular",
+            window,
+            type,
+            industry,
+            page,
+            search,
+            limit: 100,
+        });
+
+        const jfMedia = await getCachedJellyfinMedia();
+        const enrichedItems = result.items.map(item => {
+            const isSeries = item.mediaType === "series";
+            const jfList = isSeries ? jfMedia.series : jfMedia.movies;
+            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfList);
+            return {
+                ...item,
+                jellyfinExists: inJellyfin,
+            };
+        });
+
+        return res.json({
+            success: true,
+            items: enrichedItems,
+            pagination: {
+                page: result.page,
+                pageSize: result.pageSize,
+                total: result.total,
+                totalPages: result.totalPages,
+            },
+        });
+    } catch (err: any) {
+        console.error("[API POPULAR] Error:", err);
+        return res.status(500).json({ success: false, error: err.message, items: [] });
     }
 });
 
@@ -1475,6 +1570,8 @@ app.use("/api/inngest", inngestApp);
 const pageRoutes = [
     "/", "/ai",
     "/releases", "/new-releases", "/ott",
+    "/trending",
+    "/popular",
     "/download", "/downloads", "/downlaod",
     "/request", "/requests", "/requested",
     "/jellyfin",
@@ -1511,6 +1608,8 @@ app.get(pageRoutes, (req, res) => {
     // 3. Resolve initial view for mod and admin
     let initialView = "chat";
     if (path.startsWith("/releases") || path.startsWith("/new-releases") || path.startsWith("/ott")) initialView = "releases";
+    else if (path.startsWith("/trending")) initialView = "trending";
+    else if (path.startsWith("/popular")) initialView = "popular";
     else if (path.startsWith("/download") || path.startsWith("/downlaod")) initialView = "downloads";
     else if (path.startsWith("/request")) initialView = "requested";
     else if (path.startsWith("/jellyfin")) initialView = "jellyfin";
@@ -1678,6 +1777,8 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
     const titles: Record<string, string> = {
         chat: "AI Downloader",
         releases: "New Releases",
+        trending: "Trending Media",
+        popular: "Popular Media",
         downloads: "Download Station",
         media: "Media Mover",
         optimizer: "Library Optimizer",
@@ -1728,6 +1829,31 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             float: none !important;
             margin: 0 !important;
         }
+        .window-pill {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--text-secondary);
+            padding: 4px 11px;
+            border-radius: 20px;
+            font-size: 11.5px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .window-pill:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+        .window-pill.active {
+            background: rgba(236, 72, 153, 0.2);
+            border-color: rgba(236, 72, 153, 0.5);
+            color: #f472b6;
+        }
+        .window-pill.active.gold {
+            background: rgba(245, 158, 11, 0.2);
+            border-color: rgba(245, 158, 11, 0.5);
+            color: #fbbf24;
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -1766,6 +1892,16 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4v16"/><path d="M16 4v16"/><path d="M4 8h4"/><path d="M4 16h4"/><path d="M4 12h16"/><path d="M16 8h4"/><path d="M16 16h4"/></svg>
                             <span>New Releases</span>
                             <span class="nav-badge" style="background: rgba(229, 9, 20, 0.2); color: #ff5252; border: 1px solid rgba(229, 9, 20, 0.4);">OTT</span>
+                        </a>
+                        <a class="nav-link ${activeView === 'trending' ? 'active' : ''}" href="/trending" data-view="trending" onclick="navigateRoute(event, 'trending')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M3 17l6 -6l4 4l8 -8"/><path d="M14 7l7 0l0 7"/></svg>
+                            <span>Trending</span>
+                            <span class="nav-badge" style="background: rgba(236, 72, 153, 0.2); color: #f472b6; border: 1px solid rgba(236, 72, 153, 0.4);">Hot</span>
+                        </a>
+                        <a class="nav-link ${activeView === 'popular' ? 'active' : ''}" href="/popular" data-view="popular" onclick="navigateRoute(event, 'popular')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></svg>
+                            <span>Popular</span>
+                            <span class="nav-badge" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">Top</span>
                         </a>
                         <a class="nav-link ${activeView === 'downloads' ? 'active' : ''}" href="/download" data-view="downloads" onclick="navigateRoute(event, 'downloads')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
@@ -1900,6 +2036,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                             <button class="rel-industry-pill" data-industry="tollywood" onclick="setReleasesIndustryFilter('tollywood')">Tollywood</button>
                             <button class="rel-industry-pill" data-industry="south" onclick="setReleasesIndustryFilter('south')">South Cinema</button>
                             <button class="rel-industry-pill" data-industry="hollywood" onclick="setReleasesIndustryFilter('hollywood')">Hollywood</button>
+                            <button class="rel-industry-pill" data-industry="k-drama" onclick="setReleasesIndustryFilter('k-drama')">K-Drama</button>
                         </div>
                     </div>
 
@@ -1913,6 +2050,146 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
 
                     <!-- Pagination -->
                     <div class="pagination-bar" id="releasesPaginationBar" style="display:none;"></div>
+                </div>
+            </section>
+
+            <!-- VIEW: TRENDING OTT MEDIA -->
+            <section class="view-container ${activeView === 'trending' ? 'active' : ''}" id="view-trending">
+                <div class="releases-container">
+                    <div class="releases-compact-header">
+                        <div class="releases-header-left">
+                            <h1 style="font-size: 15px; font-weight: 700; color: #fff; margin: 0;">Trending on OTT</h1>
+                            <span class="chip quality" style="background: rgba(236, 72, 153, 0.18); color: #f472b6; border-color: rgba(236, 72, 153, 0.35); font-size: 10px; padding: 1px 6px;">Hot Buzz</span>
+                            <span style="font-size: 11px; color: var(--text-muted);">Top 100 trending shows & movies on OTT in India</span>
+                        </div>
+                        <div class="releases-header-right">
+                            <button class="btn-primary-action" id="btnRefreshTrending" onclick="loadTrendingMedia(1, true)" style="padding: 5px 12px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px;">
+                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                <span>Refresh</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Filter Bar: Time Window, Type, Industry & Search -->
+                    <div class="releases-filters-bar" style="gap: 10px; flex-wrap: wrap;">
+                        <!-- Time Window Filter: 3m (default), 12m, 10y -->
+                        <div class="time-window-pills" style="display: flex; gap: 6px; align-items: center;">
+                            <span style="font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-right: 2px;">Window:</span>
+                            <button class="window-pill active" data-window="3m" id="trendWin3m" onclick="setTrendingWindowFilter('3m')">3 Months</button>
+                            <button class="window-pill" data-window="12m" id="trendWin12m" onclick="setTrendingWindowFilter('12m')">12 Months</button>
+                            <button class="window-pill" data-window="10y" id="trendWin10y" onclick="setTrendingWindowFilter('10y')">10 Years</button>
+                        </div>
+
+                        <!-- Media Type Tabs -->
+                        <div class="jf-filter-tabs">
+                            <button class="jf-tab-btn active" id="trendTabAll" onclick="setTrendingTypeFilter('all')">
+                                <span>All</span>
+                                <span class="tab-badge" id="trendCountAll">-</span>
+                            </button>
+                            <button class="jf-tab-btn" id="trendTabMovie" onclick="setTrendingTypeFilter('movie')">
+                                <span>Movies</span>
+                            </button>
+                            <button class="jf-tab-btn" id="trendTabSeries" onclick="setTrendingTypeFilter('series')">
+                                <span>TV Shows</span>
+                            </button>
+                        </div>
+
+                        <!-- Industry Pills -->
+                        <div class="releases-industry-pills">
+                            <button class="rel-industry-pill active" data-industry="all" onclick="setTrendingIndustryFilter('all')">All</button>
+                            <button class="rel-industry-pill" data-industry="bollywood" onclick="setTrendingIndustryFilter('bollywood')">Bollywood</button>
+                            <button class="rel-industry-pill" data-industry="tollywood" onclick="setTrendingIndustryFilter('tollywood')">Tollywood</button>
+                            <button class="rel-industry-pill" data-industry="south" onclick="setTrendingIndustryFilter('south')">South Cinema</button>
+                            <button class="rel-industry-pill" data-industry="hollywood" onclick="setTrendingIndustryFilter('hollywood')">Hollywood</button>
+                            <button class="rel-industry-pill" data-industry="k-drama" onclick="setTrendingIndustryFilter('k-drama')">K-Drama</button>
+                        </div>
+
+                        <!-- Search Box -->
+                        <div style="margin-left: auto; display: flex; align-items: center; min-width: 180px;">
+                            <input type="text" id="trendSearchInput" placeholder="Filter title..." oninput="handleTrendingSearch(this.value)" style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #fff; outline: none;">
+                        </div>
+                    </div>
+
+                    <!-- Cards Grid -->
+                    <div class="releases-grid" id="trendingGrid">
+                        <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted);">
+                            <div class="spinner" style="margin: 0 auto 12px;"></div>
+                            <div>Loading trending OTT media...</div>
+                        </div>
+                    </div>
+
+                    <!-- Pagination -->
+                    <div class="pagination-bar" id="trendingPaginationBar" style="display:none;"></div>
+                </div>
+            </section>
+
+            <!-- VIEW: POPULAR OTT MEDIA -->
+            <section class="view-container ${activeView === 'popular' ? 'active' : ''}" id="view-popular">
+                <div class="releases-container">
+                    <div class="releases-compact-header">
+                        <div class="releases-header-left">
+                            <h1 style="font-size: 15px; font-weight: 700; color: #fff; margin: 0;">Popular on OTT</h1>
+                            <span class="chip quality" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; border-color: rgba(245, 158, 11, 0.35); font-size: 10px; padding: 1px 6px;">All-Time & Period Hits</span>
+                            <span style="font-size: 11px; color: var(--text-muted);">Most watched & highest acclaimed OTT media in India</span>
+                        </div>
+                        <div class="releases-header-right">
+                            <button class="btn-primary-action" id="btnRefreshPopular" onclick="loadPopularMedia(1, true)" style="padding: 5px 12px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px;">
+                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                <span>Refresh</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Filter Bar: Time Window, Type, Industry & Search -->
+                    <div class="releases-filters-bar" style="gap: 10px; flex-wrap: wrap;">
+                        <!-- Time Window Filter: 3m (default), 12m, 10y -->
+                        <div class="time-window-pills" style="display: flex; gap: 6px; align-items: center;">
+                            <span style="font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-right: 2px;">Window:</span>
+                            <button class="window-pill active gold" data-window="3m" id="popWin3m" onclick="setPopularWindowFilter('3m')">3 Months</button>
+                            <button class="window-pill gold" data-window="12m" id="popWin12m" onclick="setPopularWindowFilter('12m')">12 Months</button>
+                            <button class="window-pill gold" data-window="10y" id="popWin10y" onclick="setPopularWindowFilter('10y')">10 Years</button>
+                        </div>
+
+                        <!-- Media Type Tabs -->
+                        <div class="jf-filter-tabs">
+                            <button class="jf-tab-btn active" id="popTabAll" onclick="setPopularTypeFilter('all')">
+                                <span>All</span>
+                                <span class="tab-badge" id="popCountAll">-</span>
+                            </button>
+                            <button class="jf-tab-btn" id="popTabMovie" onclick="setPopularTypeFilter('movie')">
+                                <span>Movies</span>
+                            </button>
+                            <button class="jf-tab-btn" id="popTabSeries" onclick="setPopularTypeFilter('series')">
+                                <span>TV Shows</span>
+                            </button>
+                        </div>
+
+                        <!-- Industry Pills -->
+                        <div class="releases-industry-pills">
+                            <button class="rel-industry-pill active" data-industry="all" onclick="setPopularIndustryFilter('all')">All</button>
+                            <button class="rel-industry-pill" data-industry="bollywood" onclick="setPopularIndustryFilter('bollywood')">Bollywood</button>
+                            <button class="rel-industry-pill" data-industry="tollywood" onclick="setPopularIndustryFilter('tollywood')">Tollywood</button>
+                            <button class="rel-industry-pill" data-industry="south" onclick="setPopularIndustryFilter('south')">South Cinema</button>
+                            <button class="rel-industry-pill" data-industry="hollywood" onclick="setPopularIndustryFilter('hollywood')">Hollywood</button>
+                            <button class="rel-industry-pill" data-industry="k-drama" onclick="setPopularIndustryFilter('k-drama')">K-Drama</button>
+                        </div>
+
+                        <!-- Search Box -->
+                        <div style="margin-left: auto; display: flex; align-items: center; min-width: 180px;">
+                            <input type="text" id="popSearchInput" placeholder="Filter title..." oninput="handlePopularSearch(this.value)" style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 5px 10px; font-size: 12px; color: #fff; outline: none;">
+                        </div>
+                    </div>
+
+                    <!-- Cards Grid -->
+                    <div class="releases-grid" id="popularGrid">
+                        <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted);">
+                            <div class="spinner" style="margin: 0 auto 12px;"></div>
+                            <div>Loading popular OTT media...</div>
+                        </div>
+                    </div>
+
+                    <!-- Pagination -->
+                    <div class="pagination-bar" id="popularPaginationBar" style="display:none;"></div>
                 </div>
             </section>
 

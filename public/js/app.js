@@ -206,6 +206,8 @@ function showAlertModal({
 const VIEW_ROUTES = {
     chat: '/',
     releases: '/releases',
+    trending: '/trending',
+    popular: '/popular',
     downloads: '/download',
     requested: '/request',
     media: '/media',
@@ -217,6 +219,8 @@ const VIEW_ROUTES = {
 const VIEW_TITLES = {
     chat: 'AI Downloader',
     releases: 'New Releases',
+    trending: 'Trending Media',
+    popular: 'Popular Media',
     downloads: 'Download Station',
     requested: 'Requested Media',
     media: 'Media Mover',
@@ -231,6 +235,8 @@ function getViewForPath(pathname) {
 
     const p = (pathname || window.location.pathname || '/').toLowerCase();
     if (p.startsWith('/releases') || p.startsWith('/new-releases') || p.startsWith('/ott')) return 'releases';
+    if (p.startsWith('/trending')) return 'trending';
+    if (p.startsWith('/popular')) return 'popular';
     if (p.startsWith('/download') || p.startsWith('/downlaod')) return 'downloads';
     if (p.startsWith('/request')) return 'requested';
     if (p.startsWith('/media')) return 'media';
@@ -278,6 +284,12 @@ function switchView(viewName, updateHistory = true) {
     if (viewName === 'releases') {
         syncReleasesStateFromUrl();
         loadNewReleases(releasesState.page, false);
+    }
+    if (viewName === 'trending') {
+        loadTrendingMedia(trendingState.page || 1, false);
+    }
+    if (viewName === 'popular') {
+        loadPopularMedia(popularState.page || 1, false);
     }
     if (viewName === 'downloads') loadDownloadHistory();
     if (viewName === 'requested') loadRequestedMedia();
@@ -3102,6 +3114,396 @@ window.setReleasesIndustryFilter = setReleasesIndustryFilter;
 window.openTrailerModal = openTrailerModal;
 window.closeTrailerModal = closeTrailerModal;
 window.handleTrailerBackdropClick = handleTrailerBackdropClick;
+
+// ==========================================================================
+// TRENDING & POPULAR OTT MEDIA MODULE
+// ==========================================================================
+
+const trendingState = {
+    windowFilter: '3m', // '3m' (default), '12m', '10y'
+    typeFilter: 'all',   // 'all', 'movie', 'series'
+    industryFilter: 'all', // 'all', 'bollywood', 'tollywood', 'south', 'hollywood', 'k-drama'
+    searchQuery: '',
+    page: 1,
+    total: 0,
+    totalPages: 1,
+    items: [],
+};
+
+const popularState = {
+    windowFilter: '3m', // '3m' (default), '12m', '10y'
+    typeFilter: 'all',   // 'all', 'movie', 'series'
+    industryFilter: 'all', // 'all', 'bollywood', 'tollywood', 'south', 'hollywood', 'k-drama'
+    searchQuery: '',
+    page: 1,
+    total: 0,
+    totalPages: 1,
+    items: [],
+};
+
+let trendingSearchTimer = null;
+let popularSearchTimer = null;
+
+function renderMediaCard(item) {
+    const posterSrc = item.posterUrl || 'https://via.placeholder.com/300x450/111827/ffffff?text=No+Poster';
+    const rating = item.rating ? Number(item.rating).toFixed(1) : 'N/A';
+    const providers = item.providers || [];
+    const providerBadges = providers.slice(0, 2).map(p => getPlatformBadge(p)).join('');
+    const extraCount = providers.length > 2 ? `<span class="ott-badge more" title="${providers.slice(2).map(p => escapeHtml(p.name)).join(', ')}">+${providers.length - 2}</span>` : '';
+
+    const year = item.year || (item.releaseDate ? item.releaseDate.slice(0, 4) : '');
+    const displayDate = item.ottReleaseDate || item.releaseDate;
+    const formattedDate = displayDate ? new Date(displayDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recent';
+    const isOttDate = Boolean(item.ottReleaseDate);
+
+    const isExists = Boolean(item.jellyfinExists);
+    const isSeries = item.mediaType === 'series';
+
+    return `
+        <div class="movie-release-card ${isExists ? 'in-library' : ''}">
+            <div class="card-poster-wrap">
+                <img src="${posterSrc}" alt="${escapeHtml(item.title)}" class="card-poster-img" loading="lazy" onerror="this.src='https://via.placeholder.com/300x450/111827/ffffff?text=Poster+Unavailable'">
+                <div class="poster-overlay-gradient"></div>
+                
+                <!-- Hover Play Trailer Button -->
+                <button class="card-play-trailer-btn" onclick="openTrailerModal('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${item.trailerKey || ''}', ${item.tmdbId}, '${item.mediaType || 'movie'}', event)" title="Watch Trailer">
+                    <svg viewBox="0 0 24 24"><path d="M6 4v16a1 1 0 0 0 1.524 .852l13 -8a1 1 0 0 0 0 -1.704l-13 -8a1 1 0 0 0 -1.524 .852z"/></svg>
+                </button>
+
+                <div class="card-top-badges">
+                    <span class="badge-rating">
+                        <svg class="tabler-icon star-icon" viewBox="0 0 24 24"><path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></svg>
+                        ${rating}
+                    </span>
+                    ${isExists ? `<span class="badge-jellyfin-in" title="Already available in your Jellyfin Library"><svg class="tabler-icon" style="width:11px;height:11px;stroke-width:3;display:inline-block;vertical-align:middle;margin-right:2px;" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>In Library</span>` : ''}
+                </div>
+                <div style="position:absolute; bottom:8px; left:8px; display:flex; gap:5px; z-index:3;">
+                    <span class="card-type-tag ${isSeries ? 'series' : 'movie'}">${isSeries ? 'TV Series' : 'Movie'}</span>
+                    <span class="card-industry-tag" style="position:static;">${escapeHtml(item.industry || 'Cinema')}</span>
+                </div>
+            </div>
+            
+            <div class="card-body-content">
+                <div class="card-title-row">
+                    <h3 class="card-movie-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h3>
+                    <span class="card-movie-year">${escapeHtml(year)}</span>
+                </div>
+                
+                <div class="card-date-row">
+                    <span class="card-date-label">${isOttDate ? 'OTT Launch:' : 'Released:'}</span>
+                    <span class="card-date-val">${escapeHtml(formattedDate)}</span>
+                </div>
+
+                <!-- OTT Platforms List -->
+                <div class="card-ott-providers-row">
+                    ${providerBadges || `<span class="ott-badge generic">OTT Stream</span>`}
+                    ${extraCount}
+                </div>
+
+                ${item.overview ? `<p class="card-synopsis-text" title="${escapeHtml(item.overview)}">${escapeHtml(item.overview)}</p>` : ''}
+
+                <!-- Card Bottom Actions -->
+                <div class="card-bottom-actions">
+                    ${isExists ? `
+                        <button class="btn-card-action in-library" onclick="switchView('jellyfin')" title="Already in your Jellyfin Library">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
+                            <span>In Library</span>
+                        </button>
+                    ` : `
+                        <button class="btn-card-action primary" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Download with AI Copilot">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                            <span>Download</span>
+                        </button>
+                    `}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// ─── TRENDING CONTROLLERS ───
+
+function setTrendingWindowFilter(win) {
+    trendingState.windowFilter = win;
+    trendingState.page = 1;
+
+    document.querySelectorAll('#view-trending .window-pill').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.window === win);
+    });
+
+    loadTrendingMedia(1, true);
+}
+
+function setTrendingTypeFilter(type) {
+    trendingState.typeFilter = type;
+    trendingState.page = 1;
+
+    document.querySelectorAll('#view-trending .jf-tab-btn').forEach(btn => btn.classList.remove('active'));
+    if (type === 'all') document.getElementById('trendTabAll')?.classList.add('active');
+    else if (type === 'movie') document.getElementById('trendTabMovie')?.classList.add('active');
+    else if (type === 'series') document.getElementById('trendTabSeries')?.classList.add('active');
+
+    loadTrendingMedia(1, true);
+}
+
+function setTrendingIndustryFilter(ind) {
+    trendingState.industryFilter = ind;
+    trendingState.page = 1;
+
+    document.querySelectorAll('#view-trending .rel-industry-pill').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.industry === ind);
+    });
+
+    loadTrendingMedia(1, true);
+}
+
+function handleTrendingSearch(val) {
+    if (trendingSearchTimer) clearTimeout(trendingSearchTimer);
+    trendingSearchTimer = setTimeout(() => {
+        trendingState.searchQuery = (val || '').trim();
+        trendingState.page = 1;
+        loadTrendingMedia(1, false);
+    }, 300);
+}
+
+async function loadTrendingMedia(page = 1, updateUrl = true) {
+    trendingState.page = page;
+    const grid = document.getElementById('trendingGrid');
+    if (!grid) return;
+
+    grid.innerHTML = `
+        <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted);">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            <div>Discovering trending OTT media (${trendingState.windowFilter})...</div>
+        </div>
+    `;
+
+    try {
+        const queryParams = new URLSearchParams({
+            window: trendingState.windowFilter,
+            type: trendingState.typeFilter,
+            industry: trendingState.industryFilter,
+            page: String(page),
+            search: trendingState.searchQuery,
+        });
+
+        const res = await fetch(`/api/trending?${queryParams.toString()}`, { credentials: 'include' });
+        const data = await res.json();
+
+        trendingState.items = data.items || [];
+        trendingState.total = data.pagination?.total || 0;
+        trendingState.totalPages = data.pagination?.totalPages || 1;
+
+        const countBadge = document.getElementById('trendCountAll');
+        if (countBadge) countBadge.textContent = trendingState.total || '0';
+
+        if (trendingState.items.length === 0) {
+            grid.innerHTML = `
+                <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
+                    <div style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 4px;">No trending media found</div>
+                    <div style="font-size: 12.5px;">Try switching the time window (3m, 12m, 10y) or resetting industry filters.</div>
+                </div>
+            `;
+            renderTrendingPagination();
+            return;
+        }
+
+        grid.innerHTML = trendingState.items.map(renderMediaCard).join('');
+        renderTrendingPagination();
+    } catch (err) {
+        grid.innerHTML = `
+            <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--accent-rose);">
+                <div>Failed to load trending media: ${escapeHtml(err.message)}</div>
+                <button class="btn-header" style="margin-top: 10px;" onclick="loadTrendingMedia(1, true)">Retry</button>
+            </div>
+        `;
+    }
+}
+
+function renderTrendingPagination() {
+    const bar = document.getElementById('trendingPaginationBar');
+    if (!bar) return;
+
+    if (trendingState.totalPages <= 1) {
+        bar.style.display = 'none';
+        return;
+    }
+
+    bar.style.display = 'flex';
+    const cur = trendingState.page;
+    const total = trendingState.totalPages;
+
+    let pageBtnsHtml = '';
+    const maxVisible = 5;
+    let startPage = Math.max(1, cur - Math.floor(maxVisible / 2));
+    let endPage = Math.min(total, startPage + maxVisible - 1);
+    if (endPage - startPage + 1 < maxVisible) {
+        startPage = Math.max(1, endPage - maxVisible + 1);
+    }
+
+    for (let p = startPage; p <= endPage; p++) {
+        pageBtnsHtml += `
+            <button class="btn-page ${p === cur ? 'active' : ''}" style="${p === cur ? 'background: #ec4899; color: #fff; font-weight: 700; border-color: #ec4899;' : ''}" onclick="loadTrendingMedia(${p}, true)">${p}</button>
+        `;
+    }
+
+    bar.innerHTML = `
+        <button class="btn-page ${cur <= 1 ? 'disabled' : ''}" onclick="loadTrendingMedia(${cur - 1}, true)" ${cur <= 1 ? 'disabled' : ''}>Previous</button>
+        <div style="display: flex; gap: 4px; align-items: center;">
+            ${pageBtnsHtml}
+        </div>
+        <span class="page-indicator" style="font-size: 12px; color: var(--text-muted); margin: 0 4px;">Page ${cur} of ${total} (${trendingState.total} titles)</span>
+        <button class="btn-page ${cur >= total ? 'disabled' : ''}" onclick="loadTrendingMedia(${cur + 1}, true)" ${cur >= total ? 'disabled' : ''}>Next</button>
+    `;
+}
+
+// ─── POPULAR CONTROLLERS ───
+
+function setPopularWindowFilter(win) {
+    popularState.windowFilter = win;
+    popularState.page = 1;
+
+    document.querySelectorAll('#view-popular .window-pill').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.window === win);
+    });
+
+    loadPopularMedia(1, true);
+}
+
+function setPopularTypeFilter(type) {
+    popularState.typeFilter = type;
+    popularState.page = 1;
+
+    document.querySelectorAll('#view-popular .jf-tab-btn').forEach(btn => btn.classList.remove('active'));
+    if (type === 'all') document.getElementById('popTabAll')?.classList.add('active');
+    else if (type === 'movie') document.getElementById('popTabMovie')?.classList.add('active');
+    else if (type === 'series') document.getElementById('popTabSeries')?.classList.add('active');
+
+    loadPopularMedia(1, true);
+}
+
+function setPopularIndustryFilter(ind) {
+    popularState.industryFilter = ind;
+    popularState.page = 1;
+
+    document.querySelectorAll('#view-popular .rel-industry-pill').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.industry === ind);
+    });
+
+    loadPopularMedia(1, true);
+}
+
+function handlePopularSearch(val) {
+    if (popularSearchTimer) clearTimeout(popularSearchTimer);
+    popularSearchTimer = setTimeout(() => {
+        popularState.searchQuery = (val || '').trim();
+        popularState.page = 1;
+        loadPopularMedia(1, false);
+    }, 300);
+}
+
+async function loadPopularMedia(page = 1, updateUrl = true) {
+    popularState.page = page;
+    const grid = document.getElementById('popularGrid');
+    if (!grid) return;
+
+    grid.innerHTML = `
+        <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted);">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            <div>Discovering popular OTT media (${popularState.windowFilter})...</div>
+        </div>
+    `;
+
+    try {
+        const queryParams = new URLSearchParams({
+            window: popularState.windowFilter,
+            type: popularState.typeFilter,
+            industry: popularState.industryFilter,
+            page: String(page),
+            search: popularState.searchQuery,
+        });
+
+        const res = await fetch(`/api/popular?${queryParams.toString()}`, { credentials: 'include' });
+        const data = await res.json();
+
+        popularState.items = data.items || [];
+        popularState.total = data.pagination?.total || 0;
+        popularState.totalPages = data.pagination?.totalPages || 1;
+
+        const countBadge = document.getElementById('popCountAll');
+        if (countBadge) countBadge.textContent = popularState.total || '0';
+
+        if (popularState.items.length === 0) {
+            grid.innerHTML = `
+                <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
+                    <div style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 4px;">No popular media found</div>
+                    <div style="font-size: 12.5px;">Try switching the time window (3m, 12m, 10y) or resetting industry filters.</div>
+                </div>
+            `;
+            renderPopularPagination();
+            return;
+        }
+
+        grid.innerHTML = popularState.items.map(renderMediaCard).join('');
+        renderPopularPagination();
+    } catch (err) {
+        grid.innerHTML = `
+            <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--accent-rose);">
+                <div>Failed to load popular media: ${escapeHtml(err.message)}</div>
+                <button class="btn-header" style="margin-top: 10px;" onclick="loadPopularMedia(1, true)">Retry</button>
+            </div>
+        `;
+    }
+}
+
+function renderPopularPagination() {
+    const bar = document.getElementById('popularPaginationBar');
+    if (!bar) return;
+
+    if (popularState.totalPages <= 1) {
+        bar.style.display = 'none';
+        return;
+    }
+
+    bar.style.display = 'flex';
+    const cur = popularState.page;
+    const total = popularState.totalPages;
+
+    let pageBtnsHtml = '';
+    const maxVisible = 5;
+    let startPage = Math.max(1, cur - Math.floor(maxVisible / 2));
+    let endPage = Math.min(total, startPage + maxVisible - 1);
+    if (endPage - startPage + 1 < maxVisible) {
+        startPage = Math.max(1, endPage - maxVisible + 1);
+    }
+
+    for (let p = startPage; p <= endPage; p++) {
+        pageBtnsHtml += `
+            <button class="btn-page ${p === cur ? 'active' : ''}" style="${p === cur ? 'background: #f59e0b; color: #fff; font-weight: 700; border-color: #f59e0b;' : ''}" onclick="loadPopularMedia(${p}, true)">${p}</button>
+        `;
+    }
+
+    bar.innerHTML = `
+        <button class="btn-page ${cur <= 1 ? 'disabled' : ''}" onclick="loadPopularMedia(${cur - 1}, true)" ${cur <= 1 ? 'disabled' : ''}>Previous</button>
+        <div style="display: flex; gap: 4px; align-items: center;">
+            ${pageBtnsHtml}
+        </div>
+        <span class="page-indicator" style="font-size: 12px; color: var(--text-muted); margin: 0 4px;">Page ${cur} of ${total} (${popularState.total} titles)</span>
+        <button class="btn-page ${cur >= total ? 'disabled' : ''}" onclick="loadPopularMedia(${cur + 1}, true)" ${cur >= total ? 'disabled' : ''}>Next</button>
+    `;
+}
+
+window.setTrendingWindowFilter = setTrendingWindowFilter;
+window.setTrendingTypeFilter = setTrendingTypeFilter;
+window.setTrendingIndustryFilter = setTrendingIndustryFilter;
+window.handleTrendingSearch = handleTrendingSearch;
+window.loadTrendingMedia = loadTrendingMedia;
+
+window.setPopularWindowFilter = setPopularWindowFilter;
+window.setPopularTypeFilter = setPopularTypeFilter;
+window.setPopularIndustryFilter = setPopularIndustryFilter;
+window.handlePopularSearch = handlePopularSearch;
+window.loadPopularMedia = loadPopularMedia;
 
 // ==========================================================================
 // MEDIA MOVER MODULE

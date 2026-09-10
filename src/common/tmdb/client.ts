@@ -898,8 +898,8 @@ export async function discoverIndianOTTReleases(options: {
     const toDate = now.toISOString().split("T")[0];
 
     const ottProviders = "8|119|9|122|337|232|237|220|192";
-    // Bollywood (hi), Tollywood (te), South (ta, ml, kn), Hollywood (en), Bengali (bn)
-    const targetLanguages = options.language || "hi|te|ta|ml|kn|en|bn";
+    // Bollywood (hi), Tollywood (te), South (ta, ml, kn), Hollywood (en), Bengali (bn), K-Drama (ko)
+    const targetLanguages = options.language || "hi|te|ta|ml|kn|en|bn|ko";
 
     console.log(`[TMDB] Discovering OTT movie releases (${fromDate} to ${toDate}, page: ${page}, langs: ${targetLanguages})`);
 
@@ -984,7 +984,7 @@ export async function discoverOTTSeries(options: {
     const toDate = now.toISOString().split("T")[0];
 
     const ottProviders = "8|119|9|122|337|232|237|220|192";
-    const targetLanguages = options.language || "hi|te|ta|ml|kn|en|bn";
+    const targetLanguages = options.language || "hi|te|ta|ml|kn|en|bn|ko";
 
     console.log(`[TMDB] Discovering OTT series releases (${fromDate} to ${toDate}, page: ${page}, langs: ${targetLanguages})`);
 
@@ -1162,3 +1162,253 @@ export async function syncIndianOTTReleasesToDB(options: {
     console.log(`[TMDB SYNC] OTT sync completed: ${totalFetched} processed (${newlyAdded} added, ${updated} updated)`);
     return { totalFetched, newlyAdded, updated };
 }
+
+// ─── CURATED TRENDING & POPULAR OTT MEDIA DISCOVERY ───
+
+export interface CuratedOTTOptions {
+    mode: "trending" | "popular";
+    window?: "3m" | "12m" | "10y";
+    type?: "all" | "movie" | "series";
+    industry?: "all" | "bollywood" | "tollywood" | "south" | "hollywood" | "k-drama";
+    limit?: number; // up to 100
+    page?: number;
+    search?: string;
+}
+
+const curatedMediaCache = new Map<string, { data: IndianOTTReleaseItem[]; timestamp: number }>();
+const providerMemoryCache = new Map<string, OTTProviderInfo[]>();
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+export async function fetchCuratedOTTMedia(options: CuratedOTTOptions): Promise<{
+    items: IndianOTTReleaseItem[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+}> {
+    const mode = options.mode || "trending";
+    const window = options.window || "3m";
+    const type = options.type || "all";
+    const industry = (options.industry || "all").toLowerCase();
+    const limit = Math.min(100, Math.max(1, options.limit || 100));
+    const page = Math.max(1, options.page || 1);
+    const pageSize = 24;
+    const search = (options.search || "").trim().toLowerCase();
+
+    const cacheKey = `${mode}_${window}_${type}_${industry}`;
+    const now = Date.now();
+
+    let allItems: IndianOTTReleaseItem[] = [];
+
+    const cached = curatedMediaCache.get(cacheKey);
+    if (cached && (now - cached.timestamp < CACHE_TTL_MS)) {
+        allItems = cached.data;
+    } else {
+        // Compute date range
+        const nowDate = new Date();
+        const pastDate = new Date();
+        if (window === "10y") {
+            pastDate.setFullYear(nowDate.getFullYear() - 10);
+        } else if (window === "12m") {
+            pastDate.setFullYear(nowDate.getFullYear() - 1);
+        } else {
+            pastDate.setDate(nowDate.getDate() - 90); // default 3m
+        }
+
+        const fromDate = pastDate.toISOString().split("T")[0];
+        const toDate = nowDate.toISOString().split("T")[0];
+
+        // Language resolution
+        let targetLanguages = "hi|te|ta|ml|kn|en|bn|ko";
+        if (industry === "bollywood") targetLanguages = "hi";
+        else if (industry === "tollywood") targetLanguages = "te";
+        else if (industry === "south") targetLanguages = "te|ta|ml|kn";
+        else if (industry === "hollywood") targetLanguages = "en";
+        else if (industry === "k-drama" || industry === "kdrama") targetLanguages = "ko";
+
+        const ottProviders = "8|119|9|122|337|232|237|220|192";
+
+        const sortBy = mode === "popular" 
+            ? (window === "10y" ? "vote_count.desc" : "popularity.desc") 
+            : "popularity.desc";
+
+        const movieParams = (p: number) => ({
+            watch_region: "IN",
+            with_watch_providers: ottProviders,
+            with_original_language: targetLanguages,
+            "primary_release_date.gte": fromDate,
+            "primary_release_date.lte": toDate,
+            sort_by: sortBy,
+            page: p,
+            ...(mode === "popular" && window !== "10y" ? { "vote_count.gte": 5 } : {}),
+            ...(mode === "popular" && window === "10y" ? { "vote_count.gte": 50 } : {}),
+        });
+
+        const tvParams = (p: number) => ({
+            watch_region: "IN",
+            with_watch_providers: ottProviders,
+            with_original_language: targetLanguages,
+            "first_air_date.gte": fromDate,
+            "first_air_date.lte": toDate,
+            sort_by: sortBy,
+            page: p,
+            ...(mode === "popular" && window !== "10y" ? { "vote_count.gte": 5 } : {}),
+            ...(mode === "popular" && window === "10y" ? { "vote_count.gte": 50 } : {}),
+        });
+
+        const rawMovies: any[] = [];
+        const rawTV: any[] = [];
+
+        if (type === "all") {
+            const [m1, m2, m3, t1, t2, t3] = await Promise.all([
+                tmdbFetch("/discover/movie", movieParams(1)),
+                tmdbFetch("/discover/movie", movieParams(2)),
+                tmdbFetch("/discover/movie", movieParams(3)),
+                tmdbFetch("/discover/tv", tvParams(1)),
+                tmdbFetch("/discover/tv", tvParams(2)),
+                tmdbFetch("/discover/tv", tvParams(3)),
+            ]);
+            if (m1?.results) rawMovies.push(...m1.results);
+            if (m2?.results) rawMovies.push(...m2.results);
+            if (m3?.results) rawMovies.push(...m3.results);
+            if (t1?.results) rawTV.push(...t1.results);
+            if (t2?.results) rawTV.push(...t2.results);
+            if (t3?.results) rawTV.push(...t3.results);
+        } else if (type === "movie") {
+            const pages = await Promise.all([
+                tmdbFetch("/discover/movie", movieParams(1)),
+                tmdbFetch("/discover/movie", movieParams(2)),
+                tmdbFetch("/discover/movie", movieParams(3)),
+                tmdbFetch("/discover/movie", movieParams(4)),
+                tmdbFetch("/discover/movie", movieParams(5)),
+            ]);
+            for (const res of pages) {
+                if (res?.results) rawMovies.push(...res.results);
+            }
+        } else if (type === "series") {
+            const pages = await Promise.all([
+                tmdbFetch("/discover/tv", tvParams(1)),
+                tmdbFetch("/discover/tv", tvParams(2)),
+                tmdbFetch("/discover/tv", tvParams(3)),
+                tmdbFetch("/discover/tv", tvParams(4)),
+                tmdbFetch("/discover/tv", tvParams(5)),
+            ]);
+            for (const res of pages) {
+                if (res?.results) rawTV.push(...res.results);
+            }
+        }
+
+        // Transform movies
+        const transformedMovies: IndianOTTReleaseItem[] = rawMovies.map(m => {
+            const { industry: ind } = mapLanguageToIndustry(m.original_language);
+            return {
+                tmdbId: m.id,
+                mediaType: "movie",
+                title: m.title,
+                originalTitle: m.original_title || m.title,
+                originalLanguage: m.original_language || "hi",
+                industry: ind,
+                releaseDate: m.release_date || "",
+                ottReleaseDate: m.release_date || "",
+                year: m.release_date ? m.release_date.slice(0, 4) : "",
+                overview: m.overview || "",
+                posterUrl: getTMDBImageUrl(m.poster_path, "w500"),
+                backdropUrl: getTMDBImageUrl(m.backdrop_path, "original"),
+                rating: m.vote_average || 0,
+                voteCount: m.vote_count || 0,
+                popularity: m.popularity || 0,
+                providers: [],
+            };
+        });
+
+        // Transform TV series
+        const transformedTV: IndianOTTReleaseItem[] = rawTV.map(s => {
+            const { industry: ind } = mapLanguageToIndustry(s.original_language);
+            return {
+                tmdbId: s.id,
+                mediaType: "series",
+                title: s.name,
+                originalTitle: s.original_name || s.name,
+                originalLanguage: s.original_language || "hi",
+                industry: ind,
+                releaseDate: s.first_air_date || "",
+                ottReleaseDate: s.first_air_date || "",
+                year: s.first_air_date ? s.first_air_date.slice(0, 4) : "",
+                overview: s.overview || "",
+                posterUrl: getTMDBImageUrl(s.poster_path, "w500"),
+                backdropUrl: getTMDBImageUrl(s.backdrop_path, "original"),
+                rating: s.vote_average || 0,
+                voteCount: s.vote_count || 0,
+                popularity: s.popularity || 0,
+                providers: [],
+            };
+        });
+
+        let combined = [...transformedMovies, ...transformedTV];
+
+        if (mode === "popular" && window === "10y") {
+            combined.sort((a, b) => (b.voteCount || 0) - (a.voteCount || 0));
+        } else {
+            combined.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+        }
+
+        // Deduplicate & cap to limit (100)
+        const seenIds = new Set<string>();
+        allItems = [];
+        for (const item of combined) {
+            const key = `${item.mediaType}_${item.tmdbId}`;
+            if (!seenIds.has(key)) {
+                seenIds.add(key);
+                allItems.push(item);
+                if (allItems.length >= limit) break;
+            }
+        }
+
+        // Populate watch providers for top items in batches with caching
+        const providerBatch = allItems.slice(0, 50);
+        await Promise.all(
+            providerBatch.map(async (item) => {
+                const pKey = `${item.mediaType}_${item.tmdbId}`;
+                let providers = providerMemoryCache.get(pKey);
+                if (!providers) {
+                    try {
+                        if (item.mediaType === "series") {
+                            providers = await getTVWatchProviders(item.tmdbId);
+                        } else {
+                            providers = await getMovieWatchProviders(item.tmdbId);
+                        }
+                        providerMemoryCache.set(pKey, providers || []);
+                    } catch {
+                        providers = [];
+                    }
+                }
+                item.providers = providers || [];
+            })
+        );
+
+        curatedMediaCache.set(cacheKey, { data: allItems, timestamp: now });
+    }
+
+    // Apply client search query if any
+    let filtered = allItems;
+    if (search) {
+        filtered = allItems.filter(item => 
+            (item.title && item.title.toLowerCase().includes(search)) ||
+            (item.originalTitle && item.originalTitle.toLowerCase().includes(search))
+        );
+    }
+
+    const total = filtered.length;
+    const totalPages = Math.ceil(total / pageSize) || 1;
+    const offset = (page - 1) * pageSize;
+    const pageItems = filtered.slice(offset, offset + pageSize);
+
+    return {
+        items: pageItems,
+        total,
+        page,
+        pageSize,
+        totalPages,
+    };
+}
+
