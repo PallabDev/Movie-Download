@@ -3110,6 +3110,15 @@ let pendingMediaItems = [];
 let mediaStatusPollTimer = null;
 let wasMoveRunning = false;
 
+function isApiSuccessful(res) {
+    if (!res) return false;
+    if (res.success === true) return true;
+    if (res.status === 'ok') return true;
+    if (Array.isArray(res.items) || Array.isArray(res.history) || res.stats) return true;
+    if (res.is_active !== undefined) return true;
+    return false;
+}
+
 async function scanPendingMedia() {
     const tbody = document.getElementById('pendingMediaTableBody');
     if (tbody) {
@@ -3117,14 +3126,17 @@ async function scanPendingMedia() {
     }
 
     const data = await safeApiFetch('/api/media/analyze');
-    if (!data || !data.success) {
-        if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--accent-rose);">${escapeHtml(data?.error || 'Failed to scan media directory')}</td></tr>`;
+    if (!isApiSuccessful(data)) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--accent-rose);">${escapeHtml(data?.error || data?.message || 'Failed to scan media directory')}</td></tr>`;
         return;
     }
 
     pendingMediaItems = data.items || [];
-    const moviesCount = pendingMediaItems.filter(i => i.media_type === 'movie').length;
-    const showsCount = pendingMediaItems.filter(i => i.media_type === 'series_batch' || i.media_type === 'series_episode').length;
+    const moviesCount = pendingMediaItems.filter(i => (i.type || i.media_type) === 'movie').length;
+    const showsCount = pendingMediaItems.filter(i => {
+        const t = i.type || i.media_type;
+        return t === 'series_batch' || t === 'batch_zip' || t === 'episode' || t === 'series_episode';
+    }).length;
 
     // Update metrics
     const pendingCountEl = document.getElementById('metricMediaPendingCount');
@@ -3134,7 +3146,7 @@ async function scanPendingMedia() {
     const showsCountEl = document.getElementById('metricMediaShowsCount');
     if (showsCountEl) showsCountEl.textContent = showsCount;
     const totalSizeEl = document.getElementById('metricMediaTotalSize');
-    if (totalSizeEl) totalSizeEl.textContent = data.summary?.total_size_formatted || '0 MB';
+    if (totalSizeEl) totalSizeEl.textContent = data.total_size_str || data.summary?.total_size_formatted || '0 MB';
 
     // Update sidebar badge
     const badge = document.getElementById('pendingMediaBadge');
@@ -3155,24 +3167,27 @@ function renderPendingMediaTable() {
         return;
     }
 
-    tbody.innerHTML = pendingMediaItems.map((item, idx) => {
+    tbody.innerHTML = pendingMediaItems.map((item) => {
         let typeBadge = '';
-        if (item.media_type === 'movie') {
+        const t = item.type || item.media_type;
+        if (t === 'movie') {
             typeBadge = `<span class="chip quality" style="background: rgba(59, 130, 246, 0.18); color: #60a5fa; border-color: rgba(59, 130, 246, 0.35);">Movie</span>`;
-        } else if (item.media_type === 'series_batch') {
-            typeBadge = `<span class="chip quality" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; border-color: rgba(245, 158, 11, 0.35);">Season Batch ZIP (${item.archive_episodes_count || 0} eps)</span>`;
+        } else if (t === 'batch_zip' || t === 'series_batch') {
+            typeBadge = `<span class="chip quality" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; border-color: rgba(245, 158, 11, 0.35);">Season Batch ZIP (${item.season_folder || 'Season'})</span>`;
         } else {
-            typeBadge = `<span class="chip quality" style="background: rgba(16, 185, 129, 0.18); color: #34d399; border-color: rgba(16, 185, 129, 0.35);">TV Episode (S${String(item.season || 1).padStart(2, '0')}E${String(item.episode || 1).padStart(2, '0')})</span>`;
+            typeBadge = `<span class="chip quality" style="background: rgba(16, 185, 129, 0.18); color: #34d399; border-color: rgba(16, 185, 129, 0.35);">TV Episode (${item.season_folder || 'Episode'})</span>`;
         }
 
         let matchBadge = '';
         if (item.matched_existing_show) {
-            matchBadge = `<span class="chip" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); font-size: 10.5px; margin-right: 6px;">Matched Library Show: ${escapeHtml(item.matched_show_folder)}</span>`;
-        } else if (item.media_type !== 'movie') {
+            matchBadge = `<span class="chip" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); font-size: 10.5px; margin-right: 6px;">Matched Library Show: ${escapeHtml(item.library_show_folder || item.matched_show_folder)}</span>`;
+        } else if (t !== 'movie') {
             matchBadge = `<span class="chip" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.35); font-size: 10.5px; margin-right: 6px;">New Show Folder</span>`;
         }
 
         const safeItemJson = encodeURIComponent(JSON.stringify(item));
+        const previewPath = item.dest_folder || item.dest_rel_preview || item.dest_path;
+        const sizeStr = item.file_size_str || item.size_formatted || 'Unknown';
 
         return `
             <tr>
@@ -3181,11 +3196,11 @@ function renderPendingMediaTable() {
                     <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">Title: ${escapeHtml(item.title || item.file_name)}</div>
                 </td>
                 <td>${typeBadge}</td>
-                <td class="tabular-nums" style="font-size: 12px; color: var(--text-secondary);">${escapeHtml(item.size_formatted)}</td>
+                <td class="tabular-nums" style="font-size: 12px; color: var(--text-secondary);">${escapeHtml(sizeStr)}</td>
                 <td>
                     <div style="font-size: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px;">
                         ${matchBadge}
-                        <span style="font-family: monospace; font-size: 11.5px; color: var(--text-secondary);">${escapeHtml(item.dest_rel_preview)}</span>
+                        <span style="font-family: monospace; font-size: 11.5px; color: var(--text-secondary);">${escapeHtml(previewPath)}</span>
                     </div>
                 </td>
                 <td style="text-align: right;">
@@ -3207,11 +3222,11 @@ async function moveMediaItem(encodedItem) {
             method: 'POST',
             body: JSON.stringify({ items: [item] })
         });
-        if (res && res.success) {
+        if (isApiSuccessful(res)) {
             showToast(res.message || 'Transfer queued safely', 'success');
             startMediaStatusPolling();
         } else {
-            showToast(res?.error || 'Failed to queue move', 'error');
+            showToast(res?.error || res?.message || 'Failed to queue move', 'error');
         }
     } catch (e) {
         showToast(e.message || 'Error parsing media item', 'error');
@@ -3228,11 +3243,11 @@ async function moveAllPendingMedia() {
         method: 'POST',
         body: JSON.stringify({ items: pendingMediaItems })
     });
-    if (res && res.success) {
+    if (isApiSuccessful(res)) {
         showToast(res.message || 'All items queued for background move', 'success');
         startMediaStatusPolling();
     } else {
-        showToast(res?.error || 'Failed to queue moves', 'error');
+        showToast(res?.error || res?.message || 'Failed to queue moves', 'error');
     }
 }
 
@@ -3244,26 +3259,30 @@ function startMediaStatusPolling() {
 
 async function loadMediaStatus() {
     const data = await safeApiFetch('/api/media/status');
-    if (!data || !data.success) return;
+    if (!data) return;
 
-    const status = data.status;
+    // Handles both flat status object and wrapped { status: { ... } }
+    const status = data.is_active !== undefined ? data : (data.status && typeof data.status === 'object' ? data.status : data);
     const card = document.getElementById('activeMoveCard');
-    const isRunning = status.is_running || !!status.current_job;
+    const isRunning = !!status.is_active;
 
-    if (isRunning && status.current_job) {
+    if (isRunning) {
         wasMoveRunning = true;
         if (card) {
             card.style.display = 'block';
-            document.getElementById('activeMoveFileName').textContent = status.current_job.file_name || 'Processing file...';
-            document.getElementById('activeMoveStageLabel').textContent = status.current_job.stage_label || 'Calculating SHA-256 integrity checksum...';
-            document.getElementById('activeMoveSpeedEta').textContent = `${status.current_job.speed_mbps || 0} MB/s`;
+            const fileNameEl = document.getElementById('activeMoveFileName');
+            if (fileNameEl) fileNameEl.textContent = status.current_item || 'Processing transfer...';
+            const stageLabelEl = document.getElementById('activeMoveStageLabel');
+            if (stageLabelEl) stageLabelEl.textContent = status.stage_label || 'Transferring with SHA-256 integrity check...';
+            const speedEtaEl = document.getElementById('activeMoveSpeedEta');
+            if (speedEtaEl) speedEtaEl.textContent = `${status.speed_mbps || 0} MB/s`;
             const stageChip = document.getElementById('activeMoveStageChip');
             if (stageChip) {
-                stageChip.textContent = (status.current_job.stage || 'Copying').toUpperCase();
+                stageChip.textContent = (status.stage || 'Copying').toUpperCase();
             }
             const bar = document.getElementById('activeMoveProgressBar');
             if (bar) {
-                bar.style.width = `${Math.min(100, Math.max(0, status.current_job.progress || 0))}%`;
+                bar.style.width = `${Math.min(100, Math.max(0, status.progress || 0))}%`;
             }
         }
     } else {
@@ -3284,11 +3303,11 @@ async function loadMediaStatus() {
 async function loadMediaHistory() {
     const tbody = document.getElementById('mediaHistoryTableBody');
     if (tbody) {
-        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--text-muted);">Loading audit history...</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--text-muted);"><div class="spinner" style="margin: 0 auto 8px;"></div>Loading audit history...</td></tr>`;
     }
 
     const data = await safeApiFetch('/api/media/history');
-    if (!data || !data.success || !data.history) {
+    if (!isApiSuccessful(data) || !Array.isArray(data.history)) {
         if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--text-muted);">No history records found.</td></tr>`;
         return;
     }
@@ -3300,7 +3319,8 @@ async function loadMediaHistory() {
 
     if (tbody) {
         tbody.innerHTML = data.history.map(row => {
-            const hashShort = row.source_sha256 ? `${row.source_sha256.substring(0, 10)}...${row.source_sha256.substring(58)}` : 'N/A';
+            const hash = row.source_sha256 || row.destination_sha256 || '';
+            const hashShort = hash ? `${hash.substring(0, 8)}...${hash.substring(hash.length - 6)}` : 'Verified';
             const isVerified = row.status === 'moved' || row.status === 'verified';
             const statusBadge = isVerified ?
                 `<span class="chip quality" style="background: rgba(16, 185, 129, 0.18); color: #34d399; border-color: rgba(16, 185, 129, 0.35);">SHA-256 Verified</span>` :
@@ -3308,12 +3328,14 @@ async function loadMediaHistory() {
 
             const dateStr = row.completed_at || row.created_at || '';
             const formattedDate = dateStr ? new Date(dateStr).toLocaleString() : '-';
+            const srcName = row.source_name || (row.source_path ? row.source_path.split('/').pop() : '') || row.source_path;
+            const dstName = row.destination_path ? row.destination_path.replace('/media/library/', '') : '';
 
             return `
                 <tr>
-                    <td style="font-family: monospace; font-size: 12px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(row.source_path)}">${escapeHtml(row.source_path.split('/').pop() || row.source_path)}</td>
-                    <td style="font-family: monospace; font-size: 12px; color: var(--text-secondary); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(row.destination_path)}">${escapeHtml(row.destination_path)}</td>
-                    <td style="font-family: monospace; font-size: 11px; color: var(--text-muted);" title="${escapeHtml(row.source_sha256 || '')}">${escapeHtml(hashShort)}</td>
+                    <td style="font-family: monospace; font-size: 12px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(row.source_path)}">${escapeHtml(srcName)}</td>
+                    <td style="font-family: monospace; font-size: 12px; color: var(--text-secondary); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(row.destination_path)}">${escapeHtml(dstName || row.destination_path)}</td>
+                    <td style="font-family: monospace; font-size: 11px; color: var(--text-muted);" title="${escapeHtml(hash)}">${escapeHtml(hashShort)}</td>
                     <td>${statusBadge}</td>
                     <td style="font-size: 12px; color: var(--text-muted);">${escapeHtml(formattedDate)}</td>
                 </tr>
@@ -3333,8 +3355,8 @@ async function loadOptimizerData() {
     const queueTbody = document.getElementById('optimizerQueueTableBody');
 
     const data = await safeApiFetch('/api/optimize/list');
-    if (!data || !data.success) {
-        if (unoptTbody) unoptTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 20px; color: var(--accent-rose);">${escapeHtml(data?.error || 'Failed to load library optimization data')}</td></tr>`;
+    if (!isApiSuccessful(data)) {
+        if (unoptTbody) unoptTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 20px; color: var(--accent-rose);">${escapeHtml(data?.error || data?.message || 'Failed to load library optimization data')}</td></tr>`;
         return;
     }
 
@@ -3363,8 +3385,8 @@ async function loadOptimizerData() {
         } else {
             unoptTbody.innerHTML = unoptimizedMediaItems.map(item => {
                 const height = item.height ? `${item.height}p` : 'Unknown';
-                const sizeMb = Math.round(item.size / (1024 * 1024));
-                const sizeStr = sizeMb > 1024 ? `${(sizeMb / 1024).toFixed(1)} GB` : `${sizeMb} MB`;
+                const sizeMb = Math.round((item.size || 0) / (1024 * 1024));
+                const sizeStr = item.size_str || (sizeMb > 1024 ? `${(sizeMb / 1024).toFixed(1)} GB` : `${sizeMb} MB`);
                 const isAlreadyQueued = data.active_by_path && !!data.active_by_path[item.path];
 
                 return `
@@ -3446,11 +3468,11 @@ async function loadOptimizerData() {
 async function triggerOptimizerScan() {
     showToast('Triggering library scan in background...', 'info');
     const res = await safeApiFetch('/api/optimize/scan', { method: 'POST' });
-    if (res && res.success) {
+    if (isApiSuccessful(res)) {
         showToast(res.message || 'Library scan started', 'success');
         startOptimizerPolling();
     } else {
-        showToast(res?.error || 'Failed to start library scan', 'error');
+        showToast(res?.error || res?.message || 'Failed to start library scan', 'error');
     }
 }
 
@@ -3462,12 +3484,12 @@ async function queueOptimization(encodedPath) {
             method: 'POST',
             body: JSON.stringify({ files: [path] })
         });
-        if (res && res.success) {
+        if (isApiSuccessful(res)) {
             showToast(res.message || 'Queued for 720p H.264 optimization', 'success');
             loadOptimizerData();
             startOptimizerPolling();
         } else {
-            showToast(res?.error || 'Failed to queue file', 'error');
+            showToast(res?.error || res?.message || 'Failed to queue file', 'error');
         }
     } catch (e) {
         showToast(e.message, 'error');
@@ -3485,28 +3507,28 @@ async function queueAllUnoptimized() {
         method: 'POST',
         body: JSON.stringify({ files: paths })
     });
-    if (res && res.success) {
+    if (isApiSuccessful(res)) {
         showToast(res.message || `Queued ${paths.length} files`, 'success');
         loadOptimizerData();
         startOptimizerPolling();
     } else {
-        showToast(res?.error || 'Failed to queue files', 'error');
+        showToast(res?.error || res?.message || 'Failed to queue files', 'error');
     }
 }
 
 async function cancelOptimizerJob(jobId) {
     const res = await safeApiFetch(`/api/optimize/cancel/${encodeURIComponent(jobId)}`, { method: 'POST' });
-    if (res && res.success) {
+    if (isApiSuccessful(res)) {
         showToast(res.message || 'Job cancelled', 'info');
         loadOptimizerData();
     } else {
-        showToast(res?.error || 'Failed to cancel job', 'error');
+        showToast(res?.error || res?.message || 'Failed to cancel job', 'error');
     }
 }
 
 async function clearOptimizerHistory() {
     const res = await safeApiFetch('/api/optimize/clear-history', { method: 'POST' });
-    if (res && res.success) {
+    if (isApiSuccessful(res)) {
         showToast('Optimization history cleared', 'success');
         loadOptimizerData();
     }
@@ -3520,10 +3542,10 @@ function startOptimizerPolling() {
 
 async function loadOptimizerStatus() {
     const data = await safeApiFetch('/api/optimize/status');
-    if (!data || !data.success) return;
+    if (!data) return;
 
     const banner = document.getElementById('optimizerScannerBanner');
-    const status = data.status;
+    const status = data.scan_status || (data.status && typeof data.status === 'object' ? data.status : data);
 
     if (status && status.is_scanning) {
         if (banner) banner.style.display = 'block';
@@ -3536,7 +3558,6 @@ async function loadOptimizerStatus() {
     } else {
         if (banner) banner.style.display = 'none';
         if (optimizerPollTimer && (!status || !status.is_scanning)) {
-            // Still keep polling if there are active queue jobs
             loadOptimizerData();
         }
     }

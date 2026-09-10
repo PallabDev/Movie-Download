@@ -1416,10 +1416,13 @@ async function proxyMediaManager(res: express.Response, path: string, options: R
             headers: { "Content-Type": "application/json" },
             ...options,
         });
-        const data = await response.json().catch(() => ({}));
+        const data: any = await response.json().catch(() => ({}));
+        if (response.ok && data && typeof data === 'object') {
+            data.success = (data.status !== 'error');
+        }
         res.status(response.status).json(data);
     } catch (err: any) {
-        res.status(502).json({ error: `Media Manager offline or unreachable: ${err.message}` });
+        res.status(502).json({ success: false, error: `Media Manager offline or unreachable: ${err.message}` });
     }
 }
 
