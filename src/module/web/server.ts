@@ -2029,6 +2029,8 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         </div>
                     </div>
                 </div>
+            </section>
+
             <!-- VIEW: MEDIA MOVER & SAFE INGEST -->
             <section class="view-container ${activeView === 'media' ? 'active' : ''}" id="view-media">
                 <div class="download-station-wrap">
