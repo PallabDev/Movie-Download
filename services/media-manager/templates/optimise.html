@@ -1,0 +1,655 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<!-- Sleek Compact Page Header -->
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 12px;">
+  <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+    <h1 style="font-size: 1.65rem; margin-bottom: 0;">Optimise Library</h1>
+    <span class="pill" style="font-size: 0.78rem;">
+      <!-- Tabler icon: cpu -->
+      <svg class="icon" style="width: 14px; height: 14px;" viewBox="0 0 24 24"><path d="M5 5m0 1a1 1 0 0 1 1 -1h12a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-12a1 1 0 0 1 -1 -1z"/><path d="M9 9h6v6h-6z"/><path d="M3 10h2"/><path d="M3 14h2"/><path d="M10 3v2"/><path d="M14 3v2"/><path d="M21 10h-2"/><path d="M21 14h-2"/><path d="M14 21v-2"/><path d="M10 21v-2"/></svg>
+      Dedicated 720p Worker
+    </span>
+    <span id="socket-badge" class="pill" style="transition: all 0.3s ease; font-size: 0.78rem;">
+      <i id="socket-dot" class="status-dot"></i>
+      <span id="socket-state">Connecting…</span>
+    </span>
+  </div>
+  <div>
+    <form method="post" action="/optimise/scan" id="form-rescan" style="margin: 0;">
+      <button type="submit" class="btn-secondary small" id="btn-rescan" title="Scan disk for new and modified media in background chunks" style="display: inline-flex; align-items: center; gap: 6px;">
+        <!-- Tabler icon: refresh -->
+        <svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+        <span>Rescan Library</span>
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- Background Scanner Banner -->
+<div id="scan-banner" class="scanner-banner" style="{% if not scan_status.is_scanning %}display: none;{% endif %} margin-bottom: 18px;">
+  <div style="flex: 1;">
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <!-- Tabler icon: loader-2 -->
+        <svg class="icon" style="color: var(--accent-cyan); animation: spin 1.5s linear infinite;" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"/></svg>
+        <strong style="color: #ffffff;">Processing library in background chunks:</strong>
+        <span id="scan-stats-text" style="color: var(--text-muted);">
+          Chunk <span id="scan-chunk">{{ scan_status.current_chunk }}</span>/<span id="scan-total-chunks">{{ scan_status.total_chunks }}</span> 
+          (<span id="scan-scanned">{{ scan_status.scanned }}</span> / <span id="scan-total">{{ scan_status.total }}</span> files)
+        </span>
+      </div>
+      <span id="scan-percent-text" style="font-weight: 700; color: var(--accent-cyan); font-family: 'JetBrains Mono', monospace;">
+        {{ scan_status.percent }}%
+      </span>
+    </div>
+    <div class="progress" style="height: 8px;">
+      <i id="scan-progress-bar" style="width: {{ scan_status.percent }}%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-indigo));"></i>
+    </div>
+    <div style="margin-top: 6px; font-size: 0.8rem; color: var(--text-dim); display: flex; align-items: center; gap: 6px;">
+      <span>Probing:</span>
+      <span id="scan-current-file" class="path" style="color: var(--text-muted);">{{ scan_status.current_file or 'Starting...' }}</span>
+    </div>
+  </div>
+</div>
+
+<!-- Navigation Tabs -->
+<div class="tabs" role="tablist">
+  <button type="button" class="tab active" data-tab="not-optimised" id="tab-btn-not-opt" role="tab">
+    <!-- Tabler icon: sparkles -->
+    <svg class="icon" style="width: 17px; height: 17px; color: var(--accent-cyan);" viewBox="0 0 24 24"><path d="M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm0 -12a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm-7 12a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z"/></svg>
+    <span>Needs Optimisation</span>
+    <span class="badge" id="tab-not-opt-count">{{ not_optimised|length }}</span>
+  </button>
+  <button type="button" class="tab" data-tab="already-optimised" id="tab-btn-already-opt" role="tab">
+    <!-- Tabler icon: circle-check -->
+    <svg class="icon" style="width: 17px; height: 17px; color: var(--accent-emerald);" viewBox="0 0 24 24"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M9 12l2 2l4 -4"/></svg>
+    <span>Already Optimised</span>
+    <span class="badge" id="tab-already-opt-count">{{ already_optimised|length }}</span>
+  </button>
+  <button type="button" class="tab" data-tab="jobs" id="tab-btn-jobs" role="tab">
+    <!-- Tabler icon: list-details -->
+    <svg class="icon" style="width: 17px; height: 17px; color: var(--accent-amber);" viewBox="0 0 24 24"><path d="M13 5h8"/><path d="M13 9h5"/><path d="M13 15h8"/><path d="M13 19h5"/><path d="M3 4m0 1a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1z"/><path d="M3 14m0 1a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1z"/></svg>
+    <span>Queue & History</span>
+    <span class="badge" id="tab-jobs-count">{{ jobs|length }}</span>
+  </button>
+</div>
+
+<!-- ========================================== -->
+<!-- Section 1: Needs Optimisation (Tab Pane)   -->
+<!-- ========================================== -->
+<section id="pane-not-optimised" class="card tab-pane active">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+    <div>
+      <h2>Videos Above 720p ({{ not_optimised|length }})</h2>
+      <p class="lead">Select high-resolution videos (1080p, 2K, 4K) to queue them for lightweight 720p conversion.</p>
+    </div>
+  </div>
+
+  <form method="post" action="/optimise" id="form-optimise">
+    {% if not_optimised %}
+      <div class="button-row">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; font-size: 0.88rem;">
+            <input type="checkbox" id="select-all-not-opt">
+            <span id="select-all-label">Select All ({{ not_optimised|length }})</span>
+          </label>
+          <small style="color: var(--text-dim);" class="hide-mobile">Originals are safely backed up before FFmpeg runs.</small>
+        </div>
+        <button type="submit" id="btn-submit-opt">
+          <!-- Tabler icon: player-play -->
+          <svg class="icon" viewBox="0 0 24 24"><path d="M7 4v16l13 -8z"/></svg>
+          <span>Optimise Selected Videos</span>
+        </button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 44px; text-align: center;"></th>
+              <th>File Name</th>
+              <th>Resolution</th>
+              <th class="hide-mobile">Codec</th>
+              <th>Size</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in not_optimised %}
+              {% set active = active_by_path.get(item.path|string) %}
+              <tr>
+                <td style="text-align: center;">
+                  {% if not active %}
+                    <input class="checkbox-opt-file" aria-label="Select {{ item.relative }}" type="checkbox" name="files" value="{{ item.relative }}">
+                  {% endif %}
+                </td>
+                <td class="path-cell">
+                  <div style="font-weight: 600; color: #ffffff; line-height: 1.35; font-size: 0.9rem;">
+                    {{ item.relative.name }}
+                  </div>
+                  {% if item.relative.parent and item.relative.parent|string != '.' %}
+                    <div style="font-size: 0.76rem; color: var(--text-dim); margin-top: 2px; font-family: 'JetBrains Mono', monospace;">
+                      {{ item.relative.parent }}
+                    </div>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if item.height and item.height >= 2160 %}
+                    <span class="res-badge res-4k">4K UHD ({{ item.width }}×{{ item.height }})</span>
+                  {% elif item.height and item.height >= 1080 %}
+                    <span class="res-badge res-1080p">1080p FHD ({{ item.width }}×{{ item.height }})</span>
+                  {% elif item.width and item.height %}
+                    <span class="res-badge res-other">{{ item.width }}×{{ item.height }}</span>
+                  {% else %}
+                    <span class="res-badge res-other">—</span>
+                  {% endif %}
+                </td>
+                <td class="hide-mobile">
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; color: var(--text-muted); text-transform: uppercase;">
+                    {{ item.codec }}
+                  </span>
+                </td>
+                <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.84rem; white-space: nowrap;">
+                  {{ item.size|filesizeformat }}
+                </td>
+                <td>
+                  {% if active %}
+                    <span class="pill"><i class="status-dot pulse"></i> {{ active.status }}</span>
+                  {% else %}
+                    <span style="color: var(--text-dim); font-size: 0.84rem; font-weight: 600;">Ready</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div style="text-align: center; padding: 48px 16px; color: var(--text-muted);">
+        <!-- Tabler icon: circle-check -->
+        <svg class="icon" style="width: 48px; height: 48px; color: var(--accent-emerald); margin-bottom: 12px;" viewBox="0 0 24 24"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M9 12l2 2l4 -4"/></svg>
+        <p style="font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-bottom: 4px;">All media files are 720p or lower</p>
+        <p style="font-size: 0.9rem; color: var(--text-dim);">No video files currently require 720p optimisation.</p>
+      </div>
+    {% endif %}
+  </form>
+</section>
+
+<!-- ========================================== -->
+<!-- Section 2: Already Optimised (Tab Pane)    -->
+<!-- ========================================== -->
+<section id="pane-already-optimised" class="card tab-pane">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+    <div>
+      <h2>Already Optimised & Compatible ({{ already_optimised|length }})</h2>
+      <p class="lead">HEVC/H.265 videos and 720p-or-lower media files that do not require transcoding.</p>
+    </div>
+  </div>
+
+  {% if already_optimised %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>File Name</th>
+            <th>Resolution</th>
+            <th class="hide-mobile">Codec</th>
+            <th>Size</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in already_optimised %}
+            <tr>
+              <td class="path-cell">
+                <div style="font-weight: 600; color: #ffffff; line-height: 1.35; font-size: 0.9rem;">
+                  {{ item.relative.name }}
+                </div>
+                {% if item.relative.parent and item.relative.parent|string != '.' %}
+                  <div style="font-size: 0.76rem; color: var(--text-dim); margin-top: 2px; font-family: 'JetBrains Mono', monospace;">
+                    {{ item.relative.parent }}
+                  </div>
+                {% endif %}
+              </td>
+              <td>
+                {% if item.video and item.codec and item.codec|lower in ['hevc', 'h265', 'x265', 'av1', 'vp9'] %}
+                  {% if item.height and item.height >= 2160 %}
+                    <span class="res-badge res-4k" style="background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border-color: rgba(16, 185, 129, 0.3);">4K HEVC</span>
+                  {% elif item.height and item.height >= 1080 %}
+                    <span class="res-badge res-1080p" style="background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border-color: rgba(16, 185, 129, 0.3);">1080p HEVC</span>
+                  {% elif item.height %}
+                    <span class="res-badge res-720p">{{ item.height }}p HEVC</span>
+                  {% else %}
+                    <span class="res-badge res-720p">HEVC</span>
+                  {% endif %}
+                {% elif item.video and item.height and item.height <= 720 %}
+                  <span class="res-badge res-720p">720p ({{ item.width }}×{{ item.height }})</span>
+                {% elif item.video %}
+                  <span class="res-badge res-720p">≤720p</span>
+                {% else %}
+                  <span class="res-badge res-other">Non-video</span>
+                {% endif %}
+              </td>
+              <td class="hide-mobile">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; color: var(--text-muted); text-transform: uppercase;">
+                  {{ item.codec }}
+                </span>
+              </td>
+              <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.84rem; white-space: nowrap;">
+                {{ item.size|filesizeformat }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div style="text-align: center; padding: 36px 16px; color: var(--text-muted);">
+      <p style="color: var(--text-muted); margin-top: 12px;">No verified files found.</p>
+    </div>
+  {% endif %}
+</section>
+
+<!-- ========================================== -->
+<!-- Section 3: Queue & History (Tab Pane)      -->
+<!-- ========================================== -->
+<section id="pane-jobs" class="card tab-pane">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <h2 style="margin-bottom: 0;">Worker Queue & History (<span id="jobs-count-title">{{ jobs|length }}</span>)</h2>
+      <div class="pill" style="font-size: 0.76rem;">
+        <!-- Tabler icon: shield -->
+        <svg class="icon" style="width: 14px; height: 14px;" viewBox="0 0 24 24"><path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"/></svg>
+        Crash-resilient recovery
+      </div>
+    </div>
+    <div id="queue-header-actions" style="display: {% if jobs %}flex{% else %}none{% endif %}; align-items: center; gap: 8px; flex-wrap: wrap;">
+      <button type="button" id="btn-clear-history" class="small btn-secondary" title="Clear completed and failed jobs from history" style="font-size: 0.8rem; padding: 6px 12px; display: inline-flex; align-items: center; gap: 6px;">
+        <!-- Tabler icon: checklist -->
+        <svg class="icon" style="width: 14px; height: 14px;" viewBox="0 0 24 24"><path d="M9.615 20h-2.615a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v8"/><path d="M14 19l2 2l4 -4"/><path d="M9 8h4"/><path d="M9 12h2"/></svg>
+        <span>Clear History</span>
+      </button>
+      <button type="button" id="btn-clear-all" class="small" title="Cancel and remove all jobs" style="font-size: 0.8rem; padding: 6px 12px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; border-radius: var(--radius-sm);">
+        <!-- Tabler icon: x -->
+        <svg class="icon" style="width: 14px; height: 14px;" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>
+        <span>Clear Entire Queue</span>
+      </button>
+    </div>
+  </div>
+  <p class="lead" style="font-size: 0.86rem; color: var(--text-dim); margin-bottom: 14px;">
+    If interrupted or cancelled, the worker safely restores the original video file and discards temporary transcode files.
+  </p>
+
+  <div id="jobs-table-container">
+    {% if jobs %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="min-width: 150px;">Status</th>
+              <th>File Path</th>
+              <th class="hide-mobile">Detail / Time</th>
+              <th style="text-align: right;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="jobs-table-body">
+            {% for job in jobs %}
+              <tr id="job-row-{{ job.id }}" class="job-row" data-job-id="{{ job.id }}">
+                <td>
+                  <span class="status {{ job.status }} job-status" data-job-id="{{ job.id }}">
+                    {% if job.status == 'completed' %}
+                      <!-- Tabler icon: circle-check -->
+                      <svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M9 12l2 2l4 -4"/></svg>
+                    {% elif job.status == 'failed' %}
+                      <!-- Tabler icon: alert-triangle -->
+                      <svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z"/><path d="M12 16h.01"/></svg>
+                    {% else %}
+                      <i class="status-dot pulse"></i>
+                    {% endif %}
+                    <span>{{ job.status }}</span>
+                  </span>
+                  <div class="progress">
+                    <i class="job-progress" data-job-id="{{ job.id }}" style="width: {{ job.progress }}%"></i>
+                  </div>
+                  <small class="job-percent" data-job-id="{{ job.id }}" style="font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; color: var(--text-dim);">
+                    {{ job.progress|round|int }}%
+                  </small>
+                </td>
+                <td class="path-cell">
+                  <div style="font-weight: 600; color: #ffffff; line-height: 1.35; font-size: 0.88rem;">
+                    {{ job.source_path.split('/')[-1] }}
+                  </div>
+                  <div style="font-size: 0.76rem; color: var(--text-dim); margin-top: 2px; font-family: 'JetBrains Mono', monospace;">
+                    {{ job.source_path }}
+                  </div>
+                </td>
+                <td class="hide-mobile job-detail" data-job-id="{{ job.id }}" style="font-size: 0.82rem; color: var(--text-muted);">
+                  {{ job.error or job.created_at }}
+                </td>
+                <td style="text-align: right;">
+                  <div style="display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px;">
+                    {% if job.status in ('completed', 'failed') %}
+                      <button type="button" class="small btn-secondary btn-job-action" data-job-id="{{ job.id }}" data-action="clear" title="Clear from history" style="color: var(--text-muted); border-color: var(--border-subtle); padding: 4px 10px; display: inline-flex; align-items: center; gap: 4px;">
+                        <!-- Tabler icon: trash -->
+                        <svg class="icon" style="width: 13px; height: 13px;" viewBox="0 0 24 24"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>
+                        <span>Clear</span>
+                      </button>
+                    {% else %}
+                      <button type="button" class="small btn-secondary btn-job-action" data-job-id="{{ job.id }}" data-action="cancel" title="Cancel optimisation" style="color: #f87171; border-color: rgba(239, 68, 68, 0.3); padding: 4px 10px; display: inline-flex; align-items: center; gap: 4px;">
+                        <!-- Tabler icon: x -->
+                        <svg class="icon" style="width: 13px; height: 13px;" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>
+                        <span>Cancel</span>
+                      </button>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div style="text-align: center; padding: 36px 16px; color: var(--text-muted);" id="queue-empty-msg">
+        <!-- Tabler icon: list-check -->
+        <svg class="icon" style="width: 44px; height: 44px; color: var(--accent-cyan); margin-bottom: 10px;" viewBox="0 0 24 24"><path d="M3.5 5.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 11.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 17.5l1.5 1.5l2.5 -2.5"/><path d="M11 6l9 0"/><path d="M11 12l9 0"/><path d="M11 18l9 0"/></svg>
+        <p style="font-size: 1rem; font-weight: 600; color: #ffffff; margin-bottom: 4px;">The queue is currently empty</p>
+        <p style="font-size: 0.86rem; color: var(--text-dim);">Queue videos from the "Needs Optimisation" tab above.</p>
+      </div>
+    {% endif %}
+  </div>
+</section>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  // Ensure page always opens cleanly at the very top (Fix 2)
+  window.scrollTo(0, 0);
+
+  // Tab Switching Functionality (No anchor jumps / no auto-scrolling)
+  function switchTab(tabName) {
+    if (!tabName) return;
+
+    // Update tab buttons
+    document.querySelectorAll('.tabs .tab').forEach(btn => {
+      if (btn.getAttribute('data-tab') === tabName) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+
+    // Update tab panes
+    const paneId = 'pane-' + tabName;
+    document.querySelectorAll('.tab-pane').forEach(pane => {
+      if (pane.id === paneId) {
+        pane.classList.add('active');
+        pane.style.display = 'block';
+      } else {
+        pane.classList.remove('active');
+        pane.style.display = 'none';
+      }
+    });
+  }
+
+  // Attach tab click events
+  document.querySelectorAll('.tabs .tab').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const tabName = btn.getAttribute('data-tab');
+      switchTab(tabName);
+    });
+  });
+
+  // Check URL hash if specified (without anchor scrolling)
+  const initialHash = window.location.hash.replace('#', '').replace('pane-', '');
+  if (initialHash && document.getElementById('pane-' + initialHash)) {
+    switchTab(initialHash);
+  } else {
+    switchTab('not-optimised');
+  }
+
+  // Select All functionality
+  const selectAll = document.getElementById('select-all-not-opt');
+  if (selectAll) {
+    selectAll.addEventListener('change', function() {
+      document.querySelectorAll('.checkbox-opt-file').forEach(cb => {
+        cb.checked = selectAll.checked;
+      });
+    });
+  }
+
+  // Helper to attach async actions to single job button
+  function attachJobButtonHandler(button) {
+    button.addEventListener('click', function(e) {
+      e.preventDefault();
+      const jobId = this.getAttribute('data-job-id');
+      const action = this.getAttribute('data-action');
+      const isClear = action === 'clear';
+
+      showCustomModal({
+        title: isClear ? 'Clear History Item' : 'Cancel Optimisation',
+        message: isClear
+          ? 'Clear this completed item from the history list?'
+          : 'Cancel this job? Original file will be safely restored and temporary data discarded.',
+        confirmText: isClear ? 'Clear' : 'Cancel Job',
+        confirmClass: isClear ? 'btn-secondary' : '',
+        iconBoxClass: isClear ? 'cyan' : '',
+        onConfirm: async () => {
+          try {
+            const res = await fetch(`/optimise/${jobId}/cancel`, {
+              method: 'POST',
+              headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              showToast(data.message || 'Operation successful', 'success');
+              const row = document.getElementById(`job-row-${jobId}`);
+              if (row) {
+                row.style.transition = 'all 0.25s ease';
+                row.style.opacity = '0';
+                row.style.transform = 'translateX(20px)';
+                setTimeout(() => row.remove(), 250);
+              }
+            } else {
+              showToast(data.message || 'Failed to perform action', 'error');
+            }
+          } catch (err) {
+            showToast('Network error while processing request', 'error');
+          }
+        }
+      });
+    });
+  }
+
+  // Bind initial job action buttons
+  document.querySelectorAll('.btn-job-action').forEach(btn => attachJobButtonHandler(btn));
+
+  // "Clear History" button handler
+  const btnClearHistory = document.getElementById('btn-clear-history');
+  if (btnClearHistory) {
+    btnClearHistory.addEventListener('click', () => {
+      showCustomModal({
+        title: 'Clear Optimisation History',
+        message: 'Are you sure you want to clear all completed and failed records from history?',
+        confirmText: 'Clear History',
+        confirmClass: 'btn-secondary',
+        iconBoxClass: 'amber',
+        iconHtml: '<svg class="icon" viewBox="0 0 24 24"><path d="M9.615 20h-2.615a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v8"/><path d="M14 19l2 2l4 -4"/><path d="M9 8h4"/><path d="M9 12h2"/></svg>',
+        onConfirm: async () => {
+          try {
+            const res = await fetch('/optimise/queue/clear-history', {
+              method: 'POST',
+              headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              showToast(data.message || 'History cleared', 'success');
+            }
+          } catch (err) {
+            showToast('Failed to clear history', 'error');
+          }
+        }
+      });
+    });
+  }
+
+  // "Clear Entire Queue" button handler
+  const btnClearAll = document.getElementById('btn-clear-all');
+  if (btnClearAll) {
+    btnClearAll.addEventListener('click', () => {
+      showCustomModal({
+        title: 'Clear Entire Queue & History',
+        message: 'Cancel all active and pending jobs and clear all history? All original video files will be safely retained.',
+        confirmText: 'Clear Everything',
+        confirmClass: '',
+        iconBoxClass: '',
+        iconHtml: '<svg class="icon" viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z"/><path d="M12 16h.01"/></svg>',
+        onConfirm: async () => {
+          try {
+            const res = await fetch('/optimise/queue/clear-all', {
+              method: 'POST',
+              headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              showToast(data.message || 'Queue cleared', 'success');
+            }
+          } catch (err) {
+            showToast('Failed to clear queue', 'error');
+          }
+        }
+      });
+    });
+  }
+
+  // Socket.IO real-time updates
+  if (typeof io !== 'undefined') {
+    const socket = io({ transports: ['websocket', 'polling'] });
+    const badge = document.getElementById('socket-badge');
+    const state = document.getElementById('socket-state');
+    const dot = document.getElementById('socket-dot');
+
+    socket.on('connect', () => {
+      if (badge) {
+        badge.className = 'pill pill-live';
+        if (state) state.textContent = 'Live';
+        if (dot) dot.className = 'status-dot pulse';
+      }
+    });
+
+    socket.on('disconnect', () => {
+      if (badge) {
+        badge.className = 'pill pill-reconnect';
+        if (state) state.textContent = 'Reconnecting…';
+        if (dot) dot.className = 'status-dot';
+      }
+    });
+
+    socket.on('queue_update', (jobs) => {
+      if (!Array.isArray(jobs)) return;
+      const countBadge = document.getElementById('tab-jobs-count');
+      if (countBadge) countBadge.textContent = jobs.length;
+      const jobsCountTitle = document.getElementById('jobs-count-title');
+      if (jobsCountTitle) jobsCountTitle.textContent = jobs.length;
+
+      const headerActions = document.getElementById('queue-header-actions');
+      if (headerActions) {
+        headerActions.style.display = jobs.length > 0 ? 'flex' : 'none';
+      }
+
+      const jobIds = new Set(jobs.map(j => String(j.id)));
+      // Remove deleted job rows from DOM
+      document.querySelectorAll('[id^="job-row-"]').forEach(row => {
+        const id = row.id.replace('job-row-', '');
+        if (!jobIds.has(id)) {
+          row.remove();
+        }
+      });
+
+      const container = document.getElementById('jobs-table-container');
+      if (jobs.length === 0 && container) {
+        container.innerHTML = `
+          <div style="text-align: center; padding: 36px 16px; color: var(--text-muted);" id="queue-empty-msg">
+            <svg class="icon" style="width: 44px; height: 44px; color: var(--accent-cyan); margin-bottom: 10px;" viewBox="0 0 24 24"><path d="M3.5 5.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 11.5l1.5 1.5l2.5 -2.5"/><path d="M3.5 17.5l1.5 1.5l2.5 -2.5"/><path d="M11 6l9 0"/><path d="M11 12l9 0"/><path d="M11 18l9 0"/></svg>
+            <p style="font-size: 1rem; font-weight: 600; color: #ffffff; margin-bottom: 4px;">The queue is currently empty</p>
+            <p style="font-size: 0.86rem; color: var(--text-dim);">Queue videos from the "Needs Optimisation" tab above.</p>
+          </div>
+        `;
+        return;
+      }
+
+      jobs.forEach(job => {
+        let row = document.getElementById(`job-row-${job.id}`);
+        const isDone = job.status === 'completed' || job.status === 'failed';
+        const actionText = isDone ? 'Clear' : 'Cancel';
+        const actionType = isDone ? 'clear' : 'cancel';
+        const btnStyle = isDone
+          ? 'color: var(--text-muted); border-color: var(--border-subtle);'
+          : 'color: #f87171; border-color: rgba(239, 68, 68, 0.3);';
+        const btnIcon = isDone
+          ? '<svg class="icon" style="width: 13px; height: 13px;" viewBox="0 0 24 24"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>'
+          : '<svg class="icon" style="width: 13px; height: 13px;" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>';
+
+        const iconHtml = job.status === 'completed'
+          ? '<svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M9 12l2 2l4 -4"/></svg>'
+          : (job.status === 'failed'
+            ? '<svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z"/><path d="M12 16h.01"/></svg>'
+            : '<i class="status-dot pulse"></i>');
+
+        if (row) {
+          // Update existing row
+          const statusEl = row.querySelector('.job-status');
+          if (statusEl) {
+            statusEl.className = `status ${job.status} job-status`;
+            statusEl.innerHTML = `${iconHtml} <span>${job.status}</span>`;
+          }
+          const progressEl = row.querySelector('.job-progress');
+          if (progressEl) progressEl.style.width = `${job.progress}%`;
+          const percentEl = row.querySelector('.job-percent');
+          if (percentEl) percentEl.textContent = `${Math.round(job.progress)}%`;
+          const detailEl = row.querySelector('.job-detail');
+          if (detailEl) detailEl.textContent = job.error || job.created_at || '';
+
+          // Update action button if status changed between active and completed
+          const actionBtn = row.querySelector('.btn-job-action');
+          if (actionBtn && actionBtn.getAttribute('data-action') !== actionType) {
+            actionBtn.setAttribute('data-action', actionType);
+            actionBtn.style.cssText = `${btnStyle} padding: 4px 10px; display: inline-flex; align-items: center; gap: 4px;`;
+            actionBtn.innerHTML = `${btnIcon} <span>${actionText}</span>`;
+          }
+        }
+      });
+    });
+
+    // Real-time library scan progress listener
+    const scanBanner = document.getElementById('scan-banner');
+    const scanChunk = document.getElementById('scan-chunk');
+    const scanTotalChunks = document.getElementById('scan-total-chunks');
+    const scanScanned = document.getElementById('scan-scanned');
+    const scanTotal = document.getElementById('scan-total');
+    const scanPctText = document.getElementById('scan-percent-text');
+    const scanBar = document.getElementById('scan-progress-bar');
+    const scanFile = document.getElementById('scan-current-file');
+
+    socket.on('library_scan_progress', (data) => {
+      if (!data) return;
+      if (data.is_scanning) {
+        if (scanBanner) scanBanner.style.display = 'flex';
+        if (scanChunk) scanChunk.textContent = data.current_chunk;
+        if (scanTotalChunks) scanTotalChunks.textContent = data.total_chunks;
+        if (scanScanned) scanScanned.textContent = data.scanned;
+        if (scanTotal) scanTotal.textContent = data.total;
+        if (scanPctText) scanPctText.textContent = `${data.percent}%`;
+        if (scanBar) scanBar.style.width = `${data.percent}%`;
+        if (scanFile) scanFile.textContent = data.current_file || '';
+      } else {
+        if (scanBanner) scanBanner.style.display = 'none';
+      }
+    });
+
+    socket.on('library_scan_complete', () => {
+      if (scanBanner) scanBanner.style.display = 'none';
+    });
+  }
+});
+</script>
+{% endblock %}

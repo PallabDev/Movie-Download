@@ -365,6 +365,12 @@ export function createDownloadWorker() {
                 success: true
             });
 
+            // Proactively notify media manager that a new download finished
+            try {
+                const mediaManagerUrl = process.env.MEDIA_MANAGER_URL || "http://localhost:5687";
+                fetch(`${mediaManagerUrl}/api/media/analyze`).catch(() => {});
+            } catch {}
+
             console.log(`[WORKER] Successfully completed download for "${data.title}" -> ${targetPath}`);
 
         } catch (err: any) {

@@ -1406,6 +1406,37 @@ app.get("/api/telegram-logs", requireMod, (req: any, res) => {
     });
 });
 
+// ─── MEDIA MANAGER & OPTIMIZER PROXY ROUTES ───
+
+const MEDIA_MANAGER_URL = process.env.MEDIA_MANAGER_URL || "http://localhost:5687";
+
+async function proxyMediaManager(res: express.Response, path: string, options: RequestInit = {}) {
+    try {
+        const response = await fetch(`${MEDIA_MANAGER_URL}${path}`, {
+            headers: { "Content-Type": "application/json" },
+            ...options,
+        });
+        const data = await response.json().catch(() => ({}));
+        res.status(response.status).json(data);
+    } catch (err: any) {
+        res.status(502).json({ error: `Media Manager offline or unreachable: ${err.message}` });
+    }
+}
+
+app.get("/api/media/health", requireMod, (_req, res) => proxyMediaManager(res, "/api/health"));
+app.get("/api/media/analyze", requireMod, (_req, res) => proxyMediaManager(res, "/api/media/analyze"));
+app.post("/api/media/move", requireMod, (req, res) => proxyMediaManager(res, "/api/media/move", { method: "POST", body: JSON.stringify(req.body) }));
+app.get("/api/media/status", requireMod, (_req, res) => proxyMediaManager(res, "/api/media/status"));
+app.get("/api/media/history", requireMod, (_req, res) => proxyMediaManager(res, "/api/media/history"));
+
+app.get("/api/optimize/list", requireMod, (_req, res) => proxyMediaManager(res, "/api/optimize/list"));
+app.post("/api/optimize/queue", requireMod, (req, res) => proxyMediaManager(res, "/api/optimize/queue", { method: "POST", body: JSON.stringify(req.body) }));
+app.get("/api/optimize/status", requireMod, (_req, res) => proxyMediaManager(res, "/api/optimize/status"));
+app.post("/api/optimize/scan", requireMod, (req, res) => proxyMediaManager(res, "/api/optimize/scan", { method: "POST", body: JSON.stringify(req.body) }));
+app.post("/api/optimize/cancel/:id", requireMod, (req, res) => proxyMediaManager(res, `/api/optimize/cancel/${encodeURIComponent(req.params.id)}`, { method: "POST" }));
+app.post("/api/optimize/clear-history", requireMod, (req, res) => proxyMediaManager(res, "/api/optimize/clear-history", { method: "POST" }));
+app.post("/api/optimize/clear-all", requireMod, (req, res) => proxyMediaManager(res, "/api/optimize/clear-all", { method: "POST" }));
+
 // ─── CHAT AGENT ───
 
 app.post("/api/chat", requireMod, async (req: any, res) => {
@@ -1444,6 +1475,8 @@ const pageRoutes = [
     "/download", "/downloads", "/downlaod",
     "/request", "/requests", "/requested",
     "/jellyfin",
+    "/media", "/medias",
+    "/optimizer", "/optimise",
     "/user", "/users",
     "/admin"
 ];
@@ -1478,6 +1511,8 @@ app.get(pageRoutes, (req, res) => {
     else if (path.startsWith("/download") || path.startsWith("/downlaod")) initialView = "downloads";
     else if (path.startsWith("/request")) initialView = "requested";
     else if (path.startsWith("/jellyfin")) initialView = "jellyfin";
+    else if (path.startsWith("/media")) initialView = "media";
+    else if (path.startsWith("/optimizer") || path.startsWith("/optimise")) initialView = "optimizer";
     else if (path.startsWith("/user") || path.startsWith("/admin")) {
         if (role === "admin") initialView = "admin";
         else initialView = "chat";
@@ -1641,6 +1676,8 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
         chat: "AI Downloader",
         releases: "New Releases",
         downloads: "Download Station",
+        media: "Media Mover",
+        optimizer: "Library Optimizer",
         requested: "Requested Media",
         jellyfin: "Jellyfin Library",
         admin: "User Management"
@@ -1735,6 +1772,16 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <a class="nav-link ${activeView === 'requested' ? 'active' : ''}" href="/request" data-view="requested" onclick="navigateRoute(event, 'requested')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M19 4v16h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2h12z"/><path d="M19 16h-12a2 2 0 0 0 -2 2"/><path d="M9 8h6"/></svg>
                             <span>Requested Media</span>
+                        </a>
+                        <a class="nav-link ${activeView === 'media' ? 'active' : ''}" href="/media" data-view="media" onclick="navigateRoute(event, 'media')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M15 10l4.553 -2.276a1 1 0 0 1 1.447 .894v6.764a1 1 0 0 1 -1.447 .894l-4.553 -2.276v-4z"/><path d="M3 6m0 2a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2z"/></svg>
+                            <span>Media Mover</span>
+                            <span class="nav-badge" id="pendingMediaBadge" style="display:none; background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4);">0</span>
+                        </a>
+                        <a class="nav-link ${activeView === 'optimizer' ? 'active' : ''}" href="/optimizer" data-view="optimizer" onclick="navigateRoute(event, 'optimizer')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11"/></svg>
+                            <span>Optimizer</span>
+                            <span class="nav-badge" id="optimizerPendingBadge" style="display:none; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">0</span>
                         </a>
                         <a class="nav-link ${activeView === 'jellyfin' ? 'active' : ''}" href="/jellyfin" data-view="jellyfin" onclick="navigateRoute(event, 'jellyfin')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
@@ -1977,6 +2024,267 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                                 </thead>
                                 <tbody id="requestedMediaTableBody">
                                     <tr><td colspan="6" style="text-align:center; padding: 20px;">Loading requested media...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            <!-- VIEW: MEDIA MOVER & SAFE INGEST -->
+            <section class="view-container ${activeView === 'media' ? 'active' : ''}" id="view-media">
+                <div class="download-station-wrap">
+                    <!-- Metrics Row -->
+                    <div class="metrics-row">
+                        <div class="metric-card">
+                            <div class="metric-icon-box active">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M15 10l4.553 -2.276a1 1 0 0 1 1.447 .894v6.764a1 1 0 0 1 -1.447 .894l-4.553 -2.276v-4z"/><path d="M3 6m0 2a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2z"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricMediaPendingCount">0</div>
+                                <div class="metric-label">Pending Ingest</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box waiting">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricMediaMoviesCount">0</div>
+                                <div class="metric-label">Movies Ready</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box waiting">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><polyline points="16 3 12 7 8 3"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricMediaShowsCount">0</div>
+                                <div class="metric-label">TV Shows / Zips</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box completed">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricMediaTotalSize">0 GB</div>
+                                <div class="metric-label">Pending Size</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Active Ingest Transfer Banner (Dynamic) -->
+                    <div id="activeMoveCard" class="studio-search-card" style="display:none; border-color: rgba(59, 130, 246, 0.4); background: linear-gradient(180deg, rgba(59, 130, 246, 0.08) 0%, rgba(18, 21, 27, 0.95) 100%);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span class="status-dot online"></span>
+                                <span style="font-weight: 600; font-size: 13.5px; color: #fff;" id="activeMoveFileName">Transferring File...</span>
+                                <span class="chip" id="activeMoveStageChip" style="background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); font-size: 10.5px;">Hashing & Copying</span>
+                            </div>
+                            <div style="font-size: 12px; color: var(--text-secondary);" id="activeMoveSpeedEta">0 MB/s</div>
+                        </div>
+                        <div style="font-size: 11.5px; color: var(--text-secondary); margin-bottom: 8px;" id="activeMoveStageLabel">Calculating SHA-256 integrity checksum...</div>
+                        <div style="height: 6px; width: 100%; background: var(--bg-surface-elevated); border-radius: 3px; overflow: hidden;">
+                            <div id="activeMoveProgressBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #10b981); transition: width 0.2s ease;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Pending Downloads Table -->
+                    <div class="history-card">
+                        <div class="history-toolbar" style="flex-wrap: wrap; gap: 10px;">
+                            <div>
+                                <h2 style="font-size: 15px;">Pending Downloads for Library Ingest</h2>
+                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">
+                                    Safe SHA-256 verified move into Jellyfin storage. Automatically detects existing series folders.
+                                </p>
+                            </div>
+                            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                                <button class="btn-header" onclick="scanPendingMedia()" style="display: inline-flex; align-items: center; gap: 5px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                    Scan Pending
+                                </button>
+                                <button class="btn-primary-action" id="btnMoveAllMedia" onclick="moveAllPendingMedia()" style="padding: 5px 14px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                    Move All to Library
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="data-table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Media Title</th>
+                                        <th>Type</th>
+                                        <th>Size</th>
+                                        <th>Target Jellyfin Path</th>
+                                        <th style="text-align:right;">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="pendingMediaTableBody">
+                                    <tr><td colspan="5" style="text-align:center; padding: 25px; color: var(--text-muted);">Click "Scan Pending" or wait for download completion...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Ingest Move History & Audit Log -->
+                    <div class="history-card" style="margin-top: 16px;">
+                        <div class="history-toolbar">
+                            <div>
+                                <h2 style="font-size: 15px;">Ingest Audit Log</h2>
+                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Completed safe file moves with verified SHA-256 checksums.</p>
+                            </div>
+                            <button class="btn-header" onclick="loadMediaHistory()" title="Refresh Log" style="display: inline-flex; align-items: center; gap: 4px;">
+                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                Refresh
+                            </button>
+                        </div>
+                        <div class="data-table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Source File</th>
+                                        <th>Destination</th>
+                                        <th>SHA-256 Checksum</th>
+                                        <th>Status</th>
+                                        <th>Completed</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="mediaHistoryTableBody">
+                                    <tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--text-muted);">Loading audit history...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW: LIBRARY VIDEO OPTIMIZER -->
+            <section class="view-container ${activeView === 'optimizer' ? 'active' : ''}" id="view-optimizer">
+                <div class="download-station-wrap">
+                    <!-- Metrics Row -->
+                    <div class="metrics-row">
+                        <div class="metric-card">
+                            <div class="metric-icon-box active">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricOptTotalScanned">0</div>
+                                <div class="metric-label">Scanned Media</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box completed">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricOptOptimizedCount">0</div>
+                                <div class="metric-label">Optimized / 720p</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box failed">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricOptNeedsOptCount">0</div>
+                                <div class="metric-label">Oversized (>720p)</div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon-box waiting">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 6 12 12 16 14"/></svg>
+                            </div>
+                            <div>
+                                <div class="metric-value tabular-nums" id="metricOptQueueCount">0</div>
+                                <div class="metric-label">Active Transcodes</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Scanner Status Bar (if scanning) -->
+                    <div id="optimizerScannerBanner" class="studio-search-card" style="display:none; margin-bottom: 12px; border-color: rgba(245, 158, 11, 0.4);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <div class="spinner" style="width:14px;height:14px;margin:0;"></div>
+                                <span style="font-size: 13px; font-weight: 600;" id="scannerStatusText">Scanning Library Media...</span>
+                            </div>
+                            <span style="font-size: 12px; color: var(--text-secondary);" id="scannerProgressPercent">0%</span>
+                        </div>
+                        <div style="height: 4px; width: 100%; background: var(--bg-surface-elevated); border-radius: 2px; overflow: hidden;">
+                            <div id="scannerProgressBar" style="height: 100%; width: 0%; background: var(--accent-amber); transition: width 0.2s ease;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Unoptimized Media List -->
+                    <div class="history-card">
+                        <div class="history-toolbar" style="flex-wrap: wrap; gap: 10px;">
+                            <div>
+                                <h2 style="font-size: 15px;">Oversized Media Candidates (>720p H.264)</h2>
+                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">
+                                    Transcodes to clean 720p H.264 (CRF 22). Preserves backup until verified smaller.
+                                </p>
+                            </div>
+                            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                                <button class="btn-header" onclick="triggerOptimizerScan()" style="display: inline-flex; align-items: center; gap: 5px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                    Scan Library
+                                </button>
+                                <button class="btn-primary-action" id="btnQueueAllUnopt" onclick="queueAllUnoptimized()" style="padding: 5px 14px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; background: linear-gradient(135deg, #f59e0b, #d97706);">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11"/></svg>
+                                    Optimize All Oversized
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="data-table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>File Name</th>
+                                        <th>Resolution</th>
+                                        <th>Codec</th>
+                                        <th>Size</th>
+                                        <th>Status</th>
+                                        <th style="text-align:right;">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="unoptimizedTableBody">
+                                    <tr><td colspan="6" style="text-align:center; padding: 25px; color: var(--text-muted);">Loading library candidates...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Transcoding Queue & History -->
+                    <div class="history-card" style="margin-top: 16px;">
+                        <div class="history-toolbar">
+                            <div>
+                                <h2 style="font-size: 15px;">Active Queue & Transcode History</h2>
+                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Durable FFmpeg background worker jobs.</p>
+                            </div>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="btn-header" style="color: var(--accent-amber);" onclick="clearOptimizerHistory()">Clear Finished</button>
+                                <button class="btn-header" onclick="loadOptimizerData()" title="Refresh Queue" style="display: inline-flex; align-items: center; gap: 4px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                    Refresh
+                                </button>
+                            </div>
+                        </div>
+                        <div class="data-table-wrap">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>File</th>
+                                        <th>Progress</th>
+                                        <th>Original Size</th>
+                                        <th>Transcoded Size</th>
+                                        <th>Status</th>
+                                        <th style="text-align:right;">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="optimizerQueueTableBody">
+                                    <tr><td colspan="6" style="text-align:center; padding: 20px; color: var(--text-muted);">No active optimization jobs.</td></tr>
                                 </tbody>
                             </table>
                         </div>

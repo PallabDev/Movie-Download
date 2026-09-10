@@ -208,6 +208,8 @@ const VIEW_ROUTES = {
     releases: '/releases',
     downloads: '/download',
     requested: '/request',
+    media: '/media',
+    optimizer: '/optimizer',
     jellyfin: '/jellyfin',
     admin: '/user'
 };
@@ -217,6 +219,8 @@ const VIEW_TITLES = {
     releases: 'New Releases',
     downloads: 'Download Station',
     requested: 'Requested Media',
+    media: 'Media Mover',
+    optimizer: 'Library Optimizer',
     jellyfin: 'Jellyfin Library',
     admin: 'User Management'
 };
@@ -229,6 +233,8 @@ function getViewForPath(pathname) {
     if (p.startsWith('/releases') || p.startsWith('/new-releases') || p.startsWith('/ott')) return 'releases';
     if (p.startsWith('/download') || p.startsWith('/downlaod')) return 'downloads';
     if (p.startsWith('/request')) return 'requested';
+    if (p.startsWith('/media')) return 'media';
+    if (p.startsWith('/optimizer') || p.startsWith('/optimise')) return 'optimizer';
     if (p.startsWith('/jellyfin')) return 'jellyfin';
     if (p.startsWith('/user') || p.startsWith('/users') || p.startsWith('/admin')) {
         return userRole === 'admin' ? 'admin' : 'chat';
@@ -275,6 +281,15 @@ function switchView(viewName, updateHistory = true) {
     }
     if (viewName === 'downloads') loadDownloadHistory();
     if (viewName === 'requested') loadRequestedMedia();
+    if (viewName === 'media') {
+        scanPendingMedia();
+        loadMediaStatus();
+        loadMediaHistory();
+    }
+    if (viewName === 'optimizer') {
+        loadOptimizerData();
+        loadOptimizerStatus();
+    }
     if (viewName === 'jellyfin') {
         loadJellyfinStats();
         loadJellyfinLibrary();
@@ -3087,4 +3102,456 @@ window.setReleasesIndustryFilter = setReleasesIndustryFilter;
 window.openTrailerModal = openTrailerModal;
 window.closeTrailerModal = closeTrailerModal;
 window.handleTrailerBackdropClick = handleTrailerBackdropClick;
+
+// ==========================================================================
+// MEDIA MOVER MODULE
+// ==========================================================================
+let pendingMediaItems = [];
+let mediaStatusPollTimer = null;
+let wasMoveRunning = false;
+
+async function scanPendingMedia() {
+    const tbody = document.getElementById('pendingMediaTableBody');
+    if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 25px; color: var(--text-muted);"><div class="spinner" style="margin: 0 auto 8px;"></div>Analyzing pending downloads...</td></tr>`;
+    }
+
+    const data = await safeApiFetch('/api/media/analyze');
+    if (!data || !data.success) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--accent-rose);">${escapeHtml(data?.error || 'Failed to scan media directory')}</td></tr>`;
+        return;
+    }
+
+    pendingMediaItems = data.items || [];
+    const moviesCount = pendingMediaItems.filter(i => i.media_type === 'movie').length;
+    const showsCount = pendingMediaItems.filter(i => i.media_type === 'series_batch' || i.media_type === 'series_episode').length;
+
+    // Update metrics
+    const pendingCountEl = document.getElementById('metricMediaPendingCount');
+    if (pendingCountEl) pendingCountEl.textContent = pendingMediaItems.length;
+    const moviesCountEl = document.getElementById('metricMediaMoviesCount');
+    if (moviesCountEl) moviesCountEl.textContent = moviesCount;
+    const showsCountEl = document.getElementById('metricMediaShowsCount');
+    if (showsCountEl) showsCountEl.textContent = showsCount;
+    const totalSizeEl = document.getElementById('metricMediaTotalSize');
+    if (totalSizeEl) totalSizeEl.textContent = data.summary?.total_size_formatted || '0 MB';
+
+    // Update sidebar badge
+    const badge = document.getElementById('pendingMediaBadge');
+    if (badge) {
+        badge.textContent = pendingMediaItems.length;
+        badge.style.display = pendingMediaItems.length > 0 ? 'inline-block' : 'none';
+    }
+
+    renderPendingMediaTable();
+}
+
+function renderPendingMediaTable() {
+    const tbody = document.getElementById('pendingMediaTableBody');
+    if (!tbody) return;
+
+    if (!pendingMediaItems || pendingMediaItems.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 25px; color: var(--text-muted);">No pending media awaiting ingest. All completed files are moved to Jellyfin!</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = pendingMediaItems.map((item, idx) => {
+        let typeBadge = '';
+        if (item.media_type === 'movie') {
+            typeBadge = `<span class="chip quality" style="background: rgba(59, 130, 246, 0.18); color: #60a5fa; border-color: rgba(59, 130, 246, 0.35);">Movie</span>`;
+        } else if (item.media_type === 'series_batch') {
+            typeBadge = `<span class="chip quality" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; border-color: rgba(245, 158, 11, 0.35);">Season Batch ZIP (${item.archive_episodes_count || 0} eps)</span>`;
+        } else {
+            typeBadge = `<span class="chip quality" style="background: rgba(16, 185, 129, 0.18); color: #34d399; border-color: rgba(16, 185, 129, 0.35);">TV Episode (S${String(item.season || 1).padStart(2, '0')}E${String(item.episode || 1).padStart(2, '0')})</span>`;
+        }
+
+        let matchBadge = '';
+        if (item.matched_existing_show) {
+            matchBadge = `<span class="chip" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); font-size: 10.5px; margin-right: 6px;">Matched Library Show: ${escapeHtml(item.matched_show_folder)}</span>`;
+        } else if (item.media_type !== 'movie') {
+            matchBadge = `<span class="chip" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.35); font-size: 10.5px; margin-right: 6px;">New Show Folder</span>`;
+        }
+
+        const safeItemJson = encodeURIComponent(JSON.stringify(item));
+
+        return `
+            <tr>
+                <td>
+                    <div style="font-weight: 600; color: #fff; font-size: 13px;">${escapeHtml(item.file_name)}</div>
+                    <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">Title: ${escapeHtml(item.title || item.file_name)}</div>
+                </td>
+                <td>${typeBadge}</td>
+                <td class="tabular-nums" style="font-size: 12px; color: var(--text-secondary);">${escapeHtml(item.size_formatted)}</td>
+                <td>
+                    <div style="font-size: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px;">
+                        ${matchBadge}
+                        <span style="font-family: monospace; font-size: 11.5px; color: var(--text-secondary);">${escapeHtml(item.dest_rel_preview)}</span>
+                    </div>
+                </td>
+                <td style="text-align: right;">
+                    <button class="btn-header primary" onclick="moveMediaItem('${safeItemJson}')" style="padding: 4px 10px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;">
+                        <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                        Move
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function moveMediaItem(encodedItem) {
+    try {
+        const item = JSON.parse(decodeURIComponent(encodedItem));
+        showToast(`Queueing move for "${item.file_name}"...`, 'info');
+        const res = await safeApiFetch('/api/media/move', {
+            method: 'POST',
+            body: JSON.stringify({ items: [item] })
+        });
+        if (res && res.success) {
+            showToast(res.message || 'Transfer queued safely', 'success');
+            startMediaStatusPolling();
+        } else {
+            showToast(res?.error || 'Failed to queue move', 'error');
+        }
+    } catch (e) {
+        showToast(e.message || 'Error parsing media item', 'error');
+    }
+}
+
+async function moveAllPendingMedia() {
+    if (!pendingMediaItems || pendingMediaItems.length === 0) {
+        showToast('No pending media files to move', 'info');
+        return;
+    }
+    showToast(`Queueing safe move for all ${pendingMediaItems.length} items...`, 'info');
+    const res = await safeApiFetch('/api/media/move', {
+        method: 'POST',
+        body: JSON.stringify({ items: pendingMediaItems })
+    });
+    if (res && res.success) {
+        showToast(res.message || 'All items queued for background move', 'success');
+        startMediaStatusPolling();
+    } else {
+        showToast(res?.error || 'Failed to queue moves', 'error');
+    }
+}
+
+function startMediaStatusPolling() {
+    if (mediaStatusPollTimer) clearInterval(mediaStatusPollTimer);
+    loadMediaStatus();
+    mediaStatusPollTimer = setInterval(loadMediaStatus, 1000);
+}
+
+async function loadMediaStatus() {
+    const data = await safeApiFetch('/api/media/status');
+    if (!data || !data.success) return;
+
+    const status = data.status;
+    const card = document.getElementById('activeMoveCard');
+    const isRunning = status.is_running || !!status.current_job;
+
+    if (isRunning && status.current_job) {
+        wasMoveRunning = true;
+        if (card) {
+            card.style.display = 'block';
+            document.getElementById('activeMoveFileName').textContent = status.current_job.file_name || 'Processing file...';
+            document.getElementById('activeMoveStageLabel').textContent = status.current_job.stage_label || 'Calculating SHA-256 integrity checksum...';
+            document.getElementById('activeMoveSpeedEta').textContent = `${status.current_job.speed_mbps || 0} MB/s`;
+            const stageChip = document.getElementById('activeMoveStageChip');
+            if (stageChip) {
+                stageChip.textContent = (status.current_job.stage || 'Copying').toUpperCase();
+            }
+            const bar = document.getElementById('activeMoveProgressBar');
+            if (bar) {
+                bar.style.width = `${Math.min(100, Math.max(0, status.current_job.progress || 0))}%`;
+            }
+        }
+    } else {
+        if (card) card.style.display = 'none';
+        if (wasMoveRunning) {
+            wasMoveRunning = false;
+            showToast('Media transfer and SHA-256 verification complete!', 'success');
+            scanPendingMedia();
+            loadMediaHistory();
+        }
+        if (mediaStatusPollTimer && !isRunning) {
+            clearInterval(mediaStatusPollTimer);
+            mediaStatusPollTimer = null;
+        }
+    }
+}
+
+async function loadMediaHistory() {
+    const tbody = document.getElementById('mediaHistoryTableBody');
+    if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--text-muted);">Loading audit history...</td></tr>`;
+    }
+
+    const data = await safeApiFetch('/api/media/history');
+    if (!data || !data.success || !data.history) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--text-muted);">No history records found.</td></tr>`;
+        return;
+    }
+
+    if (data.history.length === 0) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--text-muted);">No completed move records yet.</td></tr>`;
+        return;
+    }
+
+    if (tbody) {
+        tbody.innerHTML = data.history.map(row => {
+            const hashShort = row.source_sha256 ? `${row.source_sha256.substring(0, 10)}...${row.source_sha256.substring(58)}` : 'N/A';
+            const isVerified = row.status === 'moved' || row.status === 'verified';
+            const statusBadge = isVerified ?
+                `<span class="chip quality" style="background: rgba(16, 185, 129, 0.18); color: #34d399; border-color: rgba(16, 185, 129, 0.35);">SHA-256 Verified</span>` :
+                `<span class="chip quality" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; border-color: rgba(245, 158, 11, 0.35);">${escapeHtml(row.status)}</span>`;
+
+            const dateStr = row.completed_at || row.created_at || '';
+            const formattedDate = dateStr ? new Date(dateStr).toLocaleString() : '-';
+
+            return `
+                <tr>
+                    <td style="font-family: monospace; font-size: 12px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(row.source_path)}">${escapeHtml(row.source_path.split('/').pop() || row.source_path)}</td>
+                    <td style="font-family: monospace; font-size: 12px; color: var(--text-secondary); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(row.destination_path)}">${escapeHtml(row.destination_path)}</td>
+                    <td style="font-family: monospace; font-size: 11px; color: var(--text-muted);" title="${escapeHtml(row.source_sha256 || '')}">${escapeHtml(hashShort)}</td>
+                    <td>${statusBadge}</td>
+                    <td style="font-size: 12px; color: var(--text-muted);">${escapeHtml(formattedDate)}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+}
+
+// ==========================================================================
+// LIBRARY OPTIMIZER MODULE
+// ==========================================================================
+let unoptimizedMediaItems = [];
+let optimizerPollTimer = null;
+
+async function loadOptimizerData() {
+    const unoptTbody = document.getElementById('unoptimizedTableBody');
+    const queueTbody = document.getElementById('optimizerQueueTableBody');
+
+    const data = await safeApiFetch('/api/optimize/list');
+    if (!data || !data.success) {
+        if (unoptTbody) unoptTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 20px; color: var(--accent-rose);">${escapeHtml(data?.error || 'Failed to load library optimization data')}</td></tr>`;
+        return;
+    }
+
+    // Update metrics
+    const totalEl = document.getElementById('metricOptTotalScanned');
+    if (totalEl) totalEl.textContent = data.stats?.total_files || 0;
+    const optEl = document.getElementById('metricOptOptimizedCount');
+    if (optEl) optEl.textContent = data.stats?.already_optimised || 0;
+    const needsOptEl = document.getElementById('metricOptNeedsOptCount');
+    if (needsOptEl) needsOptEl.textContent = data.stats?.not_optimised || 0;
+    const queueEl = document.getElementById('metricOptQueueCount');
+    if (queueEl) queueEl.textContent = data.stats?.active_jobs || 0;
+
+    const optBadge = document.getElementById('optimizerPendingBadge');
+    if (optBadge) {
+        optBadge.textContent = data.stats?.not_optimised || 0;
+        optBadge.style.display = (data.stats?.not_optimised || 0) > 0 ? 'inline-block' : 'none';
+    }
+
+    unoptimizedMediaItems = data.not_optimised || [];
+
+    // Render unoptimized candidates
+    if (unoptTbody) {
+        if (unoptimizedMediaItems.length === 0) {
+            unoptTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 25px; color: var(--accent-emerald);">All media files in your library are already 720p or HEVC encoded!</td></tr>`;
+        } else {
+            unoptTbody.innerHTML = unoptimizedMediaItems.map(item => {
+                const height = item.height ? `${item.height}p` : 'Unknown';
+                const sizeMb = Math.round(item.size / (1024 * 1024));
+                const sizeStr = sizeMb > 1024 ? `${(sizeMb / 1024).toFixed(1)} GB` : `${sizeMb} MB`;
+                const isAlreadyQueued = data.active_by_path && !!data.active_by_path[item.path];
+
+                return `
+                    <tr>
+                        <td>
+                            <div style="font-weight: 600; color: #fff; font-size: 13px;">${escapeHtml(item.relative || item.path.split('/').pop())}</div>
+                        </td>
+                        <td><span class="chip quality" style="background: rgba(239, 68, 68, 0.18); color: #f87171; border-color: rgba(239, 68, 68, 0.35);">${escapeHtml(height)}</span></td>
+                        <td><span style="font-family: monospace; font-size: 12px; color: var(--text-secondary);">${escapeHtml(item.codec || 'video')}</span></td>
+                        <td class="tabular-nums" style="font-size: 12px;">${escapeHtml(sizeStr)}</td>
+                        <td>
+                            ${isAlreadyQueued ? 
+                                `<span class="chip quality" style="background: rgba(245, 158, 11, 0.18); color: #fbbf24; border-color: rgba(245, 158, 11, 0.35);">Queued / Running</span>` : 
+                                `<span class="chip quality" style="background: rgba(100, 116, 139, 0.18); color: #94a3b8; border-color: rgba(100, 116, 139, 0.35);">Candidate</span>`}
+                        </td>
+                        <td style="text-align: right;">
+                            ${isAlreadyQueued ? 
+                                `<button class="btn-header" disabled style="opacity: 0.5;">In Queue</button>` : 
+                                `<button class="btn-header primary" onclick="queueOptimization('${encodeURIComponent(item.path)}')" style="padding: 4px 10px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11"/></svg>
+                                    Optimize
+                                </button>`}
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+    }
+
+    // Render active queue & history
+    if (queueTbody) {
+        const jobs = data.jobs || [];
+        if (jobs.length === 0) {
+            queueTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 20px; color: var(--text-muted);">No optimization jobs in queue.</td></tr>`;
+        } else {
+            queueTbody.innerHTML = jobs.map(job => {
+                const origMb = Math.round((job.original_size || 0) / (1024 * 1024));
+                const origStr = origMb > 1024 ? `${(origMb / 1024).toFixed(1)} GB` : `${origMb} MB`;
+                const outMb = job.output_size ? Math.round(job.output_size / (1024 * 1024)) : null;
+                const outStr = outMb ? (outMb > 1024 ? `${(outMb / 1024).toFixed(1)} GB` : `${outMb} MB`) : '-';
+
+                let statusColor = '#94a3b8';
+                if (job.status === 'completed') statusColor = '#34d399';
+                if (job.status === 'running') statusColor = '#60a5fa';
+                if (job.status === 'failed') statusColor = '#f87171';
+
+                const progressPct = Math.round(job.progress || 0);
+
+                return `
+                    <tr>
+                        <td>
+                            <div style="font-weight: 500; font-size: 12.5px; color: #fff; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(job.source_path.split('/').pop() || job.source_path)}</div>
+                        </td>
+                        <td>
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <div style="height: 5px; width: 60px; background: var(--bg-surface-elevated); border-radius: 2px; overflow: hidden;">
+                                    <div style="height: 100%; width: ${progressPct}%; background: ${statusColor};"></div>
+                                </div>
+                                <span class="tabular-nums" style="font-size: 11.5px; color: var(--text-secondary);">${progressPct}%</span>
+                            </div>
+                        </td>
+                        <td class="tabular-nums" style="font-size: 12px; color: var(--text-secondary);">${escapeHtml(origStr)}</td>
+                        <td class="tabular-nums" style="font-size: 12px; color: ${job.status === 'completed' ? '#34d399' : 'var(--text-muted)'};">${escapeHtml(outStr)}</td>
+                        <td>
+                            <span class="chip quality" style="color: ${statusColor}; border-color: ${statusColor}40;">${escapeHtml(job.status)}</span>
+                        </td>
+                        <td style="text-align: right;">
+                            ${job.status === 'running' || job.status === 'queued' ? 
+                                `<button class="btn-header" onclick="cancelOptimizerJob('${job.id}')" style="color: var(--accent-rose); padding: 3px 8px; font-size: 11px;">Cancel</button>` : 
+                                `<button class="btn-header" onclick="cancelOptimizerJob('${job.id}')" style="color: var(--text-muted); padding: 3px 8px; font-size: 11px;">Remove</button>`}
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+    }
+}
+
+async function triggerOptimizerScan() {
+    showToast('Triggering library scan in background...', 'info');
+    const res = await safeApiFetch('/api/optimize/scan', { method: 'POST' });
+    if (res && res.success) {
+        showToast(res.message || 'Library scan started', 'success');
+        startOptimizerPolling();
+    } else {
+        showToast(res?.error || 'Failed to start library scan', 'error');
+    }
+}
+
+async function queueOptimization(encodedPath) {
+    try {
+        const path = decodeURIComponent(encodedPath);
+        showToast('Adding to FFmpeg transcode queue...', 'info');
+        const res = await safeApiFetch('/api/optimize/queue', {
+            method: 'POST',
+            body: JSON.stringify({ files: [path] })
+        });
+        if (res && res.success) {
+            showToast(res.message || 'Queued for 720p H.264 optimization', 'success');
+            loadOptimizerData();
+            startOptimizerPolling();
+        } else {
+            showToast(res?.error || 'Failed to queue file', 'error');
+        }
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+async function queueAllUnoptimized() {
+    if (!unoptimizedMediaItems || unoptimizedMediaItems.length === 0) {
+        showToast('No unoptimized files to queue', 'info');
+        return;
+    }
+    const paths = unoptimizedMediaItems.map(i => i.path);
+    showToast(`Queueing ${paths.length} files for background optimization...`, 'info');
+    const res = await safeApiFetch('/api/optimize/queue', {
+        method: 'POST',
+        body: JSON.stringify({ files: paths })
+    });
+    if (res && res.success) {
+        showToast(res.message || `Queued ${paths.length} files`, 'success');
+        loadOptimizerData();
+        startOptimizerPolling();
+    } else {
+        showToast(res?.error || 'Failed to queue files', 'error');
+    }
+}
+
+async function cancelOptimizerJob(jobId) {
+    const res = await safeApiFetch(`/api/optimize/cancel/${encodeURIComponent(jobId)}`, { method: 'POST' });
+    if (res && res.success) {
+        showToast(res.message || 'Job cancelled', 'info');
+        loadOptimizerData();
+    } else {
+        showToast(res?.error || 'Failed to cancel job', 'error');
+    }
+}
+
+async function clearOptimizerHistory() {
+    const res = await safeApiFetch('/api/optimize/clear-history', { method: 'POST' });
+    if (res && res.success) {
+        showToast('Optimization history cleared', 'success');
+        loadOptimizerData();
+    }
+}
+
+function startOptimizerPolling() {
+    if (optimizerPollTimer) clearInterval(optimizerPollTimer);
+    loadOptimizerStatus();
+    optimizerPollTimer = setInterval(loadOptimizerStatus, 2000);
+}
+
+async function loadOptimizerStatus() {
+    const data = await safeApiFetch('/api/optimize/status');
+    if (!data || !data.success) return;
+
+    const banner = document.getElementById('optimizerScannerBanner');
+    const status = data.status;
+
+    if (status && status.is_scanning) {
+        if (banner) banner.style.display = 'block';
+        const txt = document.getElementById('scannerStatusText');
+        if (txt) txt.textContent = status.current_file ? `Scanning: ${status.current_file}` : 'Discovering library files...';
+        const pctEl = document.getElementById('scannerProgressPercent');
+        if (pctEl) pctEl.textContent = `${status.percent || 0}%`;
+        const bar = document.getElementById('scannerProgressBar');
+        if (bar) bar.style.width = `${status.percent || 0}%`;
+    } else {
+        if (banner) banner.style.display = 'none';
+        if (optimizerPollTimer && (!status || !status.is_scanning)) {
+            // Still keep polling if there are active queue jobs
+            loadOptimizerData();
+        }
+    }
+}
+
+// Expose Media Mover & Optimizer globals for inline onclick
+window.scanPendingMedia = scanPendingMedia;
+window.moveMediaItem = moveMediaItem;
+window.moveAllPendingMedia = moveAllPendingMedia;
+window.loadMediaHistory = loadMediaHistory;
+window.loadOptimizerData = loadOptimizerData;
+window.triggerOptimizerScan = triggerOptimizerScan;
+window.queueOptimization = queueOptimization;
+window.queueAllUnoptimized = queueAllUnoptimized;
+window.cancelOptimizerJob = cancelOptimizerJob;
+window.clearOptimizerHistory = clearOptimizerHistory;
+
 

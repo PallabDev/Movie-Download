@@ -56,6 +56,7 @@ services:
       - INNGEST_BASE_URL=http://movie-inngest:8288
       - INNGEST_EVENT_KEY=
       - INNGEST_SIGNING_KEY=
+      - MEDIA_MANAGER_URL=http://media-manager:5687
     volumes:
       - ./download:/app/download
       - bot-session:/app/bot-session
@@ -74,6 +75,48 @@ services:
     command: ["inngest", "dev", "-u", "http://app:3000/api/inngest", "--host", "0.0.0.0", "--port", "8288"]
     depends_on:
       - app
+
+  media-manager:
+    build:
+      context: ./services/media-manager
+      dockerfile: Dockerfile
+    container_name: movie-media-manager
+    restart: unless-stopped
+    ports:
+      - "5687:5687"
+    environment:
+      - DATABASE_URL=postgresql://movieuser:moviepass@postgres:5432/moviedownloader
+      - DOWNLOAD_ROOT=/media/download
+      - SOURCE_MOVIES_DIR=/media/download/movies
+      - SOURCE_SHOWS_DIR=/media/download/shows
+      - LIBRARY_DIR=/media/library
+      - DEST_MOVIES_DIR=/media/library/Movies
+      - DEST_SHOWS_DIR=/media/library/Shows
+    volumes:
+      - ./download:/media/download
+      - /mnt/resources/media/movies:/media/library
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  media-worker:
+    build:
+      context: ./services/media-manager
+      dockerfile: Dockerfile
+    container_name: movie-media-worker
+    restart: unless-stopped
+    command: ["python3", "worker.py"]
+    environment:
+      - DATABASE_URL=postgresql://movieuser:moviepass@postgres:5432/moviedownloader
+      - LIBRARY_DIR=/media/library
+      - OPTIMISE_DIR=/media/library
+    volumes:
+      - /mnt/resources/media/movies:/media/library
+    depends_on:
+      postgres:
+        condition: service_healthy
+      media-manager:
+        condition: service_started
 
 volumes:
   pgdata:

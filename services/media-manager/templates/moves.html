@@ -1,0 +1,618 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<!-- Sleek Compact Page Header -->
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 12px;">
+  <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+    <h1 style="font-size: 1.65rem; margin-bottom: 0;">Movie Move</h1>
+    <span class="pill" style="font-size: 0.78rem;">
+      <!-- Tabler icon: shield-check -->
+      <svg class="icon" style="width: 14px; height: 14px;" viewBox="0 0 24 24"><path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3"/><path d="M9 12l2 2l4 -4"/></svg>
+      Safe Atomic Transfers
+    </span>
+    <span id="socket-badge" class="pill" style="transition: all 0.3s ease; font-size: 0.78rem;">
+      <i id="socket-dot" class="status-dot"></i>
+      <span id="socket-state">Connecting…</span>
+    </span>
+  </div>
+  <div style="display: flex; align-items: center; gap: 10px;">
+    <button type="button" id="btn-clean-empty" class="btn btn-secondary small" title="Remove all empty folders from source directory" style="display: inline-flex; align-items: center; gap: 6px;">
+      <!-- Tabler icon: folder-minus -->
+      <svg class="icon" style="width: 15px; height: 15px; color: var(--accent-amber);" viewBox="0 0 24 24"><path d="M12 19h-7a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v3.5"/><path d="M16 19h6"/></svg>
+      <span>Clean Empty Folders</span>
+      <span id="empty-folder-badge" class="badge" style="margin-left: 4px; background: rgba(251, 191, 36, 0.2); color: var(--accent-amber); {% if not empty_folders %}display: none;{% endif %}">{{ empty_folders|length }}</span>
+    </button>
+  </div>
+</div>
+
+<!-- Live Active Transfer Progress Banner -->
+<div id="move-banner" class="scanner-banner" style="{% if not move_status.is_active %}display: none;{% endif %} background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(16, 185, 129, 0.15)); border-color: rgba(251, 191, 36, 0.3); margin-bottom: 18px;">
+  <div style="flex: 1;">
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <!-- Tabler icon: arrows-transfer-up-down -->
+        <svg class="icon" style="color: var(--accent-amber); width: 22px; height: 22px; animation: pulse-transfer 1.5s infinite ease-in-out;" viewBox="0 0 24 24"><path d="M7 21v-6"/><path d="M20 6v12"/><path d="M4 18l3 3l3 -3"/><path d="M17 9l3 -3l3 3"/></svg>
+        <div>
+          <span style="font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); font-weight: 700;">Active Transfer</span>
+          <div id="move-file-name" class="path" style="font-weight: 700; color: #ffffff; font-size: 0.96rem;">
+            {{ move_status.current_file or 'Preparing transfer...' }}
+          </div>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span id="move-speed-badge" class="pill" style="color: var(--accent-emerald); background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.3);">
+          <i class="status-dot pulse"></i>
+          <span id="move-speed">{{ move_status.speed_mbps }}</span> MB/s
+        </span>
+        <span id="move-queue-badge" class="pill" style="color: var(--accent-amber); background: rgba(251, 191, 36, 0.15); border-color: rgba(251, 191, 36, 0.3); {% if move_status.queue_length <= 0 %}display: none;{% endif %}">
+          <span id="move-queue-count">{{ move_status.queue_length }}</span> queued
+        </span>
+        <span id="move-percent" style="font-weight: 800; font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; color: var(--accent-amber);">
+          {{ move_status.progress }}%
+        </span>
+      </div>
+    </div>
+
+    <div class="progress" style="height: 8px;">
+      <i id="move-progress-bar" style="width: {{ move_status.progress }}%; background: linear-gradient(90deg, var(--accent-amber), var(--accent-emerald));"></i>
+    </div>
+
+    <div style="margin-top: 6px; font-size: 0.82rem; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
+      <span id="move-stage-label">{{ move_status.stage_label or 'Processing...' }}</span>
+      <span style="font-size: 0.78rem; color: var(--text-dim);">Original deleted only after verified SHA-256 match</span>
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes pulse-transfer {
+  0% { transform: translateY(0); opacity: 1; }
+  50% { transform: translateY(-2px); opacity: 0.7; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+</style>
+
+<div class="tabs" role="tablist">
+  <button type="button" class="tab active" data-tab="not-moved" id="tab-btn-pending" role="tab">
+    <!-- Tabler icon: folder-down -->
+    <svg class="icon" style="width: 17px; height: 17px; color: var(--accent-amber);" viewBox="0 0 24 24"><path d="M12 19h-7a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v3.5"/><path d="M19 16v6"/><path d="M22 19l-3 3l-3 -3"/></svg>
+    <span>Pending Downloads</span>
+    <span class="badge" id="tab-pending-count">{{ files|length }}</span>
+  </button>
+  <button type="button" class="tab" data-tab="moved" id="tab-btn-history" role="tab">
+    <!-- Tabler icon: history -->
+    <svg class="icon" style="width: 17px; height: 17px; color: var(--accent-cyan);" viewBox="0 0 24 24"><path d="M12 8l0 4l2 2"/><path d="M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5"/></svg>
+    <span>Recent Moves (< 1 hr)</span>
+    <span class="badge" id="tab-history-count">{{ history|length }}</span>
+  </button>
+</div>
+
+<!-- Section 1: Pending Downloads -->
+<section id="pane-not-moved" class="card tab-pane active">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+    <div>
+      <h2>Pending Downloads ({{ files|length }})</h2>
+      <p class="lead">Files available under <span class="path">{{ source }}</span>.</p>
+    </div>
+  </div>
+
+  <form method="post" id="form-move">
+    <div id="pending-table-container">
+      {% if files %}
+        <div class="button-row">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; font-size: 0.88rem;">
+              <input type="checkbox" id="select-all-moves">
+              <span id="select-all-label">Select All ({{ files|length }})</span>
+            </label>
+            <small style="color: var(--text-dim);" class="hide-mobile">Source file is deleted only after destination SHA-256 match.</small>
+          </div>
+          <button type="submit" id="btn-submit-move">
+            <!-- Tabler icon: transfer -->
+            <svg class="icon" viewBox="0 0 24 24"><path d="M20 10h-16l5.5 -6"/><path d="M4 14h16l-5.5 6"/></svg>
+            <span>Copy, Verify & Move Selected</span>
+          </button>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 44px; text-align: center;"></th>
+                <th>File Name</th>
+                <th>Size</th>
+              </tr>
+            </thead>
+            <tbody id="pending-tbody">
+              {% for file in files %}
+                <tr>
+                  <td style="text-align: center;">
+                    <input class="checkbox-move-file" aria-label="Select {{ file.relative_to(source) }}" type="checkbox" name="files" value="{{ file.relative_to(source) }}">
+                  </td>
+                  <td class="path">{{ file.relative_to(source) }}</td>
+                  <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.84rem; white-space: nowrap;">
+                    {{ file.stat().st_size|filesizeformat }}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div style="text-align: center; padding: 48px 16px; color: var(--text-muted);" id="no-pending-msg">
+          <!-- Tabler icon: folder-check -->
+          <svg class="icon" style="width: 48px; height: 48px; color: var(--accent-emerald); margin-bottom: 12px;" viewBox="0 0 24 24"><path d="M11 19h-6a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v4"/><path d="M15 19l2 2l4 -4"/></svg>
+          <p style="font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-bottom: 4px;">No pending download files</p>
+          {% if empty_folders %}
+            <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 16px;">
+              Source directory has <strong style="color: var(--accent-amber);">{{ empty_folders|length }}</strong> empty folder{{ 's' if empty_folders|length != 1 else '' }}.
+            </p>
+            <button type="button" class="btn btn-secondary btn-clean-empty-trigger small" style="background: rgba(251, 191, 36, 0.15); color: var(--accent-amber); border: 1px solid rgba(251, 191, 36, 0.3);">
+              <!-- Tabler icon: folder-minus -->
+              <svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 19h-7a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v3.5"/><path d="M16 19h6"/></svg>
+              <span>Clean Empty Folders Now</span>
+            </button>
+          {% else %}
+            <p style="font-size: 0.9rem; color: var(--text-dim);">Source directory is completely clean.</p>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </form>
+</section>
+
+<!-- Section 2: Move History -->
+<section id="pane-moved" class="card tab-pane">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+    <div>
+      <h2>Recent Move History & Audit Log (<span id="history-count-title">{{ history|length }}</span>)</h2>
+      <p class="lead">Audit record of moves completed within the last 1 hour.</p>
+    </div>
+  </div>
+
+  <div id="history-container">
+    {% if history %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="min-width: 120px;">Status</th>
+              <th>Source → Destination</th>
+              <th class="hide-mobile">Recorded / Issue</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody">
+            {% for row in history %}
+              <tr>
+                <td>
+                  <span class="status {{ row.status }}">
+                    {% if row.status == 'moved' %}
+                      <!-- Tabler icon: circle-check -->
+                      <svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M9 12l2 2l4 -4"/></svg>
+                    {% elif row.status == 'failed' %}
+                      <!-- Tabler icon: alert-triangle -->
+                      <svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z"/><path d="M12 16h.01"/></svg>
+                    {% else %}
+                      <i class="status-dot pulse"></i>
+                    {% endif %}
+                    <span>{{ row.status }}</span>
+                  </span>
+                </td>
+                <td>
+                  <div class="path" style="font-size: 0.82rem;">{{ row.source_path }}</div>
+                  <div style="color: var(--text-dim); margin: 2px 0;">↓</div>
+                  <div class="path" style="font-size: 0.82rem; color: var(--accent-cyan);">{{ row.destination_path }}</div>
+                </td>
+                <td class="hide-mobile" style="font-size: 0.82rem; color: var(--text-muted);">
+                  {{ row.created_at }}
+                  {% if row.error %}
+                    <div style="color: var(--accent-rose); margin-top: 4px;">{{ row.error }}</div>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if row.status == 'verified' %}
+                    <form method="post" action="/mv/{{ row.id }}/cleanup">
+                      <button class="small btn-secondary">
+                        <!-- Tabler icon: trash -->
+                        <svg class="icon" style="width: 14px; height: 14px;" viewBox="0 0 24 24"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>
+                        <span>Retry Cleanup</span>
+                      </button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div style="text-align: center; padding: 36px 16px; color: var(--text-muted);" id="no-history-msg">
+        <p style="color: var(--text-muted); font-size: 0.92rem;">No moves recorded in the last 1 hour.</p>
+      </div>
+    {% endif %}
+  </div>
+</section>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  // Ensure page opens cleanly at the top
+  window.scrollTo(0, 0);
+
+  function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  // Tab Switching without anchor jump
+  function switchTab(tabName) {
+    if (!tabName) return;
+
+    document.querySelectorAll('.tabs .tab').forEach(btn => {
+      if (btn.getAttribute('data-tab') === tabName) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+
+    const paneId = 'pane-' + tabName;
+    document.querySelectorAll('.tab-pane').forEach(pane => {
+      if (pane.id === paneId) {
+        pane.classList.add('active');
+        pane.style.display = 'block';
+      } else {
+        pane.classList.remove('active');
+        pane.style.display = 'none';
+      }
+    });
+  }
+
+  document.querySelectorAll('.tabs .tab').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const tabName = btn.getAttribute('data-tab');
+      switchTab(tabName);
+    });
+  });
+
+  const initialHash = window.location.hash.replace('#', '').replace('pane-', '');
+  if (initialHash && document.getElementById('pane-' + initialHash)) {
+    switchTab(initialHash);
+  } else {
+    switchTab('not-moved');
+  }
+
+  // Select All functionality
+  function bindSelectAll() {
+    const selectAll = document.getElementById('select-all-moves');
+    if (selectAll) {
+      selectAll.addEventListener('change', function() {
+        document.querySelectorAll('.checkbox-move-file').forEach(cb => {
+          cb.checked = selectAll.checked;
+        });
+      });
+    }
+  }
+  bindSelectAll();
+
+  // Clean Empty Folders Logic
+  let currentEmptyFoldersCount = parseInt('{{ empty_folders|length }}', 10) || 0;
+
+  function updateEmptyFoldersUI(count) {
+    currentEmptyFoldersCount = count;
+    const badge = document.getElementById('empty-folder-badge');
+    if (badge) {
+      badge.textContent = count;
+      badge.style.display = count > 0 ? 'inline-flex' : 'none';
+    }
+
+    const noPendingMsg = document.getElementById('no-pending-msg');
+    if (noPendingMsg) {
+      if (count > 0) {
+        noPendingMsg.innerHTML = `
+          <svg class="icon" style="width: 48px; height: 48px; color: var(--accent-emerald); margin-bottom: 12px;" viewBox="0 0 24 24"><path d="M11 19h-6a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v4"/><path d="M15 19l2 2l4 -4"/></svg>
+          <p style="font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-bottom: 4px;">No pending download files</p>
+          <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 16px;">
+            Source directory has <strong style="color: var(--accent-amber);">${count}</strong> empty folder${count !== 1 ? 's' : ''}.
+          </p>
+          <button type="button" class="btn btn-secondary btn-clean-empty-trigger small" style="background: rgba(251, 191, 36, 0.15); color: var(--accent-amber); border: 1px solid rgba(251, 191, 36, 0.3);">
+            <svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 19h-7a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v3.5"/><path d="M16 19h6"/></svg>
+            <span>Clean Empty Folders Now</span>
+          </button>
+        `;
+        bindCleanEmptyTriggers();
+      } else {
+        noPendingMsg.innerHTML = `
+          <svg class="icon" style="width: 48px; height: 48px; color: var(--accent-emerald); margin-bottom: 12px;" viewBox="0 0 24 24"><path d="M11 19h-6a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v4"/><path d="M15 19l2 2l4 -4"/></svg>
+          <p style="font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-bottom: 4px;">No pending download files</p>
+          <p style="font-size: 0.9rem; color: var(--text-dim);">Source directory is completely clean.</p>
+        `;
+      }
+    }
+  }
+
+  function handleCleanEmptyFolders() {
+    const msg = currentEmptyFoldersCount > 0
+      ? `Remove all ${currentEmptyFoldersCount} empty folder(s) from the source directory? Folders containing files will NOT be affected.`
+      : 'Scan and remove all empty folders from the source directory? Folders containing files will NOT be affected.';
+
+    showCustomModal({
+      title: 'Clean Empty Folders',
+      message: msg,
+      confirmText: 'Clean Folders',
+      confirmClass: 'btn-secondary',
+      iconBoxClass: 'amber',
+      iconHtml: '<svg class="icon" viewBox="0 0 24 24"><path d="M12 19h-7a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v3.5"/><path d="M16 19h6"/></svg>',
+      onConfirm: async () => {
+        const btn = document.getElementById('btn-clean-empty');
+        if (btn) {
+          btn.disabled = true;
+          btn.innerHTML = '<svg class="icon" style="animation: spin 1.5s linear infinite;" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"/></svg> <span>Cleaning...</span>';
+        }
+
+        try {
+          const res = await fetch('/mv/clean_empty', {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            showToast(data.message, data.count > 0 ? 'success' : 'info');
+            updateEmptyFoldersUI(0);
+          } else {
+            showToast(data.message || 'Failed to clean empty folders', 'error');
+          }
+        } catch (err) {
+          console.error(err);
+          showToast('Failed to clean empty folders', 'error');
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `
+              <svg class="icon" style="width: 15px; height: 15px; color: var(--accent-amber);" viewBox="0 0 24 24"><path d="M12 19h-7a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v3.5"/><path d="M16 19h6"/></svg>
+              <span>Clean Empty Folders</span>
+              <span id="empty-folder-badge" class="badge" style="margin-left: 4px; background: rgba(251, 191, 36, 0.2); color: var(--accent-amber); ${currentEmptyFoldersCount > 0 ? '' : 'display: none;'}">${currentEmptyFoldersCount}</span>
+            `;
+          }
+        }
+      }
+    });
+  }
+
+  function bindCleanEmptyTriggers() {
+    const btnClean = document.getElementById('btn-clean-empty');
+    if (btnClean) {
+      btnClean.onclick = handleCleanEmptyFolders;
+    }
+    document.querySelectorAll('.btn-clean-empty-trigger').forEach(el => {
+      el.onclick = handleCleanEmptyFolders;
+    });
+  }
+  bindCleanEmptyTriggers();
+
+  // Async Form Submission for instant live progress bar feedback
+  const formMove = document.getElementById('form-move');
+  if (formMove) {
+    formMove.addEventListener('submit', async function(e) {
+      const checked = formMove.querySelectorAll('.checkbox-move-file:checked');
+      if (checked.length === 0) {
+        e.preventDefault();
+        showToast('Please select at least one file to move.', 'error');
+        return;
+      }
+
+      e.preventDefault();
+      const btn = document.getElementById('btn-submit-move');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<svg class="icon" style="animation: spin 1.5s linear infinite;" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"/></svg> <span>Starting Move...</span>';
+      }
+
+      const formData = new FormData(formMove);
+      try {
+        const res = await fetch('/mv', {
+          method: 'POST',
+          body: formData,
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          showToast(data.message, 'success');
+          // Immediately show the progress banner
+          const banner = document.getElementById('move-banner');
+          if (banner) banner.style.display = 'flex';
+          const stageLabel = document.getElementById('move-stage-label');
+          if (stageLabel) stageLabel.textContent = 'Transfer queued. Initializing copy and hash verification...';
+        } else {
+          showToast(data.message || 'Error queueing moves', 'error');
+        }
+      } catch (err) {
+        formMove.submit();
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<svg class="icon" viewBox="0 0 24 24"><path d="M20 10h-16l5.5 -6"/><path d="M4 14h16l-5.5 6"/></svg> <span>Copy, Verify & Move Selected</span>';
+        }
+      }
+    });
+  }
+
+  // Socket.IO Real-time Progress Tracking
+  if (typeof io !== 'undefined') {
+    const socket = io({ transports: ['websocket', 'polling'] });
+    const badge = document.getElementById('socket-badge');
+    const state = document.getElementById('socket-state');
+    const dot = document.getElementById('socket-dot');
+
+    const moveBanner = document.getElementById('move-banner');
+    const moveFileName = document.getElementById('move-file-name');
+    const moveStageLabel = document.getElementById('move-stage-label');
+    const moveProgressBar = document.getElementById('move-progress-bar');
+    const moveSpeed = document.getElementById('move-speed');
+    const movePercent = document.getElementById('move-percent');
+    const moveQueueBadge = document.getElementById('move-queue-badge');
+    const moveQueueCount = document.getElementById('move-queue-count');
+
+    socket.on('connect', () => {
+      if (badge) {
+        badge.className = 'pill pill-live';
+        if (state) state.textContent = 'Live';
+        if (dot) dot.className = 'status-dot pulse';
+      }
+    });
+
+    socket.on('disconnect', () => {
+      if (badge) {
+        badge.className = 'pill pill-reconnect';
+        if (state) state.textContent = 'Reconnecting…';
+        if (dot) dot.className = 'status-dot';
+      }
+    });
+
+    socket.on('move_progress', (data) => {
+      if (!data) return;
+
+      if (data.is_active) {
+        if (moveBanner) moveBanner.style.display = 'flex';
+        if (moveFileName) moveFileName.textContent = data.current_file || 'Transferring file...';
+        if (moveStageLabel) moveStageLabel.textContent = data.stage_label || 'Processing...';
+        if (moveProgressBar) moveProgressBar.style.width = `${data.progress}%`;
+        if (moveSpeed) moveSpeed.textContent = data.speed_mbps || '0';
+        if (movePercent) movePercent.textContent = `${data.progress}%`;
+
+        if (moveQueueBadge) {
+          if (data.queue_length > 0) {
+            moveQueueBadge.style.display = 'inline-flex';
+            if (moveQueueCount) moveQueueCount.textContent = data.queue_length;
+          } else {
+            moveQueueBadge.style.display = 'none';
+          }
+        }
+      } else {
+        if (moveBanner) moveBanner.style.display = 'none';
+      }
+    });
+
+    // Refresh pending files & history smoothly when a file move finishes
+    socket.on('moves_updated', async () => {
+      try {
+        const res = await fetch('/api/moves_data');
+        const data = await res.json();
+
+        // Update pending count
+        const tabPendingCount = document.getElementById('tab-pending-count');
+        if (tabPendingCount) tabPendingCount.textContent = data.files.length;
+        const tabHistCount = document.getElementById('tab-history-count');
+        if (tabHistCount) tabHistCount.textContent = data.history.length;
+        const histCountTitle = document.getElementById('history-count-title');
+        if (histCountTitle) histCountTitle.textContent = data.history.length;
+
+        if (typeof data.empty_folders_count !== 'undefined') {
+          updateEmptyFoldersUI(data.empty_folders_count);
+        }
+
+        // Render updated pending files
+        const pendingTbody = document.getElementById('pending-tbody');
+        if (pendingTbody) {
+          if (data.files.length === 0) {
+            const container = document.getElementById('pending-table-container');
+            if (container) {
+              const count = data.empty_folders_count || 0;
+              container.innerHTML = `
+                <div style="text-align: center; padding: 48px 16px; color: var(--text-muted);" id="no-pending-msg">
+                  <svg class="icon" style="width: 48px; height: 48px; color: var(--accent-emerald); margin-bottom: 12px;" viewBox="0 0 24 24"><path d="M11 19h-6a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v4"/><path d="M15 19l2 2l4 -4"/></svg>
+                  <p style="font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-bottom: 4px;">No pending download files</p>
+                  ${count > 0 ? `
+                    <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 16px;">
+                      Source directory has <strong style="color: var(--accent-amber);">${count}</strong> empty folder${count !== 1 ? 's' : ''}.
+                    </p>
+                    <button type="button" class="btn btn-secondary btn-clean-empty-trigger small" style="background: rgba(251, 191, 36, 0.15); color: var(--accent-amber); border: 1px solid rgba(251, 191, 36, 0.3);">
+                      <svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 19h-7a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v3.5"/><path d="M16 19h6"/></svg>
+                      <span>Clean Empty Folders Now</span>
+                    </button>
+                  ` : `
+                    <p style="font-size: 0.9rem; color: var(--text-dim);">Source directory is completely clean.</p>
+                  `}
+                </div>
+              `;
+              bindCleanEmptyTriggers();
+            }
+          } else {
+            let html = '';
+            data.files.forEach(f => {
+              html += `
+                <tr>
+                  <td style="text-align: center;">
+                    <input class="checkbox-move-file" aria-label="Select ${f.relative}" type="checkbox" name="files" value="${f.relative}">
+                  </td>
+                  <td class="path">${f.relative}</td>
+                  <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.84rem; white-space: nowrap;">
+                    ${formatBytes(f.size)}
+                  </td>
+                </tr>
+              `;
+            });
+            pendingTbody.innerHTML = html;
+            const selectAllLabel = document.getElementById('select-all-label');
+            if (selectAllLabel) selectAllLabel.textContent = `Select All (${data.files.length})`;
+            bindSelectAll();
+          }
+        }
+
+        // Render updated history table
+        const histTbody = document.getElementById('history-tbody');
+        const histContainer = document.getElementById('history-container');
+        if (data.history.length === 0 && histContainer) {
+          histContainer.innerHTML = `
+            <div style="text-align: center; padding: 36px 16px; color: var(--text-muted);" id="no-history-msg">
+              <p style="color: var(--text-muted); font-size: 0.92rem;">No moves recorded in the last 1 hour.</p>
+            </div>
+          `;
+        } else if (histTbody && data.history.length > 0) {
+          let histHtml = '';
+          data.history.forEach(row => {
+            const iconHtml = row.status === 'moved'
+              ? '<svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/><path d="M9 12l2 2l4 -4"/></svg>'
+              : (row.status === 'failed'
+                ? '<svg class="icon" style="width: 15px; height: 15px;" viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z"/><path d="M12 16h.01"/></svg>'
+                : '<i class="status-dot pulse"></i>');
+
+            const cleanupBtn = row.status === 'verified'
+              ? `<form method="post" action="/mv/${row.id}/cleanup"><button class="small btn-secondary"><svg class="icon" style="width: 14px; height: 14px;" viewBox="0 0 24 24"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg> <span>Retry Cleanup</span></button></form>`
+              : '';
+
+            histHtml += `
+              <tr>
+                <td>
+                  <span class="status ${row.status}">
+                    ${iconHtml}
+                    <span>${row.status}</span>
+                  </span>
+                </td>
+                <td>
+                  <div class="path" style="font-size: 0.82rem;">${row.source_path}</div>
+                  <div style="color: var(--text-dim); margin: 2px 0;">↓</div>
+                  <div class="path" style="font-size: 0.82rem; color: var(--accent-cyan);">${row.destination_path}</div>
+                </td>
+                <td class="hide-mobile" style="font-size: 0.82rem; color: var(--text-muted);">
+                  ${row.created_at}
+                  ${row.error ? `<div style="color: var(--accent-rose); margin-top: 4px;">${row.error}</div>` : ''}
+                </td>
+                <td>${cleanupBtn}</td>
+              </tr>
+            `;
+          });
+          histTbody.innerHTML = histHtml;
+        }
+      } catch (e) {
+        console.error('Error refreshing moves data:', e);
+      }
+    });
+  }
+});
+</script>
+{% endblock %}
