@@ -44,7 +44,19 @@ export function formatSelectedMediaReply(
         md += `⭐ **Cast**: ${stars}\n\n`;
     }
 
-    md += `*Select your preferred download format or episode below:*`;
+    const hasFormats = mediaFormats && (
+        (Array.isArray(mediaFormats.movieFormats) && mediaFormats.movieFormats.length > 0) ||
+        (Array.isArray(mediaFormats.seriesBatches) && mediaFormats.seriesBatches.length > 0) ||
+        (Array.isArray(mediaFormats.seriesEpisodes) && mediaFormats.seriesEpisodes.length > 0)
+    );
+
+    if (hasFormats) {
+        md += `*Select your preferred download format or episode below:*`;
+    } else {
+        md += `> ⚠️ **No active download links currently available for this release.**\n` +
+              `> The upstream file hosting links for this specific version have expired or been removed from the server.\n\n` +
+              `💡 **Please select one of the other available releases below:**`;
+    }
     return md;
 }
 
@@ -156,7 +168,14 @@ export async function handleChat(
         const formatsRes = await executeTool("get_media_formats", { targetUrl: selectedItem.url, sessionId }, sessionId);
         toolCalls.push({ tool: "get_media_formats", args: { targetUrl: selectedItem.url }, result: formatsRes });
 
-        const reply = formatSelectedMediaReply(selectedItem, formatsRes.data?.details);
+        const mediaFormats = formatsRes.data?.details;
+        const hasFormats = mediaFormats && (
+            (Array.isArray(mediaFormats.movieFormats) && mediaFormats.movieFormats.length > 0) ||
+            (Array.isArray(mediaFormats.seriesBatches) && mediaFormats.seriesBatches.length > 0) ||
+            (Array.isArray(mediaFormats.seriesEpisodes) && mediaFormats.seriesEpisodes.length > 0)
+        );
+
+        const reply = formatSelectedMediaReply(selectedItem, mediaFormats);
         await saveMemory(sessionId, "ai", reply.substring(0, 500));
         return {
             reply,
@@ -164,7 +183,9 @@ export async function handleChat(
             meta: {
                 selectedOption: optIdx,
                 selectedItem,
-                mediaFormats: formatsRes.data?.details,
+                mediaFormats: hasFormats ? mediaFormats : null,
+                noFormatsAvailable: !hasFormats,
+                unavailableOption: !hasFormats ? optIdx : null,
                 targetUrl: selectedItem.url,
                 alreadyInJellyfin: { exists: false },
                 searchResults: { results: session.results, title: session.title }

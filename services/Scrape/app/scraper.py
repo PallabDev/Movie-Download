@@ -813,6 +813,71 @@ class CloudflareScraper:
                     "total_servers": len(resolved_final)
                 }
 
+        # Case B.2: HubCloud search-recover.php URL (HubCloud's dynamic search recovery for archived/migrated files)
+        if "search-recover.php" in url_lower:
+            parsed_sr = urllib.parse.urlsplit(target_url)
+            qs_sr = urllib.parse.parse_qs(parsed_sr.query)
+            from_ac = qs_sr.get("from_ac", [""])[0]
+            raw_q = qs_sr.get("q", [""])[0]
+
+            decoded_q = ""
+            if raw_q:
+                try:
+                    padded_q = raw_q + "=" * (-len(raw_q) % 4)
+                    decoded_q = base64.b64decode(padded_q).decode("utf-8")
+                except Exception:
+                    decoded_q = raw_q
+
+            async with AsyncSession(impersonate=impersonate, verify=False) as session:
+                if not decoded_q or not from_ac:
+                    res_sr = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                    m_q = re.search(r'const\s+Q_INITIAL\s*=\s*["\']([^"\']+)["\']', res_sr.text)
+                    if m_q:
+                        decoded_q = m_q.group(1)
+                    m_ac = re.search(r'const\s+FROM_AC_TOKEN\s*=\s*["\']([^"\']+)["\']', res_sr.text)
+                    if m_ac:
+                        from_ac = m_ac.group(1)
+
+                if decoded_q and from_ac:
+                    api_headers = {
+                        **headers,
+                        "Accept": "application/json",
+                        "Referer": target_url
+                    }
+                    search_api_url = f"{parsed_sr.scheme}://{parsed_sr.netloc}/drive/search-recover.php"
+                    try:
+                        api_res = await session.get(
+                            search_api_url,
+                            params={"api": "search", "q": decoded_q, "page": "1", "from_ac": from_ac},
+                            headers=api_headers,
+                            timeout=DEFAULT_TIMEOUT
+                        )
+                        data = api_res.json()
+                        hits = data.get("hits", [])
+                    except Exception:
+                        hits = []
+
+                    for hit in hits[:5]:
+                        hit_url = hit.get("url")
+                        if not hit_url:
+                            continue
+                        try:
+                            resolved = await cls.extract_final_download_links(hit_url, impersonate=impersonate)
+                            if resolved and resolved.get("final_downloads"):
+                                if not resolved.get("filename") and hit.get("file_name"):
+                                    resolved["filename"] = hit["file_name"]
+                                if not resolved.get("file_size") and hit.get("size"):
+                                    resolved["file_size"] = hit["size"]
+                                return resolved
+                        except Exception:
+                            continue
+
+            return {
+                "source_url": target_url,
+                "final_downloads": [],
+                "total_servers": 0
+            }
+
         # Case C: HubCloud Drive URL (e.g. hubcloud.cx/drive/...)
         async with AsyncSession(impersonate=impersonate, verify=False) as session:
             res1 = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)

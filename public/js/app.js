@@ -648,16 +648,28 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
             }
         } else {
             // STEP 1: Search options only - user selects one
+            const isUnavailable = meta.noFormatsAvailable || (meta.selectedOption && !meta.mediaFormats);
+            const unavailableIdx = meta.unavailableOption || meta.selectedOption;
+
             searchResultsHtml = `
                 <div class="chat-search-results-panel">
+                    ${isUnavailable ? `
+                        <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; color: #fca5a5;">
+                            <span style="font-size: 1.2rem;">⚠️</span>
+                            <span style="font-size: 0.85rem; line-height: 1.4;">
+                                <strong>Option #${unavailableIdx} is currently unavailable</strong> (source links on upstream file host have expired or been removed). Please select one of the other working releases below:
+                            </span>
+                        </div>
+                    ` : ''}
                     <div class="chat-search-header">
                         <span>📦 <strong>${escapeHtml(movieTitle || 'Available Releases')}</strong> ${movieYear ? `(${escapeHtml(movieYear)})` : ''} · <strong>${results.length} Options Available</strong></span>
-                        <span class="chat-search-hint">Select a release below to view download qualities</span>
+                        <span class="chat-search-hint">${isUnavailable ? 'Choose another release below' : 'Select a release below to view download qualities'}</span>
                     </div>
                     <div class="chat-search-list">
                         ${results.map((r, idx) => {
                             const optionIndex = r.index || (idx + 1);
-                            const isRecommended = r.isBest || optionIndex === bestIdx || idx === 0;
+                            const isThisUnavailable = isUnavailable && optionIndex === unavailableIdx;
+                            const isRecommended = !isThisUnavailable && (r.isBest || optionIndex === bestIdx || idx === 0);
                             const titleText = r.name || r.text || '';
                             const sizeStr = r.sizeMB ? (r.sizeMB >= 1024 ? `${(r.sizeMB / 1024).toFixed(2)} GB` : `${r.sizeMB} MB`) : '';
                             const res = (titleText.match(/\b(480p|720p|1080p|2160p|4k|400p)\b/i) || [])[1] || '720p';
@@ -666,7 +678,7 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                             const categories = Array.isArray(r.category) ? r.category : [];
 
                             return `
-                                <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" onclick="handleQuickPrompt('#${optionIndex}')">
+                                <div class="chat-release-card ${isRecommended ? 'recommended' : ''}" style="${isThisUnavailable ? 'opacity: 0.65; border-color: rgba(239, 68, 68, 0.4);' : ''}" onclick="${isThisUnavailable ? '' : `handleQuickPrompt('#${optionIndex}')`}">
                                     <div class="chat-release-left">
                                         ${r.thumbnail ? `
                                             <img src="${escapeHtml(r.thumbnail)}" alt="Poster" class="chat-release-thumb" onerror="this.style.display='none'">
@@ -678,7 +690,11 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                                                 <strong>Option #${optionIndex}:</strong> ${escapeHtml(titleText)}
                                             </div>
                                             <div class="chat-release-tags">
-                                                <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 700;">⚡ 10Gbps</span>
+                                                ${isThisUnavailable ? `
+                                                    <span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 700;">❌ Links Expired</span>
+                                                ` : `
+                                                    <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 700;">⚡ 10Gbps</span>
+                                                `}
                                                 ${langTag ? `<span class="badge ${langTag.type}">${langTag.label}</span>` : ''}
                                                 <span class="badge res">${escapeHtml(res.toUpperCase())}</span>
                                                 ${sizeStr ? `<span class="badge size">${sizeStr}</span>` : ''}
@@ -687,9 +703,15 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                                             </div>
                                         </div>
                                     </div>
-                                    <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); handleQuickPrompt('#${optionIndex}')">
-                                        Select Option #${optionIndex} ➔
-                                    </button>
+                                    ${isThisUnavailable ? `
+                                        <button class="btn-download-release" disabled style="opacity: 0.5; cursor: not-allowed; background: #374151; color: #9ca3af;" onclick="event.stopPropagation();">
+                                            ⚠️ Expired
+                                        </button>
+                                    ` : `
+                                        <button class="btn-download-release ${isRecommended ? 'primary' : ''}" onclick="event.stopPropagation(); handleQuickPrompt('#${optionIndex}')">
+                                            Select Option #${optionIndex} ➔
+                                        </button>
+                                    `}
                                 </div>
                             `;
                         }).join('')}
