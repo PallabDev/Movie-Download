@@ -228,24 +228,22 @@ export async function secureBotFileToSavedMessages(..._args: any[]): Promise<any
 export function createDownloadWorker() {
     console.log("[QUEUE] High-speed HTTP direct download worker initialized");
 
-    // Restore pending downloads from DB on startup
+    // Handle pending downloads from DB on startup
     setTimeout(async () => {
         try {
             const pending = await db.select().from(schema.downloads).where(
                 or(eq(schema.downloads.status, "downloading"), eq(schema.downloads.status, "queued"))
             );
             for (const row of pending) {
-                console.log(`[QUEUE STARTUP] Restoring pending download for "${row.title}" (ID: ${row.requestId})...`);
-                downloadQueue.addJob({
-                    requestId: row.requestId,
-                    type: (row.type as any) || "movie",
-                    title: row.title,
-                    year: row.year || undefined,
-                    fileSize: row.fileSize || undefined,
-                    season: row.season || undefined,
-                    episode: row.episode || undefined,
-                    fileName: row.title + ".mkv",
-                });
+                console.log(`[QUEUE STARTUP] Resetting interrupted in-flight download "${row.title}" (ID: ${row.requestId})...`);
+                await db.update(schema.downloads)
+                    .set({
+                        status: "failed",
+                        error: "Interrupted by server restart. Please click Download again.",
+                        speed: "0 MB/s",
+                        updatedAt: new Date()
+                    })
+                    .where(eq(schema.downloads.requestId, row.requestId));
             }
         } catch (e: any) {
             console.log(`[QUEUE STARTUP] Pending job restore notice: ${e?.message || e}`);
