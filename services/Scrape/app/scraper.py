@@ -1438,6 +1438,91 @@ class CloudflareScraper:
             "downloads": sorted_downloads_map,
         }
 
+    _ai_metadata_cache: Dict[str, Dict[str, Any]] = {}
+
+    @classmethod
+    async def extract_media_metadata_ai(cls, raw_title: str) -> Dict[str, Any]:
+        """
+        Uses AI to intelligently parse complex media titles without brittle regex breaking points.
+        Extracts clean title, type (movie/series), release year, season number, episode number,
+        and clean search queries for search engines / search-recover.
+        """
+        if not raw_title:
+            return {
+                "title": "",
+                "type": "movie",
+                "year": "",
+                "season": None,
+                "episode": None,
+                "search_query": ""
+            }
+
+        if raw_title in cls._ai_metadata_cache:
+            return cls._ai_metadata_cache[raw_title]
+
+        api_key = os.getenv("AI_API_KEY", "")
+        base_url = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        model = os.getenv("AI_MODEL", "gpt-4o-mini")
+
+        # Resilient fallback if AI is slow or unreachable
+        m_s = re.search(r"season\s*(\d{1,2})|\bS(\d{1,2})\b", raw_title, re.I)
+        season_num = int(m_s.group(1) or m_s.group(2)) if m_s else None
+        c_title = re.split(r"\(|\bseason\b|\bS\d\b|\[", raw_title, flags=re.I)[0].strip()
+        c_query = f"{c_title} S{season_num:02d}" if season_num else c_title
+
+        fallback = {
+            "title": c_title or raw_title,
+            "type": "series" if season_num or re.search(r"season|series|episode|\bS\d|\bEP\b", raw_title, re.I) else "movie",
+            "year": "",
+            "season": season_num,
+            "episode": None,
+            "search_query": c_query
+        }
+
+        if not api_key:
+            return fallback
+
+        prompt = f"""You are a media metadata extraction engine.
+Given the messy release name, torrent title, post title, or filename below:
+"{raw_title}"
+
+Analyze the text and return a clean JSON object with:
+- "title": Clean canonical title of the movie or TV show (e.g. "The Family Man"). Remove all codecs, resolutions, audio formats, and websites.
+- "type": "movie" or "series".
+- "year": Exact 4-digit release year if known or found (e.g. "2021").
+- "season": Integer season number if TV series (e.g. 2), or null if movie.
+- "episode": Integer episode number if single episode, or null if batch or movie.
+- "search_query": Most effective concise search query for file engines (e.g. "The Family Man S02" for a season, or "Movie Name 2021" for a movie).
+
+Respond ONLY with valid JSON."""
+
+        try:
+            url = f"{base_url}/chat/completions"
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are a media metadata parser. Return only valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                "response_format": {"type": "json_object"}
+            }
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            async with AsyncSession(timeout=35) as session:
+                res = await session.post(url, json=payload, headers=headers)
+                if res.status_code == 200:
+                    data = res.json()
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    parsed = json.loads(content)
+                    cls._ai_metadata_cache[raw_title] = parsed
+                    return parsed
+        except Exception as e:
+            print(f"[AI-SCRAPE-METADATA-ERROR]: {e}")
+
+        return fallback
+
     @classmethod
     async def _expand_series_from_search_recover(
         cls,
@@ -1466,11 +1551,18 @@ class CloudflareScraper:
             if not from_ac:
                 return
 
-            # Determine series name and season
-            m_s = re.search(r"season\s*(\d{1,2})|\bS(\d{1,2})\b", title, re.I)
-            season_num = int(m_s.group(1) or m_s.group(2)) if m_s else 1
-            clean_title = re.sub(r"\(.*?\)|\[.*?\]|\bseason\s*\d+|\bS\d+|\bWEB-DL\b|\bHindi\b.*", "", title, flags=re.I).strip()
-            search_query = f"{clean_title} S{season_num:02d}"
+            # Leverage AI to extract clean canonical query for search-recover without brittle regex
+            ai_meta = await cls.extract_media_metadata_ai(title)
+            search_query = ai_meta.get("search_query")
+            if not search_query:
+                clean_title = ai_meta.get("title") or title
+                s_num = ai_meta.get("season")
+                if s_num is not None:
+                    search_query = f"{clean_title} S{int(s_num):02d}"
+                else:
+                    m_s = re.search(r"season\s*(\d{1,2})|\bS(\d{1,2})\b", title, re.I)
+                    season_num = int(m_s.group(1) or m_s.group(2)) if m_s else 1
+                    search_query = f"{clean_title} S{season_num:02d}"
 
             search_api_url = f"{parsed_sr.scheme}://{parsed_sr.netloc}/drive/search-recover.php"
             api_headers = {**headers, "Accept": "application/json", "Referer": sr_url}
@@ -1486,7 +1578,7 @@ class CloudflareScraper:
                 if not hits:
                     return
 
-                sem = asyncio.Semaphore(6)
+                sem = asyncio.Semaphore(10)
 
                 async def resolve_one_hit(hit: Dict[str, Any]):
                     hit_url = hit.get("url")
@@ -1513,7 +1605,8 @@ class CloudflareScraper:
                         continue
                     hit, res = item
                     fn = res.get("filename") or hit.get("file_name", "")
-                    is_batch_hit = bool(".zip" in fn.lower() or "pack" in fn.lower() or "complete" in fn.lower())
+                    ep_num = cls.extract_episode_number(fn)
+                    is_batch_hit = bool(".zip" in fn.lower() or "pack" in fn.lower() or "complete" in fn.lower() or ep_num is None)
                     final_downloads = res.get("final_downloads", [])
                     for dl in final_downloads:
                         ep_tag, res_label, codec, is_batch_detected = cls._parse_link_metadata(
@@ -1536,3 +1629,4 @@ class CloudflareScraper:
                             })
         except Exception as e:
             print(f"[SEARCH-RECOVER EXPANSION ERROR]: {e}")
+
