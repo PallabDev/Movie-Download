@@ -11,6 +11,7 @@ import { isBotConnected, isBotConnecting, ensureBotConnected, setBotConnected, s
 import { getEpisodeDetails, pickBestResult, groupByEpisode, getSeriesInfo, isAllowedDownloadLanguage, checkResolutionHarnessRule } from "../ai/brain.js";
 import {
     lookupMedia,
+    cleanMediaTitle,
     getSeriesSeasonsAndEpisodes,
     getSeasonEpisodesList,
     searchMulti as tmdbSearchMulti,
@@ -20,6 +21,7 @@ import {
     discoverIndianOTTReleases,
     fetchCuratedOTTMedia
 } from "../../common/tmdb/client.js";
+import { cleanSeriesTitleAndSeason } from "../download/downloader.js";
 import { searchMedia, getDownloadLinks, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats } from "../download/api-client.js";
 import { handleChat } from "./chat.js";
 
@@ -831,21 +833,42 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
         const isSeries = Boolean(isBatch || episodeNum !== undefined || qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"));
         const mediaType = isSeries ? "series" : "movie";
 
-        // Build distinct title & check duplicate in database
         let jobTitle = cleanName;
         let jobFileName = `${cleanName}.mkv`;
+        let movieYear: string | undefined;
 
-        if (episodeNum !== undefined) {
-            jobTitle = `${cleanName} - Episode ${episodeNum}`;
-            jobFileName = `${cleanName} - S01E${String(episodeNum).padStart(2, "0")}.mkv`;
-        } else if (isBatch || qualityKey.startsWith("batch_")) {
-            jobTitle = `${cleanName} (Full Season Batch)`;
-            jobFileName = `${cleanName} (Full Season Pack).zip`;
+        if (isSeries) {
+            const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(cleanName, episodeNum !== undefined ? 1 : undefined);
+            if (episodeNum !== undefined) {
+                jobTitle = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}`;
+                jobFileName = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}.mkv`;
+            } else {
+                jobTitle = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season Batch)`;
+                jobFileName = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season).zip`;
+            }
+        } else {
+            // Movie: Clean title and fetch/verify exact release year from TMDB
+            const { title: rawCleanTitle, year: extractedYear } = cleanMediaTitle(cleanName);
+            let verifiedTitle = rawCleanTitle || cleanName;
+            movieYear = extractedYear;
+
+            try {
+                const tmdb = await lookupMedia(rawCleanTitle, extractedYear);
+                if (tmdb && tmdb.found) {
+                    if (tmdb.year) movieYear = tmdb.year;
+                    if (tmdb.title) verifiedTitle = tmdb.title;
+                }
+            } catch (e: any) {
+                console.warn(`[DOWNLOAD-SPECIFIC] TMDB verification fallback: ${e?.message}`);
+            }
+
+            jobTitle = movieYear ? `${verifiedTitle} (${movieYear})` : verifiedTitle;
+            jobFileName = movieYear ? `${verifiedTitle} (${movieYear}).mkv` : `${verifiedTitle}.mkv`;
         }
 
         // Enforce Jellyfin library duplicate check before downloading
         try {
-            const jfCheck = await checkMediaExists(cleanName, mediaType);
+            const jfCheck = await checkMediaExists(cleanName, mediaType, movieYear);
             if (jfCheck.exists) {
                 console.log(`[DOWNLOAD-SPECIFIC] "${cleanName}" is already in Jellyfin library (${jfCheck.type}). Blocking duplicate download.`);
                 return res.status(409).json({
@@ -892,6 +915,7 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
         await db.insert(schema.downloads).values({
             requestId,
             title: jobTitle,
+            year: movieYear || null,
             type: mediaType,
             status: "queued",
             season: isSeries ? 1 : null,
@@ -904,6 +928,7 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             requestId,
             type: mediaType,
             title: jobTitle,
+            year: movieYear,
             season: isSeries ? 1 : undefined,
             episode: episodeNum !== undefined ? episodeNum : undefined,
             servers,
@@ -978,6 +1003,11 @@ app.post("/api/select", requireMod, async (req: any, res) => {
         const isSeries = quality.isBatchPack || quality.isEpisodeList;
         const mediaType = isSeries ? "series" : "movie";
 
+        if (!chosenYear && mediaType === "movie") {
+            const yMatch = (details.name || chosenTitle).match(/(?:\(|\b)(19\d{2}|20\d{2})(?:\)|\b)/);
+            if (yMatch) chosenYear = yMatch[1];
+        }
+
         // Check if this media is already downloading or queued
         try {
             const existing = await db.select()
@@ -1008,15 +1038,19 @@ app.post("/api/select", requireMod, async (req: any, res) => {
         }
 
         if (quality.isEpisodeList && quality.episodes && quality.episodes.length > 0) {
+            const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(details.name, 1);
             const queuedEps: string[] = [];
             for (const ep of quality.episodes) {
                 const epReqId = `req_${Date.now()}_ep${ep.episodeNum}_${Math.random().toString(36).slice(2, 6)}`;
+                const epTitle = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(ep.episodeNum).padStart(2, "0")}`;
+                const epFileName = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(ep.episodeNum).padStart(2, "0")}.mkv`;
+
                 await db.insert(schema.downloads).values({
                     requestId: epReqId,
-                    title: details.name,
+                    title: epTitle,
                     type: "series",
                     status: "queued",
-                    season: 1,
+                    season: cleanSeason,
                     episode: ep.episodeNum,
                     fileSize: ep.servers[0]?.file_size || "720p",
                     requestedBy: req.user.userId,
@@ -1025,17 +1059,17 @@ app.post("/api/select", requireMod, async (req: any, res) => {
                 downloadQueue.addJob({
                     requestId: epReqId,
                     type: "series",
-                    title: details.name,
-                    season: 1,
+                    title: epTitle,
+                    season: cleanSeason,
                     episode: ep.episodeNum,
                     servers: ep.servers,
                     fileSize: ep.servers[0]?.file_size || "720p",
-                    fileName: `${details.name} - S01E${String(ep.episodeNum).padStart(2, "0")}.mkv`,
+                    fileName: epFileName,
                 });
 
                 broadcastNewDownload({
                     jobId: epReqId,
-                    title: `${details.name} - Episode ${ep.episodeNum}`,
+                    title: epTitle,
                     type: "series",
                     requestedBy: req.user.email,
                 });
@@ -1045,7 +1079,7 @@ app.post("/api/select", requireMod, async (req: any, res) => {
 
             return res.json({
                 success: true,
-                message: `Queued ${queuedEps.length} episodes for "${details.name}" in 720p.`,
+                message: `Queued ${queuedEps.length} episodes for "${cleanSeriesTitle}" in 720p.`,
                 queuedEpisodes: queuedEps,
             });
         }
@@ -1053,9 +1087,34 @@ app.post("/api/select", requireMod, async (req: any, res) => {
         const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const fileSize = quality.fileSize || "720p";
 
+        let jobTitle = details.name;
+        let jobFileName = `${details.name}.mkv`;
+
+        if (isSeries) {
+            const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(details.name, 1);
+            jobTitle = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season Batch)`;
+            jobFileName = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season).zip`;
+        } else {
+            const { title: rawCleanTitle, year: extractedYear } = cleanMediaTitle(details.name);
+            let verifiedTitle = rawCleanTitle || details.name;
+            let movieYear = chosenYear || extractedYear;
+
+            try {
+                const tmdb = await lookupMedia(rawCleanTitle, movieYear);
+                if (tmdb && tmdb.found) {
+                    if (tmdb.year) movieYear = tmdb.year;
+                    if (tmdb.title) verifiedTitle = tmdb.title;
+                }
+            } catch {}
+
+            chosenYear = movieYear || chosenYear;
+            jobTitle = chosenYear ? `${verifiedTitle} (${chosenYear})` : verifiedTitle;
+            jobFileName = chosenYear ? `${verifiedTitle} (${chosenYear}).mkv` : `${verifiedTitle}.mkv`;
+        }
+
         await db.insert(schema.downloads).values({
             requestId,
-            title: details.name,
+            title: jobTitle,
             year: chosenYear || null,
             type: mediaType,
             status: "queued",
@@ -1066,17 +1125,17 @@ app.post("/api/select", requireMod, async (req: any, res) => {
         downloadQueue.addJob({
             requestId,
             type: mediaType,
-            title: details.name,
+            title: jobTitle,
             year: chosenYear || undefined,
             servers: quality.servers,
             fileSize,
             isBatchPack: quality.isBatchPack,
-            fileName: quality.isBatchPack ? `${details.name} (Full Season Pack).zip` : `${details.name}.mkv`,
+            fileName: jobFileName,
         });
 
         broadcastNewDownload({
             jobId: requestId,
-            title: details.name,
+            title: jobTitle,
             type: mediaType,
             requestedBy: req.user.email,
         });
@@ -1266,6 +1325,7 @@ app.post("/api/downloads/:id/resume", requireMod, async (req: any, res) => {
                     btnMsgId: 0,
                     type: (row.type as any) || "movie",
                     title: row.title,
+                    year: row.year || undefined,
                     fileSize: row.fileSize || undefined,
                     fileName: row.title + ".mp4",
                 });
@@ -1297,6 +1357,7 @@ app.post("/api/downloads/:id/retry", requireMod, async (req: any, res) => {
                     btnMsgId: 0,
                     type: (row.type as any) || "movie",
                     title: row.title,
+                    year: row.year || undefined,
                     fileSize: row.fileSize || undefined,
                     fileName: row.title + ".mp4",
                 });
@@ -1483,8 +1544,23 @@ app.get("/api/jellyfin/check", requireAuth, async (req, res) => {
 
 // ─── QUEUE STATUS ───
 
-app.get("/api/queue", requireMod, (_req, res) => {
-    res.json({ stats: downloadQueue.getStats() });
+app.get("/api/queue", requireMod, async (_req, res) => {
+    try {
+        const stats = downloadQueue.getStats();
+        const activeInDb = await db.select({ count: count() }).from(schema.downloads).where(
+            sql`${schema.downloads.status} IN ('pending', 'analyzing', 'searching', 'clicking', 'downloading')`
+        );
+        const activeDbCount = Number(activeInDb[0]?.count || 0);
+        const hasActiveDownloads = (stats.active > 0) || (stats.waiting > 0) || (activeDbCount > 0);
+
+        res.json({
+            stats,
+            activeDbCount,
+            hasActiveDownloads
+        });
+    } catch (err: any) {
+        res.json({ stats: downloadQueue.getStats(), hasActiveDownloads: false });
+    }
 });
 
 // ─── TELEGRAM AUDIT LOGS ───
@@ -1964,11 +2040,11 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <h2 class="header-view-title" id="headerViewTitle">${headerTitle}</h2>
                     </div>
                 </div>
-                <div class="header-right">
+                <div class="header-right" id="headerRightActions">
                     ${!isUser ? `
-                    <button class="btn-header primary" onclick="startNewChat()">
+                    <button class="btn-header primary" id="btnHeaderAction" onclick="${activeView === 'requested' ? 'openNewRequestModal()' : 'startNewChat()'}">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
-                        New Chat
+                        <span id="btnHeaderActionText">${activeView === 'requested' ? 'New Request' : 'New Chat'}</span>
                     </button>` : ""}
                 </div>
             </header>
@@ -2286,7 +2362,11 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                                 <h2 style="font-size: 15px;">Requested Media List</h2>
                                 <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">All tracked movie requests and status</p>
                             </div>
-                            <div style="display: flex; gap: 8px; align-items: center;">
+                            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                                <button class="btn-primary-action" onclick="openNewRequestModal()" style="display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 12px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
+                                    New Request
+                                </button>
                                 <button class="btn-header" style="color: var(--accent-rose);" onclick="clearAllRequestedMedia()">Clear All Requests</button>
                             </div>
                         </div>

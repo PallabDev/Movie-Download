@@ -250,7 +250,7 @@ def extract_season_num(text: str) -> int:
 
 def extract_year(text: str) -> str:
     m = re.search(r"[\(\[\{]?\b(19\d{2}|20\d{2})\b[\)\]\}]?", text)
-    return m.group(1) if m else "2024"
+    return m.group(1) if m else ""
 
 
 def get_existing_library_shows() -> List[str]:
@@ -411,8 +411,8 @@ class MoveManager:
 
         # Resolve destination
         title = item.get("title") or clean_title_display(source.parent.name if source.parent != SOURCE_MOVIES_DIR else source.stem)
-        year = item.get("year") or extract_year(source.name)
-        folder_name = f"{title} ({year})"
+        year = item.get("year") or extract_year(source.name) or extract_year(source.parent.name)
+        folder_name = f"{title} ({year})" if year else title
         target_dir = DEST_MOVIES_DIR / folder_name
         target_file = safe_destination_for(target_dir / source.name)
 
@@ -865,8 +865,8 @@ def analyze_pending_media() -> Dict[str, Any]:
                 # Check parent folder name or file stem
                 folder_title = p.parent.name if p.parent != SOURCE_MOVIES_DIR else p.stem
                 clean_title = clean_title_display(folder_title)
-                year = extract_year(folder_title)
-                dest_folder = f"{clean_title} ({year})"
+                year = extract_year(folder_title) or extract_year(p.name)
+                dest_folder = f"{clean_title} ({year})" if year else clean_title
                 target_dest = DEST_MOVIES_DIR / dest_folder / p.name
 
                 items.append({

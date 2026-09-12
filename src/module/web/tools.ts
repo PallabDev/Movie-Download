@@ -18,6 +18,7 @@ import {
     getSeriesSeasonsAndEpisodes,
     cleanMediaTitle,
 } from "../../common/tmdb/client.js";
+import { cleanSeriesTitleAndSeason } from "../download/downloader.js";
 import { broadcastNewDownload, broadcastAiStatus } from "./ws.js";
 
 function safeHarness() {
@@ -318,13 +319,32 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
 
             let jobTitle = cleanName;
             let jobFileName = `${cleanName}.mkv`;
+            let movieYear: string | undefined;
 
-            if (episodeNum !== undefined) {
-                jobTitle = `${cleanName} - Episode ${episodeNum}`;
-                jobFileName = `${cleanName} - S01E${String(episodeNum).padStart(2, "0")}.mkv`;
-            } else if (isBatch || qualityKey.startsWith("batch_")) {
-                jobTitle = `${cleanName} (Full Season Batch)`;
-                jobFileName = `${cleanName} (Full Season Pack).zip`;
+            if (isSeriesItem) {
+                const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(cleanName, episodeNum !== undefined ? 1 : undefined);
+                if (episodeNum !== undefined) {
+                    jobTitle = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}`;
+                    jobFileName = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}.mkv`;
+                } else {
+                    jobTitle = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season Batch)`;
+                    jobFileName = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season).zip`;
+                }
+            } else {
+                const { title: rawCleanTitle, year: extractedYear } = cleanMediaTitle(cleanName);
+                let verifiedTitle = rawCleanTitle || cleanName;
+                movieYear = extractedYear;
+
+                try {
+                    const tmdb = await lookupMedia(rawCleanTitle, extractedYear);
+                    if (tmdb && tmdb.found) {
+                        if (tmdb.year) movieYear = tmdb.year;
+                        if (tmdb.title) verifiedTitle = tmdb.title;
+                    }
+                } catch {}
+
+                jobTitle = movieYear ? `${verifiedTitle} (${movieYear})` : verifiedTitle;
+                jobFileName = movieYear ? `${verifiedTitle} (${movieYear}).mkv` : `${verifiedTitle}.mkv`;
             }
 
             // Deduplication check
@@ -366,6 +386,7 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                 await db.insert(schema.downloads).values({
                     requestId,
                     title: jobTitle,
+                    year: movieYear || null,
                     type: mediaType,
                     status: "queued",
                     season: isSeriesItem ? 1 : null,
@@ -380,6 +401,7 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                 requestId,
                 type: mediaType,
                 title: jobTitle,
+                year: movieYear,
                 season: isSeriesItem ? 1 : undefined,
                 episode: episodeNum !== undefined ? episodeNum : undefined,
                 servers,
@@ -454,19 +476,21 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
 
         // Check if batch pack vs episode list vs movie
         if (quality.isEpisodeList && quality.episodes && quality.episodes.length > 0) {
+            const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(cleanName, 1);
             const queuedEpisodes: string[] = [];
 
             for (const ep of quality.episodes) {
                 const epReqId = `ep_${Date.now()}_${ep.episodeNum}_${Math.random().toString(36).slice(2, 6)}`;
-                const epTitle = `${cleanName} - Episode ${ep.episodeNum}`;
+                const epTitle = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(ep.episodeNum).padStart(2, "0")}`;
+                const epFileName = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(ep.episodeNum).padStart(2, "0")}.mkv`;
 
                 try {
                     await db.insert(schema.downloads).values({
                         requestId: epReqId,
-                        title: cleanName,
+                        title: epTitle,
                         type: "series",
                         status: "queued",
-                        season: 1,
+                        season: cleanSeason,
                         episode: ep.episodeNum,
                         fileSize: ep.servers[0]?.file_size || "720p",
                     });
@@ -477,26 +501,26 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                 downloadQueue.addJob({
                     requestId: epReqId,
                     type: "series",
-                    title: cleanName,
-                    season: 1,
+                    title: epTitle,
+                    season: cleanSeason,
                     episode: ep.episodeNum,
                     servers: ep.servers,
                     fileSize: ep.servers[0]?.file_size || "720p",
-                    fileName: `${cleanName} - S01E${String(ep.episodeNum).padStart(2, "0")}.mkv`,
+                    fileName: epFileName,
                 });
 
                 try { broadcastNewDownload({ jobId: epReqId, title: epTitle, type: "series", requestedBy: "ai" }); } catch {}
                 queuedEpisodes.push(`Episode ${ep.episodeNum}`);
             }
 
-            harness.logActivity(`[TOOL download_media] Queued ${queuedEpisodes.length} episodes in 720p for "${cleanName}"`);
+            harness.logActivity(`[TOOL download_media] Queued ${queuedEpisodes.length} episodes in 720p for "${cleanSeriesTitle}"`);
 
             return {
                 success: true,
-                message: `MEDIA_DOWNLOAD_QUEUED: Queued all ${queuedEpisodes.length} episodes for "${cleanName}" in 720p into the background download queue!`,
+                message: `MEDIA_DOWNLOAD_QUEUED: Queued all ${queuedEpisodes.length} episodes for "${cleanSeriesTitle}" in 720p into the background download queue!`,
                 data: {
                     type: "series",
-                    title: cleanName,
+                    title: cleanSeriesTitle,
                     queuedEpisodes,
                     quality: "720p"
                 }
@@ -507,13 +531,38 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
         const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const fileSizeStr = quality.fileSize || "720p High Speed";
 
+        let jobTitle = cleanName;
+        let jobFileName = `${cleanName}.mkv`;
+        let movieYear: string | undefined = targetYear;
+
+        if (isSeries) {
+            const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(cleanName, 1);
+            jobTitle = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season Batch)`;
+            jobFileName = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season).zip`;
+        } else {
+            const { title: rawCleanTitle, year: extractedYear } = cleanMediaTitle(cleanName);
+            let verifiedTitle = rawCleanTitle || cleanName;
+            movieYear = targetYear || extractedYear;
+
+            try {
+                const tmdb = await lookupMedia(rawCleanTitle, movieYear);
+                if (tmdb && tmdb.found) {
+                    if (tmdb.year) movieYear = tmdb.year;
+                    if (tmdb.title) verifiedTitle = tmdb.title;
+                }
+            } catch {}
+
+            jobTitle = movieYear ? `${verifiedTitle} (${movieYear})` : verifiedTitle;
+            jobFileName = movieYear ? `${verifiedTitle} (${movieYear}).mkv` : `${verifiedTitle}.mkv`;
+        }
+
         try {
             await db.insert(schema.downloads).values({
                 requestId,
-                title: cleanName,
+                title: jobTitle,
                 type: mediaType,
                 status: "queued",
-                year: targetYear || "",
+                year: movieYear || "",
                 fileSize: fileSizeStr,
             });
         } catch (dbErr: any) {
@@ -523,12 +572,12 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
         downloadQueue.addJob({
             requestId,
             type: mediaType,
-            title: cleanName,
-            year: targetYear || "",
+            title: jobTitle,
+            year: movieYear || "",
             servers: quality.servers,
             fileSize: fileSizeStr,
             isBatchPack: quality.isBatchPack,
-            fileName: quality.isBatchPack ? `${cleanName} (Full Season Pack).zip` : `${cleanName}.mkv`,
+            fileName: jobFileName,
         });
 
         try { broadcastNewDownload({ jobId: requestId, title: cleanName, type: mediaType, requestedBy: "ai" }); } catch {}

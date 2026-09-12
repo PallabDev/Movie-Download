@@ -272,6 +272,17 @@ function switchView(viewName, updateHistory = true) {
     if (titleEl) {
         titleEl.textContent = VIEW_TITLES[viewName] || 'Dashboard';
     }
+    const btnHeaderAction = document.getElementById('btnHeaderAction');
+    const btnHeaderActionText = document.getElementById('btnHeaderActionText');
+    if (btnHeaderAction && btnHeaderActionText) {
+        if (viewName === 'requested') {
+            btnHeaderActionText.textContent = 'New Request';
+            btnHeaderAction.onclick = openNewRequestModal;
+        } else {
+            btnHeaderActionText.textContent = 'New Chat';
+            btnHeaderAction.onclick = startNewChat;
+        }
+    }
     document.title = `CineGrab - ${VIEW_TITLES[viewName] || 'AI Copilot'}`;
 
     if (updateHistory) {
@@ -1510,6 +1521,39 @@ async function loadDownloadHistory(page = 1) {
             return;
         }
 
+function formatDownloadDisplayTitle(title, type) {
+    if (!title) return 'Unknown Media';
+    let clean = title.trim();
+
+    // 1. Split on common delimiter pipes or release dashes
+    if (clean.includes('|')) clean = clean.split('|')[0].trim();
+    else if (clean.includes(' – ')) clean = clean.split(' – ')[0].trim();
+    else if (clean.includes(' — ')) clean = clean.split(' — ')[0].trim();
+
+    // 2. Cut off at standard scene/web quality keywords
+    const markerRegex = /\b(?:WEB-DL|BluRay|WEBRip|HDRip|HDTC|480p|720p|1080p|4K|Dual\s*Audio|x264|x265|HEVC|10Bit|NF\s*Series|Full\s*Movie|ALL\s*Episodes)\b/i;
+    const match = clean.match(markerRegex);
+    if (match && match.index > 2) clean = clean.substring(0, match.index).trim();
+
+    // 3. Remove language and audio descriptions: e.g. Hindi, English, (ORG 5.1), [Hindi...]
+    clean = clean.replace(/\[[^\]]*\]/g, ' ').trim();
+    clean = clean.replace(/\((?:ORG|DD|Hindi|English|Tamil|Telugu)[^)]*\)/gi, ' ').trim();
+    clean = clean.replace(/\b(?:Hindi|English|Tamil|Telugu|Dual\s*Audio|Multi\s*Audio|ORG|5\.1|7\.1)\b/gi, ' ').trim();
+
+    // 4. Clean any trailing non-word characters except a balanced closing parenthesis ')'
+    clean = clean.replace(/\s+/g, ' ').trim();
+    clean = clean.replace(/[\s\-_–—:]+$/, '').trim();
+
+    // If an opening parenthesis was left unclosed at the end, close it
+    const openCount = (clean.match(/\(/g) || []).length;
+    const closeCount = (clean.match(/\)/g) || []).length;
+    if (openCount > closeCount) {
+        clean = clean + ')'.repeat(openCount - closeCount);
+    }
+
+    return clean.length >= 2 ? clean : title.trim();
+}
+
         tableBody.innerHTML = data.downloads.map(item => {
             const isDownloading = item.status === 'downloading' || item.status === 'clicking';
             const isPaused = item.status === 'paused';
@@ -1552,9 +1596,14 @@ async function loadDownloadHistory(page = 1) {
                 `;
             }
 
+            const cleanTitle = formatDownloadDisplayTitle(item.title, item.type);
+
             return `
                 <tr>
-                    <td style="font-weight: 600; color: #fff;">${escapeHtml(item.title)}</td>
+                    <td>
+                        <div style="font-weight: 600; color: #fff; font-size: 13.5px;" title="${escapeHtml(item.title)}">${escapeHtml(cleanTitle)}</div>
+                        ${cleanTitle !== item.title ? `<div style="font-size: 11px; color: var(--text-muted); margin-top: 2px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>` : ''}
+                    </td>
                     <td><span class="chip ${item.type === 'movie' ? 'quality' : 'best'}">${escapeHtml(item.type)}</span></td>
                     <td>${escapeHtml(item.fileSize || 'N/A')}</td>
                     <td>
@@ -1761,6 +1810,143 @@ async function clearAllRequestedMedia() {
     }
 }
 
+// ─── NEW MEDIA REQUEST MODAL ───
+
+function openNewRequestModal() {
+    const existing = document.getElementById('newRequestModal');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'newRequestModal';
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML = `
+        <div class="modal-card" style="max-width: 440px; text-align: left;" role="dialog" aria-modal="true">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div class="modal-icon-badge primary" style="width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);">
+                        <svg class="tabler-icon" style="width:18px;height:18px;" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
+                    </div>
+                    <div>
+                        <div style="font-size: 15px; font-weight: 700; color: #fff;">New Media Request</div>
+                        <div style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Track a movie or show to download</div>
+                    </div>
+                </div>
+                <button type="button" class="trailer-modal-close" onclick="closeNewRequestModal()" title="Close" style="width: 28px; height: 28px; font-size: 18px; line-height: 1; cursor: pointer; background: transparent; border: none; color: var(--text-secondary);">&times;</button>
+            </div>
+
+            <form id="newRequestForm" onsubmit="handleNewRequestSubmit(event)">
+                <!-- Field 1: Name -->
+                <div class="modal-form-group">
+                    <label class="modal-form-label" for="newReqTitle">Media Title *</label>
+                    <input type="text" id="newReqTitle" class="modal-form-input" placeholder="e.g. Inception or Stranger Things" required autofocus />
+                </div>
+
+                <!-- Field 2: Type Dropdown -->
+                <div class="modal-form-group">
+                    <label class="modal-form-label" for="newReqType">Media Type *</label>
+                    <select id="newReqType" class="modal-form-select" onchange="toggleRequestYearField()">
+                        <option value="movie" selected>Movie</option>
+                        <option value="series">Show (TV Series)</option>
+                    </select>
+                </div>
+
+                <!-- Field 3: Year (Visible only for movie) -->
+                <div class="modal-form-group" id="newReqYearGroup">
+                    <label class="modal-form-label" for="newReqYear">Release Year</label>
+                    <input type="number" id="newReqYear" class="modal-form-input" placeholder="e.g. 2024" min="1900" max="2099" />
+                    <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">Used for accurate movie identification</div>
+                </div>
+
+                <div class="modal-actions" style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 8px;">
+                    <button type="button" class="btn-modal-cancel" onclick="closeNewRequestModal()">Cancel</button>
+                    <button type="submit" class="btn-modal-confirm primary" id="btnSubmitNewRequest" style="display: inline-flex; align-items: center; gap: 6px;">
+                        <span>Add Request</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    `;
+
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => {
+        backdrop.classList.add('active');
+        document.getElementById('newReqTitle')?.focus();
+    });
+
+    backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) closeNewRequestModal();
+    });
+}
+
+function closeNewRequestModal() {
+    const modal = document.getElementById('newRequestModal');
+    if (!modal) return;
+    modal.classList.remove('active');
+    setTimeout(() => modal.remove(), 200);
+}
+
+function toggleRequestYearField() {
+    const typeSelect = document.getElementById('newReqType');
+    const yearGroup = document.getElementById('newReqYearGroup');
+    if (!typeSelect || !yearGroup) return;
+    if (typeSelect.value === 'movie') {
+        yearGroup.style.display = 'flex';
+    } else {
+        yearGroup.style.display = 'none';
+        const yearInput = document.getElementById('newReqYear');
+        if (yearInput) yearInput.value = '';
+    }
+}
+
+async function handleNewRequestSubmit(e) {
+    e.preventDefault();
+    const titleInput = document.getElementById('newReqTitle');
+    const typeSelect = document.getElementById('newReqType');
+    const yearInput = document.getElementById('newReqYear');
+    const btnSubmit = document.getElementById('btnSubmitNewRequest');
+
+    const title = titleInput?.value?.trim();
+    const type = typeSelect?.value || 'movie';
+    const year = type === 'movie' ? yearInput?.value?.trim() : '';
+
+    if (!title) {
+        showToast('Please enter a media title', 'warning');
+        return;
+    }
+
+    if (btnSubmit) {
+        btnSubmit.disabled = true;
+        btnSubmit.innerHTML = `<div class="spinner" style="width:12px;height:12px;border-width:2px;display:inline-block;margin-right:6px;"></div> Adding...`;
+    }
+
+    try {
+        const res = await safeApiFetch('/api/requested-media', {
+            method: 'POST',
+            body: JSON.stringify({ title, type, year: year || null })
+        });
+
+        if (isApiSuccessful(res)) {
+            showToast(res.message || `Added "${title}" to requested list`, 'success');
+            closeNewRequestModal();
+            loadRequestedMedia();
+        } else {
+            showToast(res?.error || res?.message || 'Failed to submit request', 'error');
+            if (btnSubmit) {
+                btnSubmit.disabled = false;
+                btnSubmit.textContent = 'Add Request';
+            }
+        }
+    } catch (err) {
+        showToast(err.message || 'Error submitting request', 'error');
+        if (btnSubmit) {
+            btnSubmit.disabled = false;
+            btnSubmit.textContent = 'Add Request';
+        }
+    }
+}
+
+let hasActiveDownloadJobs = false;
+
 async function fetchQueueStats() {
     try {
         const res = await fetch('/api/queue', { credentials: 'include' });
@@ -1771,6 +1957,8 @@ async function fetchQueueStats() {
             document.getElementById('metricCompletedCount').textContent = data.stats.completed || 0;
             document.getElementById('metricFailedCount').textContent = data.stats.failed || 0;
         }
+        hasActiveDownloadJobs = Boolean(data.hasActiveDownloads || (data.stats && ((data.stats.active || 0) > 0 || (data.stats.waiting || 0) > 0)) || ((data.activeDbCount || 0) > 0));
+        updateMoveAllButtonState();
     } catch {}
 }
 
@@ -2870,11 +3058,11 @@ function renderReleasesPagination() {
 
     bar.innerHTML = `
         <button class="btn-page ${cur <= 1 ? 'disabled' : ''}" onclick="loadNewReleases(${cur - 1}, true)" ${cur <= 1 ? 'disabled' : ''}>Previous</button>
-        <div style="display: flex; gap: 4px; align-items: center;">
+        <div class="page-numbers-wrap" style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap; justify-content: center;">
             ${pageBtnsHtml}
         </div>
-        <span class="page-indicator" style="font-size: 12px; color: var(--text-muted); margin: 0 4px;">Page ${cur} of ${total} (${releasesState.total} titles)</span>
         <button class="btn-page ${cur >= total ? 'disabled' : ''}" onclick="loadNewReleases(${cur + 1}, true)" ${cur >= total ? 'disabled' : ''}>Next</button>
+        <span class="page-indicator" style="font-size: 12px; color: var(--text-muted); margin: 0 4px;">Page ${cur} of ${total} (${releasesState.total} titles)</span>
     `;
 }
 
@@ -3349,11 +3537,11 @@ function renderTrendingPagination() {
 
     bar.innerHTML = `
         <button class="btn-page ${cur <= 1 ? 'disabled' : ''}" onclick="loadTrendingMedia(${cur - 1}, true)" ${cur <= 1 ? 'disabled' : ''}>Previous</button>
-        <div style="display: flex; gap: 4px; align-items: center;">
+        <div class="page-numbers-wrap" style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap; justify-content: center;">
             ${pageBtnsHtml}
         </div>
-        <span class="page-indicator" style="font-size: 12px; color: var(--text-muted); margin: 0 4px;">Page ${cur} of ${total} (${trendingState.total} titles)</span>
         <button class="btn-page ${cur >= total ? 'disabled' : ''}" onclick="loadTrendingMedia(${cur + 1}, true)" ${cur >= total ? 'disabled' : ''}>Next</button>
+        <span class="page-indicator" style="font-size: 12px; color: var(--text-muted); margin: 0 4px;">Page ${cur} of ${total} (${trendingState.total} titles)</span>
     `;
 }
 
@@ -3485,11 +3673,11 @@ function renderPopularPagination() {
 
     bar.innerHTML = `
         <button class="btn-page ${cur <= 1 ? 'disabled' : ''}" onclick="loadPopularMedia(${cur - 1}, true)" ${cur <= 1 ? 'disabled' : ''}>Previous</button>
-        <div style="display: flex; gap: 4px; align-items: center;">
+        <div class="page-numbers-wrap" style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap; justify-content: center;">
             ${pageBtnsHtml}
         </div>
-        <span class="page-indicator" style="font-size: 12px; color: var(--text-muted); margin: 0 4px;">Page ${cur} of ${total} (${popularState.total} titles)</span>
         <button class="btn-page ${cur >= total ? 'disabled' : ''}" onclick="loadPopularMedia(${cur + 1}, true)" ${cur >= total ? 'disabled' : ''}>Next</button>
+        <span class="page-indicator" style="font-size: 12px; color: var(--text-muted); margin: 0 4px;">Page ${cur} of ${total} (${popularState.total} titles)</span>
     `;
 }
 
@@ -3521,7 +3709,34 @@ function isApiSuccessful(res) {
     return false;
 }
 
+function updateMoveAllButtonState() {
+    const btn = document.getElementById('btnMoveAllMedia');
+    if (!btn) return;
+    const hasPending = pendingMediaItems && pendingMediaItems.length > 0;
+
+    if (hasActiveDownloadJobs) {
+        btn.disabled = true;
+        btn.style.opacity = '0.45';
+        btn.style.cursor = 'not-allowed';
+        btn.style.filter = 'grayscale(1)';
+        btn.title = 'Downloads in progress in Download Station. Move is locked until downloads finish.';
+    } else if (!hasPending) {
+        btn.disabled = true;
+        btn.style.opacity = '0.45';
+        btn.style.cursor = 'not-allowed';
+        btn.style.filter = 'grayscale(1)';
+        btn.title = 'No pending downloads awaiting library ingest.';
+    } else {
+        btn.disabled = false;
+        btn.style.opacity = '1';
+        btn.style.cursor = 'pointer';
+        btn.style.filter = 'none';
+        btn.title = 'Move all pending completed media to Jellyfin library';
+    }
+}
+
 async function scanPendingMedia() {
+    fetchQueueStats();
     const tbody = document.getElementById('pendingMediaTableBody');
     if (tbody) {
         tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 25px; color: var(--text-muted);"><div class="spinner" style="margin: 0 auto 8px;"></div>Analyzing pending downloads...</td></tr>`;
@@ -3530,6 +3745,7 @@ async function scanPendingMedia() {
     const data = await safeApiFetch('/api/media/analyze');
     if (!isApiSuccessful(data)) {
         if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--accent-rose);">${escapeHtml(data?.error || data?.message || 'Failed to scan media directory')}</td></tr>`;
+        updateMoveAllButtonState();
         return;
     }
 
@@ -3558,6 +3774,7 @@ async function scanPendingMedia() {
     }
 
     renderPendingMediaTable();
+    updateMoveAllButtonState();
 }
 
 function renderPendingMediaTable() {
@@ -3566,6 +3783,7 @@ function renderPendingMediaTable() {
 
     if (!pendingMediaItems || pendingMediaItems.length === 0) {
         tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 25px; color: var(--text-muted);">No pending media awaiting ingest. All completed files are moved to Jellyfin!</td></tr>`;
+        updateMoveAllButtonState();
         return;
     }
 
@@ -3606,7 +3824,7 @@ function renderPendingMediaTable() {
                     </div>
                 </td>
                 <td style="text-align: right;">
-                    <button class="btn-header primary" onclick="moveMediaItem('${safeItemJson}')" style="padding: 4px 10px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;">
+                    <button class="btn-header primary" onclick="moveMediaItem('${safeItemJson}')" ${hasActiveDownloadJobs ? 'disabled style="opacity:0.4;cursor:not-allowed;"' : ''} style="padding: 4px 10px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;">
                         <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                         Move
                     </button>
@@ -3614,9 +3832,14 @@ function renderPendingMediaTable() {
             </tr>
         `;
     }).join('');
+    updateMoveAllButtonState();
 }
 
 async function moveMediaItem(encodedItem) {
+    if (hasActiveDownloadJobs) {
+        showToast('Cannot move media: Downloads are currently in progress in Download Station. Please wait until they finish.', 'warning');
+        return;
+    }
     try {
         const item = JSON.parse(decodeURIComponent(encodedItem));
         showToast(`Queueing move for "${item.file_name}"...`, 'info');
@@ -3636,6 +3859,10 @@ async function moveMediaItem(encodedItem) {
 }
 
 async function moveAllPendingMedia() {
+    if (hasActiveDownloadJobs) {
+        showToast('Cannot move media: Downloads are currently in progress in Download Station. Please wait until they finish.', 'warning');
+        return;
+    }
     if (!pendingMediaItems || pendingMediaItems.length === 0) {
         showToast('No pending media files to move', 'info');
         return;
@@ -3714,13 +3941,22 @@ async function loadMediaHistory() {
         return;
     }
 
-    if (data.history.length === 0) {
-        if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 20px; color: var(--text-muted);">No completed move records yet.</td></tr>`;
+    // Soft filter: Only display logs completed within the last 1 hour without deleting DB records
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    const recentHistory = data.history.filter(row => {
+        const timeStr = row.completed_at || row.created_at;
+        if (!timeStr) return true;
+        const time = new Date(timeStr).getTime();
+        return !isNaN(time) && time >= oneHourAgo;
+    });
+
+    if (recentHistory.length === 0) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 25px; color: var(--text-muted);">No media moves in the last 1 hour. Earlier records are preserved in audit storage.</td></tr>`;
         return;
     }
 
     if (tbody) {
-        tbody.innerHTML = data.history.map(row => {
+        tbody.innerHTML = recentHistory.map(row => {
             const hash = row.source_sha256 || row.destination_sha256 || '';
             const hashShort = hash ? `${hash.substring(0, 8)}...${hash.substring(hash.length - 6)}` : 'Verified';
             const isVerified = row.status === 'moved' || row.status === 'verified';
@@ -3969,6 +4205,7 @@ async function loadOptimizerStatus() {
 window.scanPendingMedia = scanPendingMedia;
 window.moveMediaItem = moveMediaItem;
 window.moveAllPendingMedia = moveAllPendingMedia;
+window.updateMoveAllButtonState = updateMoveAllButtonState;
 window.loadMediaHistory = loadMediaHistory;
 window.loadOptimizerData = loadOptimizerData;
 window.triggerOptimizerScan = triggerOptimizerScan;
@@ -3976,5 +4213,11 @@ window.queueOptimization = queueOptimization;
 window.queueAllUnoptimized = queueAllUnoptimized;
 window.cancelOptimizerJob = cancelOptimizerJob;
 window.clearOptimizerHistory = clearOptimizerHistory;
+
+// Expose New Request Modal globals
+window.openNewRequestModal = openNewRequestModal;
+window.closeNewRequestModal = closeNewRequestModal;
+window.toggleRequestYearField = toggleRequestYearField;
+window.handleNewRequestSubmit = handleNewRequestSubmit;
 
 

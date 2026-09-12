@@ -4,6 +4,7 @@ import {
     getMoviePath,
     getSeriesPath,
     getBatchPackPath,
+    cleanSeriesTitleAndSeason,
     downloadHttpStream,
     formatBytes,
     type DownloadProgress
@@ -15,6 +16,7 @@ import {
     type DownloadServer
 } from "../download/api-client.js";
 import { broadcastDownloadProgress, broadcastDownloadComplete } from "../web/ws.js";
+import { lookupMedia, cleanMediaTitle } from "../../common/tmdb/client.js";
 
 export interface DownloadJobData {
     requestId: string;
@@ -290,13 +292,34 @@ export function createDownloadWorker() {
             // Determine target download file path
             let targetPath: string;
             if (data.type === "series") {
+                const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(data.title, data.season);
                 if (data.isBatchPack) {
-                    targetPath = getBatchPackPath(data.title, data.fileName);
+                    targetPath = getBatchPackPath(cleanSeriesTitle, cleanSeason, data.fileName);
                 } else {
-                    targetPath = getSeriesPath(data.title, data.season || 1, data.episode || 1, data.fileName);
+                    targetPath = getSeriesPath(cleanSeriesTitle, cleanSeason, data.episode || 1, data.fileName);
                 }
             } else {
-                targetPath = getMoviePath(data.title, data.year || "2024", data.fileName);
+                const cleanInfo = cleanMediaTitle(data.title);
+                let movieTitle = cleanInfo.title || data.title;
+                let movieYear = (data.year && data.year !== "unknown" && /^\d{4}$/.test(String(data.year).trim()))
+                    ? String(data.year).trim()
+                    : cleanInfo.year;
+
+                try {
+                    const tmdb = await lookupMedia(movieTitle, movieYear);
+                    if (tmdb && tmdb.found) {
+                        if (tmdb.year) movieYear = tmdb.year;
+                        if (tmdb.title) movieTitle = tmdb.title;
+                    }
+                } catch (e: any) {
+                    console.warn(`[WORKER] TMDB movie lookup fallback: ${e?.message}`);
+                }
+
+                if (movieYear && data.year !== movieYear) {
+                    data.year = movieYear;
+                    updateDB(data.requestId, { year: movieYear }).catch(() => {});
+                }
+                targetPath = getMoviePath(movieTitle || data.title, movieYear, data.fileName);
             }
 
             console.log(`[WORKER] Downloading to destination: ${targetPath}`);
