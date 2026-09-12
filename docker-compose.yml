@@ -25,6 +25,8 @@ services:
       dockerfile: Dockerfile
     container_name: movie-scrape
     restart: unless-stopped
+    env_file:
+      - env.txt
     dns:
       - 8.8.8.8
       - 1.1.1.1

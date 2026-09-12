@@ -2,6 +2,7 @@ import asyncio
 import base64
 import codecs
 import json
+import os
 import re
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
@@ -857,7 +858,57 @@ class CloudflareScraper:
                     except Exception:
                         hits = []
 
-                    for hit in hits[:5]:
+                    # If hits are few or empty, try a broader query (e.g. series + season)
+                    if not hits:
+                        clean_sr_q = re.sub(r"(?:Episode|\bEp\b|\bE\d+\b|720p|1080p|480p|4k|zip|pack).*", "", decoded_q, flags=re.I).strip()
+                        m_s = re.search(r"\bS(?:eason\s*)?0?(\d{1,2})\b", decoded_q, re.I)
+                        if clean_sr_q and m_s:
+                            clean_sr_q = f"{clean_sr_q} S{int(m_s.group(1)):02d}"
+                        if clean_sr_q and clean_sr_q != decoded_q:
+                            try:
+                                api_res2 = await session.get(
+                                    search_api_url,
+                                    params={"api": "search", "q": clean_sr_q, "page": "1", "from_ac": from_ac},
+                                    headers=api_headers,
+                                    timeout=DEFAULT_TIMEOUT
+                                )
+                                hits = api_res2.json().get("hits", [])
+                            except Exception:
+                                pass
+
+                    # Score hits to prioritize candidate matches for the requested query
+                    ep_target = cls.extract_episode_number(decoded_q)
+                    is_batch_target = any(k in decoded_q.lower() for k in ["pack", "zip", "all episode", "season pack"])
+                    res_target = ""
+                    for r in ["4k", "2160p", "1080p", "720p", "480p"]:
+                        if r in decoded_q.lower():
+                            res_target = r
+                            break
+
+                    def score_hit(hit: Dict[str, Any]) -> int:
+                        fn = (hit.get("file_name") or "").lower()
+                        score = 0
+                        hit_ep = cls.extract_episode_number(fn)
+                        if ep_target is not None:
+                            if hit_ep == ep_target:
+                                score += 100
+                            elif hit_ep is not None:
+                                score -= 50
+                        elif is_batch_target:
+                            if any(k in fn for k in [".zip", "pack", "season.pack", "complete"]):
+                                score += 50
+                            if hit_ep is not None:
+                                score -= 30
+                        
+                        if res_target and res_target in fn:
+                            score += 25
+                        if "hevc" in decoded_q.lower() and ("hevc" in fn or "x265" in fn):
+                            score += 15
+                        return score
+
+                    sorted_hits = sorted(hits, key=score_hit, reverse=True)
+
+                    for hit in sorted_hits[:15]:
                         hit_url = hit.get("url")
                         if not hit_url:
                             continue
@@ -1359,6 +1410,19 @@ class CloudflareScraper:
                         "file_size": res.get("file_size") or opt.get("size") or "",
                     })
 
+        # Multi-Format TV Series Expansion:
+        # If this is a TV series, recover ALL missing qualities (480p, 720p, 1080p, HEVC)
+        # and ALL individual episodes (E01 to E09+) from search-recover if available!
+        if is_tv:
+            sr_opt = next((opt for opt in options if "search-recover.php" in opt.get("link_url", "").lower()), None)
+            if sr_opt:
+                await cls._expand_series_from_search_recover(
+                    sr_url=sr_opt["link_url"],
+                    title=details.get("title", ""),
+                    raw_downloads_map=raw_downloads_map,
+                    impersonate=impersonate
+                )
+
         # Sort keys by batch pack priority -> Episode order -> Movie quality
         sorted_downloads_map = {
             k: raw_downloads_map[k] for k in sorted(raw_downloads_map.keys(), key=cls._sort_download_keys)
@@ -1373,3 +1437,102 @@ class CloudflareScraper:
             "screenshots": details.get("screenshots", []),
             "downloads": sorted_downloads_map,
         }
+
+    @classmethod
+    async def _expand_series_from_search_recover(
+        cls,
+        sr_url: str,
+        title: str,
+        raw_downloads_map: Dict[str, List[Dict[str, Any]]],
+        impersonate: str = DEFAULT_IMPERSONATE
+    ) -> None:
+        """
+        Discovers all available season batches (480p, 720p, 1080p, 4K) and individual episodes
+        from HubCloud's search-recover endpoint so TV series never miss any format or episode-wise links.
+        """
+        try:
+            parsed_sr = urllib.parse.urlsplit(sr_url)
+            qs_sr = urllib.parse.parse_qs(parsed_sr.query)
+            from_ac = qs_sr.get("from_ac", [""])[0]
+
+            headers = cls._get_browser_headers()
+            if not from_ac:
+                async with AsyncSession(impersonate=impersonate, verify=False) as session:
+                    res_sr = await session.get(sr_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                    m_ac = re.search(r'const\s+FROM_AC_TOKEN\s*=\s*["\']([^"\']+)["\']', res_sr.text)
+                    if m_ac:
+                        from_ac = m_ac.group(1)
+
+            if not from_ac:
+                return
+
+            # Determine series name and season
+            m_s = re.search(r"season\s*(\d{1,2})|\bS(\d{1,2})\b", title, re.I)
+            season_num = int(m_s.group(1) or m_s.group(2)) if m_s else 1
+            clean_title = re.sub(r"\(.*?\)|\[.*?\]|\bseason\s*\d+|\bS\d+|\bWEB-DL\b|\bHindi\b.*", "", title, flags=re.I).strip()
+            search_query = f"{clean_title} S{season_num:02d}"
+
+            search_api_url = f"{parsed_sr.scheme}://{parsed_sr.netloc}/drive/search-recover.php"
+            api_headers = {**headers, "Accept": "application/json", "Referer": sr_url}
+
+            async with AsyncSession(impersonate=impersonate, verify=False) as session:
+                res = await session.get(
+                    search_api_url,
+                    params={"api": "search", "q": search_query, "page": "1", "from_ac": from_ac},
+                    headers=api_headers,
+                    timeout=DEFAULT_TIMEOUT
+                )
+                hits = res.json().get("hits", [])
+                if not hits:
+                    return
+
+                sem = asyncio.Semaphore(6)
+
+                async def resolve_one_hit(hit: Dict[str, Any]):
+                    hit_url = hit.get("url")
+                    fn = hit.get("file_name", "")
+                    if not hit_url:
+                        return None
+                    async with sem:
+                        try:
+                            resolved = await cls.extract_final_download_links(hit_url, impersonate=impersonate)
+                            if resolved and resolved.get("final_downloads"):
+                                if not resolved.get("filename"):
+                                    resolved["filename"] = fn
+                                if not resolved.get("file_size") and hit.get("size"):
+                                    resolved["file_size"] = hit["size"]
+                                return hit, resolved
+                        except Exception:
+                            return None
+                    return None
+
+                resolved_hits = await asyncio.gather(*(resolve_one_hit(h) for h in hits))
+
+                for item in resolved_hits:
+                    if not item:
+                        continue
+                    hit, res = item
+                    fn = res.get("filename") or hit.get("file_name", "")
+                    is_batch_hit = bool(".zip" in fn.lower() or "pack" in fn.lower() or "complete" in fn.lower())
+                    final_downloads = res.get("final_downloads", [])
+                    for dl in final_downloads:
+                        ep_tag, res_label, codec, is_batch_detected = cls._parse_link_metadata(
+                            opt={"label": fn, "quality": "", "category_type": "batch_pack" if is_batch_hit else "episode", "is_batch": is_batch_hit},
+                            dl=dl,
+                            res_filename=fn,
+                            is_tv_series=True
+                        )
+                        format_key = cls._generate_format_key(ep_tag, res_label, codec, is_batch_detected)
+                        if format_key not in raw_downloads_map:
+                            raw_downloads_map[format_key] = []
+
+                        dl_url = dl.get("download_url")
+                        if dl_url and not any(existing.get("download_url") == dl_url for existing in raw_downloads_map[format_key]):
+                            raw_downloads_map[format_key].append({
+                                "server_name": dl.get("server_name"),
+                                "server_type": dl.get("server_type"),
+                                "download_url": dl_url,
+                                "file_size": res.get("file_size") or hit.get("size") or "",
+                            })
+        except Exception as e:
+            print(f"[SEARCH-RECOVER EXPANSION ERROR]: {e}")
