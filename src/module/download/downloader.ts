@@ -61,6 +61,8 @@ export function getMoviePath(title: string, year?: string, originalFileName?: st
         .replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|web[-_.\s]*dl|webrip|bluray|brrip|dvdrip|x264|x265|hevc|10bit|dual audio|hindi|english|org|dd5\.1|esubs?|full movie)\b.*$/i, "")
         .replace(/[–—|-].*$/, "")
         .replace(/\[.*?\]/g, "")
+        .replace(/\s*\(\s*\)/g, "")
+        .replace(/\s+/g, " ")
         .trim();
 
     const cleanTitle = sanitizeFilename(toTitleCase(rawTitle)) || "Movie";

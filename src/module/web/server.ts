@@ -24,6 +24,7 @@ import {
 import { cleanSeriesTitleAndSeason } from "../download/downloader.js";
 import { searchMedia, getDownloadLinks, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats } from "../download/api-client.js";
 import { handleChat } from "./chat.js";
+import { parseMediaWithAI, formatMediaJobTitle, formatMediaFileName } from "../ai/cleaner.js";
 
 const app = express();
 app.use(express.json());
@@ -828,53 +829,36 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
 
         const servers = sortServersByPriority(rawServers);
         const actualFileSize = fileSize || servers[0]?.file_size || "Direct Download";
-        const cleanName = details.name || customTitle || "Media";
 
-        const isSeries = Boolean(isBatch || episodeNum !== undefined || qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"));
-        const mediaType = isSeries ? "series" : "movie";
+        // AI Metadata Extraction: Send raw names/titles to AI to extract clean title, release year, season, episode
+        const rawNameToParse = [details.name, customTitle].filter(Boolean).join(" ");
+        const aiMeta = await parseMediaWithAI(rawNameToParse);
 
-        let jobTitle = cleanName;
-        let jobFileName = `${cleanName}.mkv`;
-        let movieYear: string | undefined;
-
-        if (isSeries) {
-            const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(cleanName, episodeNum !== undefined ? 1 : undefined);
+        const isExplicitSeries = Boolean(isBatch || episodeNum !== undefined || qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"));
+        if (isExplicitSeries) {
+            aiMeta.type = "series";
             if (episodeNum !== undefined) {
-                jobTitle = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}`;
-                jobFileName = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}.mkv`;
+                aiMeta.episode = episodeNum;
+                aiMeta.isBatch = false;
             } else {
-                jobTitle = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season Batch)`;
-                jobFileName = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season).zip`;
+                aiMeta.isBatch = true;
             }
-        } else {
-            // Movie: Clean title and fetch/verify exact release year from TMDB
-            const { title: rawCleanTitle, year: extractedYear } = cleanMediaTitle(cleanName);
-            let verifiedTitle = rawCleanTitle || cleanName;
-            movieYear = extractedYear;
-
-            try {
-                const tmdb = await lookupMedia(rawCleanTitle, extractedYear);
-                if (tmdb && tmdb.found) {
-                    if (tmdb.year) movieYear = tmdb.year;
-                    if (tmdb.title) verifiedTitle = tmdb.title;
-                }
-            } catch (e: any) {
-                console.warn(`[DOWNLOAD-SPECIFIC] TMDB verification fallback: ${e?.message}`);
-            }
-
-            jobTitle = movieYear ? `${verifiedTitle} (${movieYear})` : verifiedTitle;
-            jobFileName = movieYear ? `${verifiedTitle} (${movieYear}).mkv` : `${verifiedTitle}.mkv`;
         }
+
+        const mediaType = aiMeta.type;
+        const movieYear = aiMeta.year;
+        const jobTitle = formatMediaJobTitle(aiMeta);
+        const jobFileName = formatMediaFileName(aiMeta);
 
         // Enforce Jellyfin library duplicate check before downloading
         try {
-            const jfCheck = await checkMediaExists(cleanName, mediaType, movieYear);
+            const jfCheck = await checkMediaExists(aiMeta.title, mediaType, movieYear);
             if (jfCheck.exists) {
-                console.log(`[DOWNLOAD-SPECIFIC] "${cleanName}" is already in Jellyfin library (${jfCheck.type}). Blocking duplicate download.`);
+                console.log(`[DOWNLOAD-SPECIFIC] "${aiMeta.title}" is already in Jellyfin library (${jfCheck.type}). Blocking duplicate download.`);
                 return res.status(409).json({
                     success: false,
                     alreadyInJellyfin: true,
-                    error: `"${jfCheck.item?.Name || cleanName}" already exists in your Jellyfin ${jfCheck.type || "media"} library! Re-download is prevented.`
+                    error: `"${jfCheck.item?.Name || aiMeta.title}" already exists in your Jellyfin ${jfCheck.type || "media"} library! Re-download is prevented.`
                 });
             }
         } catch (jfErr: any) {
@@ -918,8 +902,8 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             year: movieYear || null,
             type: mediaType,
             status: "queued",
-            season: isSeries ? 1 : null,
-            episode: episodeNum !== undefined ? episodeNum : null,
+            season: mediaType === "series" ? (aiMeta.season || 1) : null,
+            episode: mediaType === "series" ? (aiMeta.episode ?? null) : null,
             fileSize: actualFileSize,
             requestedBy: req.user.userId,
         });
@@ -929,11 +913,11 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             type: mediaType,
             title: jobTitle,
             year: movieYear,
-            season: isSeries ? 1 : undefined,
-            episode: episodeNum !== undefined ? episodeNum : undefined,
+            season: mediaType === "series" ? (aiMeta.season || 1) : undefined,
+            episode: mediaType === "series" ? (aiMeta.episode ?? undefined) : undefined,
             servers,
             fileSize: actualFileSize,
-            isBatchPack: Boolean(isBatch || qualityKey.startsWith("batch_")),
+            isBatchPack: Boolean(aiMeta.isBatch),
             fileName: jobFileName,
         });
 
@@ -1001,7 +985,7 @@ app.post("/api/select", requireMod, async (req: any, res) => {
         }
 
         const isSeries = quality.isBatchPack || quality.isEpisodeList;
-        const mediaType = isSeries ? "series" : "movie";
+        let mediaType: "movie" | "series" = isSeries ? "series" : "movie";
 
         if (!chosenYear && mediaType === "movie") {
             const yMatch = (details.name || chosenTitle).match(/(?:\(|\b)(19\d{2}|20\d{2})(?:\)|\b)/);
@@ -1038,7 +1022,10 @@ app.post("/api/select", requireMod, async (req: any, res) => {
         }
 
         if (quality.isEpisodeList && quality.episodes && quality.episodes.length > 0) {
-            const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(details.name, 1);
+            const rawNameToParse = [details.name, chosenYear].filter(Boolean).join(" ");
+            const aiMeta = await parseMediaWithAI(rawNameToParse);
+            const cleanSeriesTitle = aiMeta.title;
+            const cleanSeason = aiMeta.season || 1;
             const queuedEps: string[] = [];
             for (const ep of quality.episodes) {
                 const epReqId = `req_${Date.now()}_ep${ep.episodeNum}_${Math.random().toString(36).slice(2, 6)}`;
@@ -1087,30 +1074,19 @@ app.post("/api/select", requireMod, async (req: any, res) => {
         const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const fileSize = quality.fileSize || "720p";
 
-        let jobTitle = details.name;
-        let jobFileName = `${details.name}.mkv`;
-
+        // AI Metadata Extraction: clean title, real release year, type, season
+        const rawNameToParse = [details.name, chosenYear].filter(Boolean).join(" ");
+        const aiMeta = await parseMediaWithAI(rawNameToParse);
         if (isSeries) {
-            const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(details.name, 1);
-            jobTitle = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season Batch)`;
-            jobFileName = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season).zip`;
+            aiMeta.type = "series";
+            aiMeta.isBatch = true;
         } else {
-            const { title: rawCleanTitle, year: extractedYear } = cleanMediaTitle(details.name);
-            let verifiedTitle = rawCleanTitle || details.name;
-            let movieYear = chosenYear || extractedYear;
-
-            try {
-                const tmdb = await lookupMedia(rawCleanTitle, movieYear);
-                if (tmdb && tmdb.found) {
-                    if (tmdb.year) movieYear = tmdb.year;
-                    if (tmdb.title) verifiedTitle = tmdb.title;
-                }
-            } catch {}
-
-            chosenYear = movieYear || chosenYear;
-            jobTitle = chosenYear ? `${verifiedTitle} (${chosenYear})` : verifiedTitle;
-            jobFileName = chosenYear ? `${verifiedTitle} (${chosenYear}).mkv` : `${verifiedTitle}.mkv`;
+            aiMeta.type = "movie";
         }
+        mediaType = aiMeta.type;
+        chosenYear = aiMeta.year || chosenYear;
+        const jobTitle = formatMediaJobTitle(aiMeta);
+        const jobFileName = formatMediaFileName(aiMeta);
 
         await db.insert(schema.downloads).values({
             requestId,
@@ -1118,6 +1094,8 @@ app.post("/api/select", requireMod, async (req: any, res) => {
             year: chosenYear || null,
             type: mediaType,
             status: "queued",
+            season: mediaType === "series" ? (aiMeta.season || 1) : null,
+            episode: mediaType === "series" ? (aiMeta.episode ?? null) : null,
             fileSize,
             requestedBy: req.user.userId,
         });
@@ -1129,7 +1107,8 @@ app.post("/api/select", requireMod, async (req: any, res) => {
             year: chosenYear || undefined,
             servers: quality.servers,
             fileSize,
-            isBatchPack: quality.isBatchPack,
+            isBatchPack: quality.isBatchPack || Boolean(aiMeta.isBatch),
+            season: mediaType === "series" ? (aiMeta.season || 1) : undefined,
             fileName: jobFileName,
         });
 
@@ -1179,15 +1158,22 @@ app.post("/api/select-all-episodes", requireMod, async (req: any, res) => {
             return res.status(404).json({ error: "No download links found." });
         }
 
+        const aiMeta = await parseMediaWithAI(details.name);
+
         if (quality.isBatchPack) {
             const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
             const fileSize = quality.fileSize || "Full Season Pack 720p";
+            const batchMeta = { ...aiMeta, type: "series" as const, isBatch: true };
+            const jobTitle = formatMediaJobTitle(batchMeta);
+            const jobFileName = formatMediaFileName(batchMeta);
 
             await db.insert(schema.downloads).values({
                 requestId,
-                title: details.name,
+                title: jobTitle,
                 type: "series",
                 status: "queued",
+                season: batchMeta.season || 1,
+                year: batchMeta.year || null,
                 fileSize,
                 requestedBy: req.user.userId,
             });
@@ -1195,38 +1181,46 @@ app.post("/api/select-all-episodes", requireMod, async (req: any, res) => {
             downloadQueue.addJob({
                 requestId,
                 type: "series",
-                title: details.name,
+                title: jobTitle,
+                year: batchMeta.year || undefined,
                 servers: quality.servers,
                 fileSize,
                 isBatchPack: true,
-                fileName: `${details.name} (Full Season Pack).zip`,
+                season: batchMeta.season || 1,
+                fileName: jobFileName,
             });
 
             broadcastNewDownload({
                 jobId: requestId,
-                title: `${details.name} (Batch Pack)`,
+                title: jobTitle,
                 type: "series",
                 requestedBy: req.user.email,
             });
 
             return res.json({
                 success: true,
-                message: `Batch Season Pack queued for "${details.name}" (${fileSize}).`,
+                message: `Batch Season Pack queued for "${jobTitle}" (${fileSize}).`,
                 isBatchPack: true,
             });
         }
 
         if (quality.isEpisodeList && quality.episodes) {
+            const cleanSeriesTitle = aiMeta.title;
+            const cleanSeason = aiMeta.season || 1;
             const queued: any[] = [];
             for (const ep of quality.episodes) {
                 const epReqId = `req_${Date.now()}_ep${ep.episodeNum}_${Math.random().toString(36).slice(2, 6)}`;
+                const epTitle = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(ep.episodeNum).padStart(2, "0")}`;
+                const epFileName = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(ep.episodeNum).padStart(2, "0")}.mkv`;
+
                 await db.insert(schema.downloads).values({
                     requestId: epReqId,
-                    title: details.name,
+                    title: epTitle,
                     type: "series",
                     status: "queued",
-                    season: 1,
+                    season: cleanSeason,
                     episode: ep.episodeNum,
+                    year: aiMeta.year || null,
                     fileSize: ep.servers[0]?.file_size || "720p",
                     requestedBy: req.user.userId,
                 });
@@ -1234,20 +1228,21 @@ app.post("/api/select-all-episodes", requireMod, async (req: any, res) => {
                 downloadQueue.addJob({
                     requestId: epReqId,
                     type: "series",
-                    title: details.name,
-                    season: 1,
+                    title: epTitle,
+                    season: cleanSeason,
                     episode: ep.episodeNum,
+                    year: aiMeta.year || undefined,
                     servers: ep.servers,
                     fileSize: ep.servers[0]?.file_size || "720p",
-                    fileName: `${details.name} - S01E${String(ep.episodeNum).padStart(2, "0")}.mkv`,
+                    fileName: epFileName,
                 });
 
-                queued.push({ episode: ep.episodeNum, title: `Episode ${ep.episodeNum}`, status: "queued" });
+                queued.push({ episode: ep.episodeNum, title: epTitle, status: "queued" });
             }
 
             return res.json({
                 success: true,
-                title: details.name,
+                title: cleanSeriesTitle,
                 total: queued.length,
                 queued: queued.length,
                 episodes: queued,

@@ -17,6 +17,7 @@ import {
 } from "../download/api-client.js";
 import { broadcastDownloadProgress, broadcastDownloadComplete } from "../web/ws.js";
 import { lookupMedia, cleanMediaTitle } from "../../common/tmdb/client.js";
+import { parseMediaWithAI } from "../ai/cleaner.js";
 
 export interface DownloadJobData {
     requestId: string;
@@ -289,37 +290,28 @@ export function createDownloadWorker() {
                 throw new Error(`No downloadable servers available for "${data.title}"`);
             }
 
-            // Determine target download file path
+            // Determine target download file path using AI metadata
             let targetPath: string;
-            if (data.type === "series") {
-                const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(data.title, data.season);
-                if (data.isBatchPack) {
+            const rawNameToParse = [data.title, data.year, data.fileName].filter(Boolean).join(" ");
+            const aiMeta = await parseMediaWithAI(rawNameToParse);
+
+            if (data.type === "series" || aiMeta.type === "series") {
+                const cleanSeriesTitle = aiMeta.title;
+                const cleanSeason = aiMeta.season || data.season || 1;
+                if (data.isBatchPack || aiMeta.isBatch) {
                     targetPath = getBatchPackPath(cleanSeriesTitle, cleanSeason, data.fileName);
                 } else {
-                    targetPath = getSeriesPath(cleanSeriesTitle, cleanSeason, data.episode || 1, data.fileName);
+                    targetPath = getSeriesPath(cleanSeriesTitle, cleanSeason, data.episode || aiMeta.episode || 1, data.fileName);
                 }
             } else {
-                const cleanInfo = cleanMediaTitle(data.title);
-                let movieTitle = cleanInfo.title || data.title;
-                let movieYear = (data.year && data.year !== "unknown" && /^\d{4}$/.test(String(data.year).trim()))
-                    ? String(data.year).trim()
-                    : cleanInfo.year;
-
-                try {
-                    const tmdb = await lookupMedia(movieTitle, movieYear);
-                    if (tmdb && tmdb.found) {
-                        if (tmdb.year) movieYear = tmdb.year;
-                        if (tmdb.title) movieTitle = tmdb.title;
-                    }
-                } catch (e: any) {
-                    console.warn(`[WORKER] TMDB movie lookup fallback: ${e?.message}`);
-                }
+                const movieTitle = aiMeta.title;
+                const movieYear = aiMeta.year || (data.year && /^\d{4}$/.test(String(data.year).trim()) ? String(data.year).trim() : undefined);
 
                 if (movieYear && data.year !== movieYear) {
                     data.year = movieYear;
                     updateDB(data.requestId, { year: movieYear }).catch(() => {});
                 }
-                targetPath = getMoviePath(movieTitle || data.title, movieYear, data.fileName);
+                targetPath = getMoviePath(movieTitle, movieYear, data.fileName);
             }
 
             console.log(`[WORKER] Downloading to destination: ${targetPath}`);

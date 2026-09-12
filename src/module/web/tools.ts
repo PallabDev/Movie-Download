@@ -20,6 +20,7 @@ import {
 } from "../../common/tmdb/client.js";
 import { cleanSeriesTitleAndSeason } from "../download/downloader.js";
 import { broadcastNewDownload, broadcastAiStatus } from "./ws.js";
+import { parseMediaWithAI, formatMediaJobTitle, formatMediaFileName } from "../ai/cleaner.js";
 
 function safeHarness() {
     try {
@@ -315,37 +316,25 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
             const actualSize = fileSize || servers[0]?.file_size || "Direct";
 
             const isSeriesItem = Boolean(isBatch || episodeNum !== undefined || qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"));
-            const mediaType = isSeriesItem ? "series" : "movie";
+            let mediaType: "movie" | "series" = isSeriesItem ? "series" : "movie";
 
-            let jobTitle = cleanName;
-            let jobFileName = `${cleanName}.mkv`;
-            let movieYear: string | undefined;
-
+            const rawNameToParse = [cleanName, targetLink].filter(Boolean).join(" ");
+            const aiMeta = await parseMediaWithAI(rawNameToParse);
             if (isSeriesItem) {
-                const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(cleanName, episodeNum !== undefined ? 1 : undefined);
+                aiMeta.type = "series";
                 if (episodeNum !== undefined) {
-                    jobTitle = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}`;
-                    jobFileName = `${cleanSeriesTitle} - S${String(cleanSeason).padStart(2, "0")}E${String(episodeNum).padStart(2, "0")}.mkv`;
+                    aiMeta.episode = episodeNum;
+                    aiMeta.isBatch = false;
                 } else {
-                    jobTitle = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season Batch)`;
-                    jobFileName = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season).zip`;
+                    aiMeta.isBatch = true;
                 }
             } else {
-                const { title: rawCleanTitle, year: extractedYear } = cleanMediaTitle(cleanName);
-                let verifiedTitle = rawCleanTitle || cleanName;
-                movieYear = extractedYear;
-
-                try {
-                    const tmdb = await lookupMedia(rawCleanTitle, extractedYear);
-                    if (tmdb && tmdb.found) {
-                        if (tmdb.year) movieYear = tmdb.year;
-                        if (tmdb.title) verifiedTitle = tmdb.title;
-                    }
-                } catch {}
-
-                jobTitle = movieYear ? `${verifiedTitle} (${movieYear})` : verifiedTitle;
-                jobFileName = movieYear ? `${verifiedTitle} (${movieYear}).mkv` : `${verifiedTitle}.mkv`;
+                aiMeta.type = "movie";
             }
+            mediaType = aiMeta.type;
+            const movieYear = aiMeta.year;
+            const jobTitle = formatMediaJobTitle(aiMeta);
+            const jobFileName = formatMediaFileName(aiMeta);
 
             // Deduplication check
             try {
@@ -389,8 +378,8 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                     year: movieYear || null,
                     type: mediaType,
                     status: "queued",
-                    season: isSeriesItem ? 1 : null,
-                    episode: episodeNum !== undefined ? episodeNum : null,
+                    season: mediaType === "series" ? (aiMeta.season || 1) : null,
+                    episode: mediaType === "series" ? (aiMeta.episode ?? null) : null,
                     fileSize: actualSize,
                 });
             } catch (dbErr: any) {
@@ -402,11 +391,11 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                 type: mediaType,
                 title: jobTitle,
                 year: movieYear,
-                season: isSeriesItem ? 1 : undefined,
-                episode: episodeNum !== undefined ? episodeNum : undefined,
+                season: mediaType === "series" ? (aiMeta.season || 1) : undefined,
+                episode: mediaType === "series" ? (aiMeta.episode ?? undefined) : undefined,
                 servers,
                 fileSize: actualSize,
-                isBatchPack: Boolean(isBatch || qualityKey.startsWith("batch_")),
+                isBatchPack: Boolean(isBatch || aiMeta.isBatch),
                 fileName: jobFileName,
             });
 
@@ -439,7 +428,7 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
         }
 
         const isSeries = quality.isBatchPack || quality.isEpisodeList;
-        const mediaType = isSeries ? "series" : "movie";
+        let mediaType: "movie" | "series" = isSeries ? "series" : "movie";
 
         // Check if this media is already active or queued
         try {
@@ -531,30 +520,18 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
         const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const fileSizeStr = quality.fileSize || "720p High Speed";
 
-        let jobTitle = cleanName;
-        let jobFileName = `${cleanName}.mkv`;
-        let movieYear: string | undefined = targetYear;
-
+        const rawNameToParse = [cleanName, targetYear].filter(Boolean).join(" ");
+        const aiMeta = await parseMediaWithAI(rawNameToParse);
         if (isSeries) {
-            const { title: cleanSeriesTitle, season: cleanSeason } = cleanSeriesTitleAndSeason(cleanName, 1);
-            jobTitle = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season Batch)`;
-            jobFileName = `${cleanSeriesTitle} - Season ${String(cleanSeason).padStart(2, "0")} (Full Season).zip`;
+            aiMeta.type = "series";
+            aiMeta.isBatch = true;
         } else {
-            const { title: rawCleanTitle, year: extractedYear } = cleanMediaTitle(cleanName);
-            let verifiedTitle = rawCleanTitle || cleanName;
-            movieYear = targetYear || extractedYear;
-
-            try {
-                const tmdb = await lookupMedia(rawCleanTitle, movieYear);
-                if (tmdb && tmdb.found) {
-                    if (tmdb.year) movieYear = tmdb.year;
-                    if (tmdb.title) verifiedTitle = tmdb.title;
-                }
-            } catch {}
-
-            jobTitle = movieYear ? `${verifiedTitle} (${movieYear})` : verifiedTitle;
-            jobFileName = movieYear ? `${verifiedTitle} (${movieYear}).mkv` : `${verifiedTitle}.mkv`;
+            aiMeta.type = "movie";
         }
+        mediaType = aiMeta.type;
+        const movieYear = aiMeta.year;
+        const jobTitle = formatMediaJobTitle(aiMeta);
+        const jobFileName = formatMediaFileName(aiMeta);
 
         try {
             await db.insert(schema.downloads).values({
@@ -562,6 +539,8 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                 title: jobTitle,
                 type: mediaType,
                 status: "queued",
+                season: mediaType === "series" ? (aiMeta.season || 1) : null,
+                episode: mediaType === "series" ? (aiMeta.episode ?? null) : null,
                 year: movieYear || "",
                 fileSize: fileSizeStr,
             });
@@ -574,9 +553,11 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
             type: mediaType,
             title: jobTitle,
             year: movieYear || "",
+            season: mediaType === "series" ? (aiMeta.season || 1) : undefined,
+            episode: mediaType === "series" ? (aiMeta.episode ?? undefined) : undefined,
             servers: quality.servers,
             fileSize: fileSizeStr,
-            isBatchPack: quality.isBatchPack,
+            isBatchPack: quality.isBatchPack || Boolean(aiMeta.isBatch),
             fileName: jobFileName,
         });
 
