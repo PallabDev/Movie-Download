@@ -11,9 +11,9 @@ export const MediaMetadataSchema = z.object({
             if (val === null || val === undefined) return "";
             const s = String(val).trim();
             const m = s.match(/\b(19\d{2}|20\d{2})\b/);
-            return m ? m[1] : s;
+            return m ? m[1] : "";
         },
-        z.string().regex(/^\d{4}$/, "Must be a 4-digit release year")
+        z.string().default("")
     ),
     season: z.preprocess(
         (val) => (val === null || val === undefined || val === "" ? null : Number(val)),
@@ -145,7 +145,20 @@ You must respond ONLY with a raw JSON object matching this schema:
             return parsed;
         } catch (retryErr: any) {
             console.error(`[AI-CLEANER] AI extraction completely failed for "${key}":`, retryErr?.message);
-            throw retryErr;
+            // Safe fallback so download requests never fail or crash
+            const isSeries = /season|\bS\d|\bEP\b|episode/i.test(key);
+            const seasonMatch = key.match(/season\s*(\d{1,2})|\bS(\d{1,2})\b/i);
+            const epMatch = key.match(/(?:ep|episode)\s*(\d{1,3})|\bE(\d{1,3})\b/i);
+            const cleanTitle = key.split(/[\(\[\{]/)[0].trim() || key;
+            const yearMatch = key.match(/\b(19\d{2}|20\d{2})\b/);
+            return {
+                title: cleanTitle,
+                type: isSeries ? "series" : "movie",
+                year: yearMatch ? yearMatch[1] : "",
+                season: seasonMatch ? parseInt(seasonMatch[1] || seasonMatch[2], 10) : (isSeries ? 1 : null),
+                episode: epMatch ? parseInt(epMatch[1] || epMatch[2], 10) : null,
+                isBatch: isSeries && !epMatch
+            };
         }
     }
 }
