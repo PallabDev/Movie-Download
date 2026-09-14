@@ -11,6 +11,7 @@ import {
 } from "../download/downloader.js";
 import {
     getDownloadLinks,
+    resolveSpecificFormatLink,
     selectBest720pQuality,
     sortServersByPriority,
     type DownloadServer
@@ -34,6 +35,8 @@ export interface DownloadJobData {
     isBatchPack?: boolean;
     fileName?: string;
     fileSizeBytes?: number;
+    cleanTitle?: string;
+    linkUrl?: string;
     // Legacy compatibility fields
     bot?: string;
     btnMsgId?: number;
@@ -260,16 +263,32 @@ export function createDownloadWorker() {
             let servers: DownloadServer[] = data.servers || [];
 
             // If servers not yet resolved but targetUrl exists, resolve direct download links
-            if (servers.length === 0 && data.targetUrl) {
-                console.log(`[WORKER] Resolving download links from target URL: ${data.targetUrl}`);
-                const details = await getDownloadLinks(data.targetUrl);
-                const quality = selectBest720pQuality(details);
-                if (quality) {
-                    if (quality.isEpisodeList && quality.episodes && quality.episodes.length > 0) {
-                        const ep = data.episode ? quality.episodes.find(e => e.episodeNum === data.episode) : quality.episodes[0];
-                        servers = ep ? ep.servers : quality.episodes[0].servers;
-                    } else {
-                        servers = quality.servers;
+            if (servers.length === 0 && (data.targetUrl || data.linkUrl)) {
+                if (data.qualityKey || data.linkUrl) {
+                    console.log(`[WORKER] Resolving specific format: quality="${data.qualityKey}", url="${data.targetUrl || data.linkUrl}"`);
+                    try {
+                        const resolved = await resolveSpecificFormatLink(data.targetUrl || "", data.qualityKey, data.linkUrl);
+                        servers = resolved.servers;
+                        if (!data.fileSize && resolved.fileSize) {
+                            data.fileSize = resolved.fileSize;
+                            updateDB(data.requestId, { fileSize: resolved.fileSize }).catch(() => {});
+                        }
+                    } catch (err: any) {
+                        console.warn(`[WORKER] Fast format resolve warning: ${err.message}`);
+                    }
+                }
+
+                if (servers.length === 0 && data.targetUrl) {
+                    console.log(`[WORKER] Falling back to full download link resolution for: ${data.targetUrl}`);
+                    const details = await getDownloadLinks(data.targetUrl);
+                    const quality = selectBest720pQuality(details);
+                    if (quality) {
+                        if (quality.isEpisodeList && quality.episodes && quality.episodes.length > 0) {
+                            const ep = data.episode ? quality.episodes.find(e => e.episodeNum === data.episode) : quality.episodes[0];
+                            servers = ep ? ep.servers : quality.episodes[0].servers;
+                        } else {
+                            servers = quality.servers;
+                        }
                     }
                 }
             }
@@ -285,31 +304,42 @@ export function createDownloadWorker() {
             }
 
             if (servers.length === 0) {
-                throw new Error(`No downloadable servers available for "${data.title}"`);
+                throw new Error(`This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release.`);
             }
 
-            // Determine target download file path using AI metadata
+            // Determine target download file path using clean metadata
             let targetPath: string;
-            const rawNameToParse = [data.title, data.year, data.fileName].filter(Boolean).join(" ");
-            const aiMeta = await parseMediaWithAI(rawNameToParse);
+            let cleanTitle = data.cleanTitle;
+            let cleanYear = data.year && /^\d{4}$/.test(String(data.year).trim()) ? String(data.year).trim() : undefined;
+            let cleanSeason = data.season || 1;
+            let cleanEpisode = data.episode || 1;
+            let isBatch = Boolean(data.isBatchPack);
+            let mediaType = data.type;
 
-            if (data.type === "series" || aiMeta.type === "series") {
-                const cleanSeriesTitle = aiMeta.title;
-                const cleanSeason = aiMeta.season || data.season || 1;
-                if (data.isBatchPack || aiMeta.isBatch) {
-                    targetPath = getBatchPackPath(cleanSeriesTitle, cleanSeason, data.fileName);
+            // Only call AI if clean metadata was not already passed in job
+            if (!cleanTitle) {
+                const rawNameToParse = [data.title, data.year, data.fileName].filter(Boolean).join(" ");
+                const aiMeta = await parseMediaWithAI(rawNameToParse);
+                cleanTitle = aiMeta.title;
+                cleanYear = aiMeta.year || cleanYear;
+                cleanSeason = aiMeta.season || cleanSeason;
+                cleanEpisode = data.episode || aiMeta.episode || cleanEpisode;
+                isBatch = data.isBatchPack || aiMeta.isBatch;
+                mediaType = data.type || aiMeta.type;
+            }
+
+            if (mediaType === "series") {
+                if (isBatch) {
+                    targetPath = getBatchPackPath(cleanTitle, cleanSeason, data.fileName);
                 } else {
-                    targetPath = getSeriesPath(cleanSeriesTitle, cleanSeason, data.episode || aiMeta.episode || 1, data.fileName);
+                    targetPath = getSeriesPath(cleanTitle, cleanSeason, cleanEpisode, data.fileName);
                 }
             } else {
-                const movieTitle = aiMeta.title;
-                const movieYear = aiMeta.year || (data.year && /^\d{4}$/.test(String(data.year).trim()) ? String(data.year).trim() : undefined);
-
-                if (movieYear && data.year !== movieYear) {
-                    data.year = movieYear;
-                    updateDB(data.requestId, { year: movieYear }).catch(() => {});
+                if (cleanYear && data.year !== cleanYear) {
+                    data.year = cleanYear;
+                    updateDB(data.requestId, { year: cleanYear }).catch(() => {});
                 }
-                targetPath = getMoviePath(movieTitle, movieYear, data.fileName);
+                targetPath = getMoviePath(cleanTitle, cleanYear, data.fileName);
             }
 
             console.log(`[WORKER] Downloading to destination: ${targetPath}`);

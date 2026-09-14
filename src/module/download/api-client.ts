@@ -141,6 +141,157 @@ export async function getDownloadLinks(targetUrl: string, bypassCache = false, m
 }
 
 /**
+ * Resolves ONLY the specific format or video link selected by the user,
+ * avoiding slow full-page scraping of 20+ other qualities/episodes.
+ */
+export async function resolveSpecificFormatLink(
+    targetUrl: string,
+    qualityKey?: string,
+    linkUrl?: string
+): Promise<{ name: string; servers: DownloadServer[]; fileSize?: string }> {
+    if (!targetUrl && !linkUrl) {
+        throw new Error("Target URL or Link URL is required to resolve download links");
+    }
+
+    // 1. Instant Cache Check: If full movie details were recently resolved during search/chat, reuse them in 0ms
+    const cacheKey = targetUrl?.trim();
+    if (cacheKey) {
+        const cached = downloadLinksCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS && cached.data?.downloads) {
+            let cachedServers: DownloadServer[] = [];
+            if (qualityKey && cached.data.downloads[qualityKey]?.length > 0) {
+                cachedServers = cached.data.downloads[qualityKey];
+            } else if (linkUrl) {
+                for (const srvs of Object.values(cached.data.downloads)) {
+                    const match = srvs.find(s => s.download_url === linkUrl);
+                    if (match) { cachedServers = srvs; break; }
+                }
+            }
+
+            if (cachedServers.length > 0) {
+                console.log(`[DL-API] Instantly returning cached format servers for: ${cacheKey}`);
+                let sSize = "";
+                for (const s of cachedServers) {
+                    const sz = cleanFileSize(s.file_size || "") || cleanFileSize(s.server_name || "");
+                    if (sz) { sSize = sz; break; }
+                }
+                return {
+                    name: cached.data.name || "Media File",
+                    servers: sortServersByPriority(cachedServers),
+                    fileSize: sSize || cachedServers[0]?.file_size || ""
+                };
+            }
+        }
+    }
+
+    // 2. Direct CDN Link Check: If linkUrl is already a final direct download CDN stream (0ms)
+    if (linkUrl && /video-downloads\.googleusercontent\.com|pixeldrain\.com|r2\.cloudflarestorage\.com|workers\.dev|r2\.dev|pub-/i.test(linkUrl)) {
+        console.log(`[DL-API] Link URL is already a direct CDN download stream`);
+        return {
+            name: "Direct Download File",
+            servers: [{
+                server_name: "Download [Server : 10Gbps]",
+                server_type: "⚡ Server : 10Gbps High Speed (Google CDN)",
+                download_url: linkUrl,
+                file_size: ""
+            }]
+        };
+    }
+
+    // 3. If direct intermediate linkUrl is provided, resolve directly via /api/resolve (1.5s)
+    if (linkUrl && /hubcloud|hubdrive|hblinks|greenmount/i.test(linkUrl)) {
+        const resolveUrl = `${DL_API_BASE_URL}/api/resolve?url=${encodeURIComponent(linkUrl)}`;
+        console.log(`[DL-API] Fast single-link resolution: ${resolveUrl}`);
+        try {
+            const res = await fetch(resolveUrl, {
+                headers: { "Accept": "application/json" },
+                signal: AbortSignal.timeout(15000)
+            });
+            if (res.ok) {
+                const data: any = await res.json();
+                const rawServers: DownloadServer[] = data.final_downloads || [];
+                const servers = sortServersByPriority(rawServers);
+                if (servers.length > 0) {
+                    let sSize = "";
+                    for (const s of servers) {
+                        const sz = cleanFileSize(s.file_size || "") || cleanFileSize(s.server_name || "");
+                        if (sz) { sSize = sz; break; }
+                    }
+                    return {
+                        name: data.filename || "Direct Download File",
+                        servers,
+                        fileSize: sSize || data.file_size || ""
+                    };
+                }
+            }
+        } catch (e: any) {
+            console.warn(`[DL-API] Direct resolve fallback: ${e.message}`);
+        }
+    }
+
+    // 4. Targeted query via /download?param=...&quality_key=... (3s)
+    const params = new URLSearchParams();
+    if (targetUrl) params.set("param", targetUrl);
+    if (qualityKey) params.set("quality_key", qualityKey);
+    // Only pass link_url if it's an intermediate redirect URL, avoid confusing scraper with final URLs
+    if (linkUrl && /hubcloud|hubdrive|hblinks|greenmount/i.test(linkUrl)) {
+        params.set("link_url", linkUrl);
+    }
+
+    const targetEndpoint = `${DL_API_BASE_URL}/download?${params.toString()}`;
+    console.log(`[DL-API] Targeted format resolution: ${targetEndpoint}`);
+
+    const res = await fetch(targetEndpoint, {
+        headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json"
+        },
+        signal: AbortSignal.timeout(25000)
+    });
+
+    if (!res.ok) {
+        throw new Error(`Download API returned status ${res.status}: ${res.statusText}`);
+    }
+
+    const data: any = await res.json();
+    let servers: DownloadServer[] = [];
+    let detectedSize = "";
+
+    if (data.downloads) {
+        if (qualityKey && data.downloads[qualityKey]) {
+            servers = data.downloads[qualityKey];
+        } else {
+            // Find in any returned key
+            const keys = Object.keys(data.downloads);
+            if (keys.length > 0) {
+                servers = data.downloads[keys[0]];
+            }
+        }
+    } else if (data.final_downloads) {
+        servers = data.final_downloads;
+    }
+
+    const sortedServers = sortServersByPriority(servers);
+    if (sortedServers.length === 0) {
+        throw new Error("This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release.");
+    }
+
+    for (const s of sortedServers) {
+        const sSize = cleanFileSize(s.file_size || "") || cleanFileSize(s.server_name || "");
+        if (sSize) {
+            detectedSize = sSize;
+            break;
+        }
+    }
+
+    return {
+        name: data.name || data.filename || "Download",
+        servers: sortedServers,
+        fileSize: detectedSize || data.file_size || ""
+    };
+}
+
+/**
  * Normalizes direct streamable URLs (e.g. Pixeldrain /u/ID -> /api/file/ID)
  */
 export function normalizeDirectStreamUrl(url: string): string {
@@ -363,6 +514,7 @@ export interface ParsedMovieFormat {
     fileSize: string;
     isRecommended: boolean;
     serverCount: number;
+    linkUrl?: string;
 }
 
 export interface ParsedSeriesBatch {
@@ -372,6 +524,7 @@ export interface ParsedSeriesBatch {
     fileSize: string;
     isRecommended: boolean;
     serverCount: number;
+    linkUrl?: string;
 }
 
 export interface ParsedSeriesEpisodeQuality {
@@ -380,6 +533,7 @@ export interface ParsedSeriesEpisodeQuality {
     resolution: string;
     fileSize: string;
     serverCount: number;
+    linkUrl?: string;
 }
 
 export interface ParsedSeriesEpisode {
@@ -405,14 +559,20 @@ export interface ParsedMediaDetails {
  */
 export function cleanFileSize(rawSize: string): string {
     if (!rawSize) return "";
-    const cleanMatch = rawSize.trim().match(/^([\d\.]+\s*(?:GB|MB|KB))$/i);
+
+    // Bracketed file size like [2.57 GB] (ignoring speed tags like [10Gbps])
+    const bracketMatch = rawSize.match(/\[\s*([\d\.]+\s*(?:GB|MB|KB))(?!\s*ps)\s*\]/i);
+    if (bracketMatch) return bracketMatch[1].toUpperCase();
+
+    const cleanMatch = rawSize.trim().match(/^([\d\.]+\s*(?:GB|MB|KB))(?!\s*ps)$/i);
     if (cleanMatch) return cleanMatch[1].toUpperCase();
 
-    const sizeMatch = rawSize.match(/(?:file\s*size:?\s*|size:?\s*)([\d\.]+\s*(?:gb|mb|kb))/i)
-        || rawSize.match(/([\d\.]+\s*(?:gb|mb|kb))/i);
+    // Look for file size prefixes like "file size: 1.2 GB" or standalone "1.2 GB" not followed by ps
+    const sizeMatch = rawSize.match(/(?:file\s*size:?\s*|size:?\s*)([\d\.]+\s*(?:gb|mb|kb))(?!\s*ps)\b/i)
+        || rawSize.match(/(?:^|[^\w])([\d\.]+\s*(?:gb|mb|kb))(?!\s*ps)\b/i);
     if (sizeMatch) return sizeMatch[1].toUpperCase();
 
-    return rawSize.length <= 10 && /[\d\.]+\s*(?:gb|mb|kb)/i.test(rawSize) ? rawSize.trim() : "";
+    return "";
 }
 
 /**
@@ -430,7 +590,14 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
         const batchKeys = downloadKeys.filter(k => k.startsWith("batch_"));
         const seriesBatches: ParsedSeriesBatch[] = batchKeys.map(k => {
             const srvs = details.downloads[k] || [];
-            const fileSize = cleanFileSize(srvs[0]?.file_size || "");
+            let fileSize = "";
+            for (const s of srvs) {
+                const sSize = cleanFileSize(s.file_size || "") || cleanFileSize(s.server_name || "");
+                if (sSize) {
+                    fileSize = sSize;
+                    break;
+                }
+            }
             let res = "720p";
             if (k.includes("4k") || k.includes("2160p")) res = "4K";
             else if (k.includes("1080p")) res = "1080p";
@@ -450,7 +617,8 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
                 resolution: res,
                 fileSize,
                 isRecommended: k.includes("720p_hevc") || (k.includes("720p") && !batchKeys.some(b => b.includes("720p_hevc"))),
-                serverCount: srvs.length
+                serverCount: srvs.length,
+                linkUrl: srvs[0]?.download_url || (srvs[0] as any)?.link_url || ""
             };
         });
 
@@ -461,9 +629,18 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
             const match = k.match(/episode_(\d+)/i);
             const epNum = match ? parseInt(match[1], 10) : 1;
             const srvs = details.downloads[k] || [];
+            let fileSize = "";
+            for (const s of srvs) {
+                const sSize = cleanFileSize(s.file_size || "") || cleanFileSize(s.server_name || "");
+                if (sSize) {
+                    fileSize = sSize;
+                    break;
+                }
+            }
+            if (!fileSize) fileSize = cleanFileSize(k);
+
             const rawSrvText = srvs[0]?.file_size || "";
             const raw = (k + " " + rawSrvText + " " + (srvs[0]?.download_url || "")).toLowerCase();
-            const fileSize = cleanFileSize(rawSrvText) || cleanFileSize(k);
 
             let resolution = "720p";
             let label = "720p HD";
@@ -492,7 +669,8 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
                     label,
                     resolution,
                     fileSize,
-                    serverCount: srvs.length
+                    serverCount: srvs.length,
+                    linkUrl: srvs[0]?.download_url || (srvs[0] as any)?.link_url || ""
                 });
             }
         }
@@ -520,31 +698,100 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
             seriesEpisodes
         };
     } else {
-        // Movies
-        const movieFormats: ParsedMovieFormat[] = downloadKeys.map(k => {
-            const srvs = details.downloads[k] || [];
-            const fileSize = cleanFileSize(srvs[0]?.file_size || "");
-            let res = "720p";
-            if (k.includes("4k") || k.includes("2160p")) res = "4K";
-            else if (k.includes("1080p")) res = "1080p";
-            else if (k.includes("480p")) res = "480p";
+        // Movies: Group and deduplicate format keys (e.g. format_1080p and format_1080p_h264 merge into format_1080p)
+        const formatGroups = new Map<string, {
+            groupKey: string;
+            primaryKey: string;
+            res: string;
+            label: string;
+            servers: DownloadServer[];
+            isRecommended: boolean;
+        }>();
 
-            let label = k.replace(/^format_/, "").replace(/_/g, " ").toUpperCase();
-            if (k.includes("720p_hevc") || k.includes("720p_x265")) label = "720p HEVC (10-Bit x265)";
-            else if (k.includes("720p_h264") || k === "720p") label = "720p HD";
-            else if (k.includes("1080p_hevc") || k.includes("1080p_x265")) label = "1080p Full HD HEVC";
-            else if (k.includes("1080p_60fps")) label = "1080p 60FPS High Frame";
-            else if (k.includes("1080p_h264") || k === "1080p") label = "1080p Full HD";
-            else if (k.includes("480p")) label = "480p SD (Compact)";
-            else if (k.includes("4k") || k.includes("2160p")) label = "4K Ultra HD HDR";
+        const getCanonicalGroup = (k: string): { groupKey: string; res: string; label: string } => {
+            if (k.includes("4k") || k.includes("2160p")) {
+                return { groupKey: "4k", res: "4K", label: "4K Ultra HD HDR" };
+            }
+            if (k.includes("1080p_hevc") || k.includes("1080p_x265")) {
+                return { groupKey: "1080p_hevc", res: "1080p", label: "1080p Full HD HEVC" };
+            }
+            if (k.includes("1080p_60fps")) {
+                return { groupKey: "1080p_60fps", res: "1080p", label: "1080p 60FPS High Frame" };
+            }
+            if (k.includes("1080p")) {
+                return { groupKey: "1080p", res: "1080p", label: "1080p Full HD" };
+            }
+            if (k.includes("720p_hevc") || k.includes("720p_x265")) {
+                return { groupKey: "720p_hevc", res: "720p", label: "720p HEVC (10-Bit x265)" };
+            }
+            if (k.includes("720p")) {
+                return { groupKey: "720p", res: "720p", label: "720p HD" };
+            }
+            if (k.includes("480p")) {
+                return { groupKey: "480p", res: "480p", label: "480p SD (Compact)" };
+            }
+            return {
+                groupKey: k,
+                res: "Direct",
+                label: k.replace(/^format_/, "").replace(/_/g, " ").toUpperCase()
+            };
+        };
+
+        for (const k of downloadKeys) {
+            const { groupKey, res, label } = getCanonicalGroup(k);
+            const srvs = details.downloads[k] || [];
+            if (!formatGroups.has(groupKey)) {
+                formatGroups.set(groupKey, {
+                    groupKey,
+                    primaryKey: k,
+                    res,
+                    label,
+                    servers: [...srvs],
+                    isRecommended: false
+                });
+            } else {
+                const group = formatGroups.get(groupKey)!;
+                for (const s of srvs) {
+                    if (!group.servers.some(existing => existing.download_url === s.download_url)) {
+                        group.servers.push(s);
+                    }
+                }
+                // Keep both keys in sync in details.downloads
+                details.downloads[group.primaryKey] = group.servers;
+                details.downloads[k] = group.servers;
+            }
+        }
+
+        const has720pHevc = formatGroups.has("720p_hevc");
+        const movieFormats: ParsedMovieFormat[] = Array.from(formatGroups.values()).map(group => {
+            // Find size from ANY server in this merged group
+            let fileSize = "";
+            for (const s of group.servers) {
+                const sSize = cleanFileSize(s.file_size || "") || cleanFileSize(s.server_name || "");
+                if (sSize) {
+                    fileSize = sSize;
+                    break;
+                }
+            }
+
+            // Propagate discovered fileSize to all servers in this group
+            if (fileSize) {
+                for (const s of group.servers) {
+                    if (!s.file_size) s.file_size = fileSize;
+                }
+                details.downloads[group.primaryKey] = group.servers;
+            }
+
+            const isRec = group.groupKey === "720p_hevc" || (group.groupKey === "720p" && !has720pHevc);
 
             return {
-                qualityKey: k,
-                label,
-                resolution: res,
+                qualityKey: group.primaryKey,
+                label: group.label,
+                resolution: group.res,
                 fileSize,
-                isRecommended: k.includes("720p_hevc") || (k.includes("720p") && !downloadKeys.some(dk => dk.includes("720p_hevc"))),
-                serverCount: srvs.length
+                isRecommended: isRec,
+                serverCount: group.servers.length,
+                linkUrl: group.servers[0]?.download_url || (group.servers[0] as any)?.link_url || ""
             };
         });
 

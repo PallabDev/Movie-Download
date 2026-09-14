@@ -750,7 +750,7 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                                             </div>
                                         </div>
                                         <div class="format-card-label">${escapeHtml(b.label)}</div>
-                                        <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(b.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', true, undefined, '${escapeHtml(b.fileSize)}', this)">
+                                        <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(b.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', true, undefined, '${escapeHtml(b.fileSize)}', this, '${b.linkUrl ? escapeHtml(b.linkUrl).replace(/'/g, "\\'") : ''}')">
                                             <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                             Download Batch
                                         </button>
@@ -775,7 +775,7 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                                         </div>
                                         <div class="episode-qualities-row">
                                             ${ep.qualities.map(q => `
-                                                <button class="btn-ep-download ${q.resolution === '720p' ? 'preferred' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(q.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, ${ep.episodeNum}, '${escapeHtml(q.fileSize)}', this)">
+                                                <button class="btn-ep-download ${q.resolution === '720p' ? 'preferred' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(q.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, ${ep.episodeNum}, '${escapeHtml(q.fileSize)}', this, '${q.linkUrl ? escapeHtml(q.linkUrl).replace(/'/g, "\\'") : ''}')">
                                                     <svg class="tabler-icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                                     <span class="ep-res-text">${escapeHtml(q.label || q.resolution)}</span>
                                                     ${q.fileSize ? `<span class="ep-size-pill">${escapeHtml(q.fileSize)}</span>` : ''}
@@ -807,7 +807,7 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                                     </div>
                                 </div>
                                 <div class="format-card-label">${escapeHtml(f.label)}</div>
-                                <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(f.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, undefined, '${escapeHtml(f.fileSize)}', this)">
+                                <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(f.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, undefined, '${escapeHtml(f.fileSize)}', this, '${f.linkUrl ? escapeHtml(f.linkUrl).replace(/'/g, "\\'") : ''}')">
                                     <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                     Download ${escapeHtml(f.resolution)}
                                 </button>
@@ -1340,7 +1340,7 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                                             ${b.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
                                         </div>
                                     </div>
-                                    <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(b.qualityKey)}', '${safeTitle}', true, undefined, '${escapeHtml(b.fileSize)}', this)">
+                                    <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(b.qualityKey)}', '${safeTitle}', true, undefined, '${escapeHtml(b.fileSize)}', this, '${b.linkUrl ? escapeHtml(b.linkUrl).replace(/'/g, "\\'") : ''}')">
                                         <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                         Download Batch
                                     </button>
@@ -1361,7 +1361,7 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                                     </div>
                                     <div class="episode-qualities-row">
                                         ${ep.qualities.map(q => `
-                                            <button class="btn-ep-download" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(q.qualityKey)}', '${safeTitle}', false, ${ep.episodeNum}, '${escapeHtml(q.fileSize)}', this)">
+                                            <button class="btn-ep-download" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(q.qualityKey)}', '${safeTitle}', false, ${ep.episodeNum}, '${escapeHtml(q.fileSize)}', this, '${q.linkUrl ? escapeHtml(q.linkUrl).replace(/'/g, "\\'") : ''}')">
                                                 <span>${escapeHtml(q.label || q.resolution)}</span>
                                                 ${q.fileSize ? `<small>(${escapeHtml(q.fileSize)})</small>` : ''}
                                             </button>
@@ -1389,7 +1389,7 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                                     ${f.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
                                 </div>
                             </div>
-                            <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(f.qualityKey)}', '${safeTitle}', false, undefined, '${escapeHtml(f.fileSize)}', this)">
+                            <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(f.qualityKey)}', '${safeTitle}', false, undefined, '${escapeHtml(f.fileSize)}', this, '${f.linkUrl ? escapeHtml(f.linkUrl).replace(/'/g, "\\'") : ''}')">
                                 <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                 Download ${escapeHtml(f.resolution)}
                             </button>
@@ -1404,7 +1404,7 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
 }
 
 let isTriggeringDownload = false;
-async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize, btnElement) {
+async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize, btnElement, linkUrl) {
     if (isTriggeringDownload) return;
     isTriggeringDownload = true;
 
@@ -1425,13 +1425,14 @@ async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle,
                 customTitle,
                 isBatch: Boolean(isBatch),
                 episodeNum,
-                fileSize
+                fileSize,
+                linkUrl
             })
         });
 
         const data = await res.json();
         if (data.success) {
-            showToast(data.message || 'Download started!', 'success');
+            showToast(data.message || 'Download queued successfully!', 'success');
             if (btnElement) {
                 btnElement.innerHTML = `✅ Queued`;
                 btnElement.classList.remove('primary');
@@ -1453,15 +1454,21 @@ async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle,
                     btnElement.classList.remove('primary');
                 }
             } else {
-                showToast(data.error || 'Failed to start download', 'error', 6000);
-                if (btnElement && btnElement.dataset.origHtml) {
+                const errorMsg = data.error || 'This download link is currently unavailable on the upstream server. Please try another quality or release.';
+                showToast(errorMsg, 'error', 7000);
+                if (btnElement) {
                     btnElement.disabled = false;
-                    btnElement.innerHTML = btnElement.dataset.origHtml;
+                    btnElement.innerHTML = `⚠️ Unavailable`;
+                    setTimeout(() => {
+                        if (btnElement && btnElement.dataset.origHtml) {
+                            btnElement.innerHTML = btnElement.dataset.origHtml;
+                        }
+                    }, 4000);
                 }
             }
         }
     } catch (err) {
-        showToast(err.message, 'error');
+        showToast(err.message || 'Failed to start download. Upstream server may be unavailable.', 'error', 7000);
         if (btnElement && btnElement.dataset.origHtml) {
             btnElement.disabled = false;
             btnElement.innerHTML = btnElement.dataset.origHtml;

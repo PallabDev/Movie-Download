@@ -118,6 +118,8 @@ async def api_download_endpoint(
     q: Optional[str] = Query(None, description="Movie title if searching"),
     search_query: Optional[str] = None,
     limit: Optional[int] = Query(None, ge=1, description="Max number of matching movies to resolve"),
+    quality_key: Optional[str] = Query(None, description="Target specific quality key to resolve selectively (e.g. format_720p)"),
+    link_url: Optional[str] = Query(None, description="Target intermediate or final link URL to resolve"),
     impersonate: str = Query("chrome124", description="Browser TLS profile to impersonate"),
 ):
     """
@@ -132,7 +134,13 @@ async def api_download_endpoint(
 
     if target_url:
         try:
-            if any(k in target_url.lower() for k in ["hubdrive.", "hubcloud.", "hblinks.", "greenmount"]):
+            if link_url and any(k in link_url.lower() for k in ["hubdrive.", "hubcloud.", "hblinks.", "greenmount"]):
+                result = await CloudflareScraper.extract_final_download_links(
+                    link_url=link_url,
+                    impersonate=impersonate
+                )
+                return JSONResponse(content=result)
+            elif any(k in target_url.lower() for k in ["hubdrive.", "hubcloud.", "hblinks.", "greenmount"]):
                 result = await CloudflareScraper.extract_final_download_links(
                     link_url=target_url,
                     impersonate=impersonate
@@ -141,6 +149,8 @@ async def api_download_endpoint(
             else:
                 result = await CloudflareScraper.resolve_movie_direct_downloads(
                     movie_url=target_url,
+                    quality_key=quality_key,
+                    target_link_url=link_url,
                     impersonate=impersonate
                 )
                 return JSONResponse(content=result)

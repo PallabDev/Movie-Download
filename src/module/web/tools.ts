@@ -6,6 +6,7 @@ import { downloadQueue } from "../queue/queue.js";
 import {
     searchMedia,
     getDownloadLinks,
+    resolveSpecificFormatLink,
     selectBest720pQuality,
     sortServersByPriority,
     parseAvailableMediaFormats,
@@ -306,16 +307,39 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
     harness.logActivity(`[TOOL download_media] Fetching download links for: ${targetLink}`);
 
     try {
-        const details: DownloadDetails = await getDownloadLinks(targetLink);
-        const cleanName = details.name || targetTitle || "Media";
+        let cleanName = targetTitle || "Media";
+        let servers: any[] = [];
+        let actualSize = fileSize || "";
+        let isSeriesItem = Boolean(isBatch || episodeNum !== undefined || (qualityKey && (qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"))));
 
-        // Case 1: Specific qualityKey requested (e.g. format_1080p_hevc, batch_season_pack_720p_hevc, episode_1_720p)
-        if (qualityKey && details.downloads[qualityKey]) {
-            const rawServers = details.downloads[qualityKey];
-            const servers = sortServersByPriority(rawServers);
-            const actualSize = fileSize || servers[0]?.file_size || "Direct";
+        // Fast-path: targeted format resolution if qualityKey is known
+        if (qualityKey) {
+            try {
+                const resolved = await resolveSpecificFormatLink(targetLink, qualityKey);
+                servers = resolved.servers;
+                cleanName = resolved.name || cleanName;
+                actualSize = actualSize || resolved.fileSize || "";
+            } catch (fastErr: any) {
+                console.warn(`[TOOL download_media] Targeted resolution fallback: ${fastErr.message}`);
+            }
+        }
 
-            const isSeriesItem = Boolean(isBatch || episodeNum !== undefined || qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"));
+        let details: DownloadDetails | null = null;
+        if (servers.length === 0) {
+            details = await getDownloadLinks(targetLink);
+            cleanName = details.name || targetTitle || "Media";
+
+            if (qualityKey && details.downloads[qualityKey]) {
+                const rawServers = details.downloads[qualityKey];
+                servers = sortServersByPriority(rawServers);
+                actualSize = actualSize || servers[0]?.file_size || "Direct";
+            }
+        }
+
+        // Case 1: Specific qualityKey resolved
+        if (qualityKey && servers.length > 0) {
+            actualSize = actualSize || servers[0]?.file_size || "Direct";
+
             let mediaType: "movie" | "series" = isSeriesItem ? "series" : "movie";
 
             const rawNameToParse = [cleanName, targetLink].filter(Boolean).join(" ");
@@ -390,6 +414,7 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                 requestId,
                 type: mediaType,
                 title: jobTitle,
+                cleanTitle: aiMeta.title,
                 year: movieYear,
                 season: mediaType === "series" ? (aiMeta.season || 1) : undefined,
                 episode: mediaType === "series" ? (aiMeta.episode ?? undefined) : undefined,
@@ -414,6 +439,10 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                     serversCount: servers.length
                 }
             };
+        }
+
+        if (!details) {
+            details = await getDownloadLinks(targetLink);
         }
 
         // Case 2: Autonomous best 720p selection fallback

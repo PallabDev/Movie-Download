@@ -41,14 +41,45 @@ function getClient(): OpenAI {
         clientInstance = new OpenAI({
             baseURL: env.AI_BASE_URL,
             apiKey: env.AI_API_KEY,
+            timeout: 3500, // 3.5s strict timeout to prevent queuing delays
+            maxRetries: 0
         });
     }
     return clientInstance;
 }
 
 /**
+ * Instant regex and heuristic metadata extractor (0.001ms)
+ */
+export function extractHeuristicMetadata(rawTitle: string): MediaMetadata {
+    const key = (rawTitle || "").trim();
+    const isSeries = /season|\bS\d{1,2}\b|\bEP\s*\d{1,3}\b|episode/i.test(key);
+    const seasonMatch = key.match(/season\s*(\d{1,2})|\bS(\d{1,2})\b/i);
+    const epMatch = key.match(/(?:ep|episode)\s*(\d{1,3})|\bE(\d{1,3})\b/i);
+    const yearMatch = key.match(/\b(19\d{2}|20\d{2})\b/);
+
+    let clean = key;
+    if (yearMatch && yearMatch.index !== undefined && yearMatch.index > 0) {
+        clean = key.substring(0, yearMatch.index);
+    } else {
+        clean = key.split(/[\(\[\{\|\-]/)[0];
+    }
+    clean = clean.replace(/[._]/g, " ").replace(/\s+/g, " ").trim();
+    clean = clean.replace(/[\(\[\{\|\-–—:]+$/, "").trim();
+
+    return {
+        title: clean || key || "Unknown Media",
+        type: isSeries ? "series" : "movie",
+        year: yearMatch ? yearMatch[1] : "",
+        season: seasonMatch ? parseInt(seasonMatch[1] || seasonMatch[2], 10) : (isSeries ? 1 : null),
+        episode: epMatch ? parseInt(epMatch[1] || epMatch[2], 10) : null,
+        isBatch: isSeries && !epMatch
+    };
+}
+
+/**
  * Send raw media title/filename directly to AI to extract clean title, release year,
- * media type, season, and episode details without manual regex breaking points.
+ * media type, season, and episode details. If AI takes > 3.5s, instantly falls back to heuristics.
  */
 export async function parseMediaWithAI(rawTitle: string): Promise<MediaMetadata> {
     const key = (rawTitle || "").trim();
@@ -68,31 +99,13 @@ export async function parseMediaWithAI(rawTitle: string): Promise<MediaMetadata>
         return cached.data;
     }
 
+    const fallbackMeta = extractHeuristicMetadata(key);
+
     const client = getClient();
-    const prompt = `You are a media metadata extraction engine.
-Given the messy release name, torrent title, post title, or filename below:
-"${key}"
-
-Analyze the text and identify:
-1. "title": Clean canonical title of the movie or TV show. Remove all codec, audio tags, website names, and empty brackets "( )".
-2. "type": "movie" or "series".
-3. "year": Exact 4-digit original release year. Look up the true release year in your knowledge base or extract from the title.
-4. "season": Integer season number if TV series, or null if movie.
-5. "episode": Integer episode number if single episode, or null if full season batch or movie.
-6. "isBatch": True if it represents a full season pack / all episodes / batch.
-
-You must respond ONLY with a raw JSON object matching this schema:
-{
-  "title": "Clean Title",
-  "type": "movie" | "series",
-  "year": "YYYY",
-  "season": 1 | null,
-  "episode": 1 | null,
-  "isBatch": false
-}`;
+    const prompt = `Extract media title, release year, type ("movie"|"series"), season (int|null), episode (int|null), isBatch (bool) from: "${key}". Output ONLY raw JSON matching: {"title": string, "type": "movie"|"series", "year": string, "season": number|null, "episode": number|null, "isBatch": boolean}`;
 
     try {
-        console.log(`[AI-CLEANER] Extracting metadata for: "${key}"`);
+        console.log(`[AI-CLEANER] Extracting metadata for: "${key.slice(0, 80)}..."`);
         const resp = await client.chat.completions.create({
             model: env.AI_MODEL,
             messages: [
@@ -103,64 +116,23 @@ You must respond ONLY with a raw JSON object matching this schema:
                 { role: "user", content: prompt }
             ],
             temperature: 0.1,
-            max_tokens: 2000,
+            max_tokens: 300,
         });
 
         const content = resp.choices[0]?.message?.content?.trim() || "";
         const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) {
-            throw new Error(`AI did not return a valid JSON object: ${content.slice(0, 100)}`);
-        }
-
-        const parsed = MediaMetadataSchema.parse(JSON.parse(jsonMatch[0]));
-        console.log(`[AI-CLEANER] Successfully parsed:`, parsed);
-
-        metadataCache.set(key, { data: parsed, timestamp: Date.now() });
-        return parsed;
-    } catch (err: any) {
-        console.warn(`[AI-CLEANER] First attempt failed for "${key}": ${err?.message}. Retrying with AI...`);
-        try {
-            // Second attempt with simplified prompt
-            const retryResp = await client.chat.completions.create({
-                model: env.AI_MODEL,
-                messages: [
-                    {
-                        role: "system",
-                        content: "You extract media metadata. Output ONLY raw JSON matching: {\"title\": string, \"type\": \"movie\"|\"series\", \"year\": string, \"season\": number|null, \"episode\": number|null, \"isBatch\": boolean}"
-                    },
-                    { role: "user", content: `Extract media title, release year, type, season, episode from: "${key}"` }
-                ],
-                temperature: 0.1,
-                max_tokens: 2000,
-            });
-
-            const content = retryResp.choices[0]?.message?.content?.trim() || "";
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                throw new Error(`AI retry did not return valid JSON: ${content}`);
-            }
-
+        if (jsonMatch) {
             const parsed = MediaMetadataSchema.parse(JSON.parse(jsonMatch[0]));
+            console.log(`[AI-CLEANER] Successfully parsed:`, parsed);
             metadataCache.set(key, { data: parsed, timestamp: Date.now() });
             return parsed;
-        } catch (retryErr: any) {
-            console.error(`[AI-CLEANER] AI extraction completely failed for "${key}":`, retryErr?.message);
-            // Safe fallback so download requests never fail or crash
-            const isSeries = /season|\bS\d|\bEP\b|episode/i.test(key);
-            const seasonMatch = key.match(/season\s*(\d{1,2})|\bS(\d{1,2})\b/i);
-            const epMatch = key.match(/(?:ep|episode)\s*(\d{1,3})|\bE(\d{1,3})\b/i);
-            const cleanTitle = key.split(/[\(\[\{]/)[0].trim() || key;
-            const yearMatch = key.match(/\b(19\d{2}|20\d{2})\b/);
-            return {
-                title: cleanTitle,
-                type: isSeries ? "series" : "movie",
-                year: yearMatch ? yearMatch[1] : "",
-                season: seasonMatch ? parseInt(seasonMatch[1] || seasonMatch[2], 10) : (isSeries ? 1 : null),
-                episode: epMatch ? parseInt(epMatch[1] || epMatch[2], 10) : null,
-                isBatch: isSeries && !epMatch
-            };
         }
+    } catch (err: any) {
+        console.warn(`[AI-CLEANER] Fast AI timeout or skip for "${key.slice(0, 40)}...": ${err?.message}. Using instant heuristic.`);
     }
+
+    metadataCache.set(key, { data: fallbackMeta, timestamp: Date.now() });
+    return fallbackMeta;
 }
 
 /**

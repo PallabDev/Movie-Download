@@ -22,7 +22,7 @@ import {
     fetchCuratedOTTMedia
 } from "../../common/tmdb/client.js";
 import { cleanSeriesTitleAndSeason } from "../download/downloader.js";
-import { searchMedia, getDownloadLinks, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats } from "../download/api-client.js";
+import { searchMedia, getDownloadLinks, resolveSpecificFormatLink, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats, cleanFileSize } from "../download/api-client.js";
 import { handleChat } from "./chat.js";
 import { parseMediaWithAI, formatMediaJobTitle, formatMediaFileName } from "../ai/cleaner.js";
 
@@ -812,29 +812,80 @@ app.post("/api/media/details", requireMod, async (req: any, res) => {
 // ─── SPECIFIC FORMAT / EPISODE DOWNLOAD ───
 
 app.post("/api/download-specific", requireMod, async (req: any, res) => {
-    const { targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize } = req.body;
+    const { targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize, linkUrl } = req.body;
 
-    if (!targetUrl || !qualityKey) {
-        return res.status(400).json({ error: "targetUrl and qualityKey are required" });
+    if (!targetUrl && !linkUrl) {
+        return res.status(400).json({ error: "targetUrl or linkUrl is required" });
     }
 
     try {
-        console.log(`[DOWNLOAD-SPECIFIC] Resolving: qualityKey="${qualityKey}" for url="${targetUrl}"`);
-        const details = await getDownloadLinks(targetUrl);
-        const rawServers = details.downloads[qualityKey];
+        console.log(`[DOWNLOAD-SPECIFIC] Fast targeted resolving: qualityKey="${qualityKey || 'default'}" for url="${targetUrl || linkUrl}"`);
+        let resolvedDetails: { name: string; servers: any[]; fileSize?: string };
 
-        if (!rawServers || rawServers.length === 0) {
-            return res.status(404).json({ error: `Quality "${qualityKey}" has no active download servers available.` });
+        try {
+            resolvedDetails = await resolveSpecificFormatLink(targetUrl || "", qualityKey, linkUrl);
+        } catch (resolveErr: any) {
+            console.warn(`[DOWNLOAD-SPECIFIC] Target resolution warning: ${resolveErr.message}`);
+            // Fallback to full page getDownloadLinks if targeted lookup was unable to locate option
+            if (targetUrl) {
+                const details = await getDownloadLinks(targetUrl);
+                const rawServers = (qualityKey && details.downloads[qualityKey]) || Object.values(details.downloads)[0];
+                if (!rawServers || rawServers.length === 0) {
+                    return res.status(404).json({
+                        success: false,
+                        error: "This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release."
+                    });
+                }
+                resolvedDetails = {
+                    name: details.name,
+                    servers: sortServersByPriority(rawServers),
+                    fileSize: fileSize || ""
+                };
+            } else {
+                return res.status(404).json({
+                    success: false,
+                    error: "This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release."
+                });
+            }
         }
 
-        const servers = sortServersByPriority(rawServers);
-        const actualFileSize = fileSize || servers[0]?.file_size || "Direct Download";
+        const servers = resolvedDetails.servers;
+        if (!servers || servers.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: "This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release."
+            });
+        }
 
-        // AI Metadata Extraction: Send raw names/titles to AI to extract clean title, release year, season, episode
-        const rawNameToParse = [details.name, customTitle].filter(Boolean).join(" ");
+        let actualFileSize = (fileSize && fileSize !== "Direct Download") ? cleanFileSize(fileSize) : "";
+        if (!actualFileSize && resolvedDetails.fileSize) {
+            actualFileSize = cleanFileSize(resolvedDetails.fileSize);
+        }
+        if (!actualFileSize) {
+            for (const s of servers) {
+                const sSize = cleanFileSize(s.file_size || "") || cleanFileSize(s.server_name || "");
+                if (sSize) {
+                    actualFileSize = sSize;
+                    break;
+                }
+            }
+        }
+        if (!actualFileSize) {
+            actualFileSize = "Direct Download";
+        }
+
+        // Propagate discovered file size to servers
+        for (const s of servers) {
+            if (!s.file_size && actualFileSize !== "Direct Download") {
+                s.file_size = actualFileSize;
+            }
+        }
+
+        // AI Metadata Extraction: Send raw name/title to extract clean title, release year, season, episode
+        const rawNameToParse = customTitle || resolvedDetails.name || "Media";
         const aiMeta = await parseMediaWithAI(rawNameToParse);
 
-        const isExplicitSeries = Boolean(isBatch || episodeNum !== undefined || qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"));
+        const isExplicitSeries = Boolean(isBatch || episodeNum !== undefined || (qualityKey && (qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"))));
         if (isExplicitSeries) {
             aiMeta.type = "series";
             if (episodeNum !== undefined) {
@@ -912,6 +963,7 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             requestId,
             type: mediaType,
             title: jobTitle,
+            cleanTitle: aiMeta.title,
             year: movieYear,
             season: mediaType === "series" ? (aiMeta.season || 1) : undefined,
             episode: mediaType === "series" ? (aiMeta.episode ?? undefined) : undefined,
@@ -919,6 +971,7 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             fileSize: actualFileSize,
             isBatchPack: Boolean(aiMeta.isBatch),
             fileName: jobFileName,
+            linkUrl,
         });
 
         broadcastNewDownload({
