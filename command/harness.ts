@@ -2,7 +2,18 @@ import OpenAI from "openai";
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const ROOT = resolve(import.meta.dirname, "..");
+function getRoot(): string {
+    const cwd = process.cwd();
+    if (existsSync(resolve(cwd, "package.json"))) {
+        return cwd;
+    }
+    if (import.meta.dirname.includes("dist")) {
+        return resolve(import.meta.dirname, "..", "..");
+    }
+    return resolve(import.meta.dirname, "..");
+}
+
+const ROOT = getRoot();
 
 export interface HarnessConfig {
     baseUrl: string;
@@ -16,17 +27,29 @@ export interface ChatMessage {
 }
 
 function readMd(name: string): string {
-    const p = resolve(ROOT, name);
-    if (!existsSync(p)) return "";
-    return readFileSync(p, "utf-8");
+    try {
+        const p = resolve(ROOT, name);
+        if (!existsSync(p)) return "";
+        return readFileSync(p, "utf-8");
+    } catch {
+        return "";
+    }
 }
 
 function writeMd(name: string, content: string) {
-    writeFileSync(resolve(ROOT, name), content, "utf-8");
+    try {
+        writeFileSync(resolve(ROOT, name), content, "utf-8");
+    } catch (err: any) {
+        console.warn(`[HARNESS] writeMd warning for ${name}: ${err?.message}`);
+    }
 }
 
 function appendMd(name: string, content: string) {
-    appendFileSync(resolve(ROOT, name), content, "utf-8");
+    try {
+        appendFileSync(resolve(ROOT, name), content, "utf-8");
+    } catch (err: any) {
+        console.warn(`[HARNESS] appendMd warning for ${name}: ${err?.message}`);
+    }
 }
 
 export class Harness {
