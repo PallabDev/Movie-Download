@@ -3572,9 +3572,13 @@ async function selectScraperRelease(targetUrl, releaseName) {
     const bodyEl = document.getElementById('pickerFormatsBody');
 
     if (!modal || !bodyEl) return;
-
     modal.classList.remove('hidden');
-    if (titleEl) titleEl.textContent = releaseName || downloadPickerState.title;
+
+    if (titleEl) {
+        const fullTitle = releaseName || downloadPickerState.title;
+        titleEl.textContent = fullTitle;
+        titleEl.title = fullTitle;
+    }
     if (subEl) subEl.textContent = 'Inspecting available download streams & server links...';
 
     bodyEl.innerHTML = `

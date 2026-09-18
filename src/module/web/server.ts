@@ -2327,11 +2327,16 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <div class="picker-formats-backdrop" onclick="closePickerFormatsModal()"></div>
                         <div class="picker-formats-content">
                             <div class="picker-formats-header">
-                                <div>
+                                <div class="picker-formats-header-info">
                                     <h3 id="pickerFormatsTitle">Select Quality to Download</h3>
                                     <div class="picker-formats-subtitle" id="pickerFormatsSubtitle">Direct CDN links</div>
                                 </div>
-                                <button class="btn-close-modal" onclick="closePickerFormatsModal()">✕</button>
+                                <button class="picker-formats-close" onclick="closePickerFormatsModal()" title="Close" aria-label="Close">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M18 6l-12 12" />
+                                        <path d="M6 6l12 12" />
+                                    </svg>
+                                </button>
                             </div>
                             <div class="picker-formats-body" id="pickerFormatsBody">
                                 <!-- Populated dynamically -->
