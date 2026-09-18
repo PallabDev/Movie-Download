@@ -354,6 +354,13 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                 }
             } else {
                 aiMeta.type = "movie";
+                try {
+                    const tmdb = await lookupMedia(aiMeta.title, aiMeta.year);
+                    if (tmdb && tmdb.found && tmdb.title) {
+                        aiMeta.title = tmdb.title;
+                        if (tmdb.year) aiMeta.year = tmdb.year;
+                    }
+                } catch {}
             }
             mediaType = aiMeta.type;
             const movieYear = aiMeta.year;
@@ -556,6 +563,13 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
             aiMeta.isBatch = true;
         } else {
             aiMeta.type = "movie";
+            try {
+                const tmdb = await lookupMedia(aiMeta.title, aiMeta.year || targetYear);
+                if (tmdb && tmdb.found && tmdb.title) {
+                    aiMeta.title = tmdb.title;
+                    if (tmdb.year) aiMeta.year = tmdb.year;
+                }
+            } catch {}
         }
         mediaType = aiMeta.type;
         const movieYear = aiMeta.year;
@@ -581,6 +595,7 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
             requestId,
             type: mediaType,
             title: jobTitle,
+            cleanTitle: aiMeta.title,
             year: movieYear || "",
             season: mediaType === "series" ? (aiMeta.season || 1) : undefined,
             episode: mediaType === "series" ? (aiMeta.episode ?? undefined) : undefined,

@@ -239,8 +239,10 @@ def clean_title_display(name: str) -> str:
     )
     s = re.sub(r"[\(\[\{]\s*\d{4}\s*[\)\]\}]", "", s)
     s = re.sub(r"[^\w\s-]", " ", s)
+    def cap_word(w: str) -> str:
+        return "-".join(part.capitalize() for part in w.split("-"))
     words = s.strip().split()
-    return " ".join(w.capitalize() for w in words) if words else name.strip()
+    return " ".join(cap_word(w) for w in words) if words else name.strip()
 
 
 def extract_season_num(text: str) -> int:

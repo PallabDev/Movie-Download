@@ -62,9 +62,12 @@ export function extractHeuristicMetadata(rawTitle: string): MediaMetadata {
     if (yearMatch && yearMatch.index !== undefined && yearMatch.index > 0) {
         clean = key.substring(0, yearMatch.index);
     } else {
-        clean = key.split(/[\(\[\{\|\-]/)[0];
+        // Strip release tags and brackets, but preserve hyphens in titles like Spider-Man
+        clean = key.split(/[\[\{\|\/]/)[0];
     }
-    clean = clean.replace(/[._]/g, " ").replace(/\s+/g, " ").trim();
+    // Remove release format noise from clean title
+    clean = clean.replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|ds4k|bluray|brrip|web[-_.\s]*dl|webrip|x264|x265|hevc|10bit|dual audio|hindi|english|org|dd5\.1|esubs?|full movie|complete)\b.*$/i, "");
+    clean = clean.replace(/_/g, " ").replace(/\s+/g, " ").trim();
     clean = clean.replace(/[\(\[\{\|\-–—:]+$/, "").trim();
 
     return {

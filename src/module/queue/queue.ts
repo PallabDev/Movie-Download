@@ -335,6 +335,22 @@ export function createDownloadWorker() {
                     targetPath = getSeriesPath(cleanTitle, cleanSeason, cleanEpisode, data.fileName);
                 }
             } else {
+                // ALWAYS lookup TMDB/IMDb to get the exact original canonical movie title and release year
+                try {
+                    const lookupQuery = cleanTitle || data.title;
+                    const lookupYear = cleanYear || data.year;
+                    const tmdb = await lookupMedia(lookupQuery, lookupYear);
+                    if (tmdb && tmdb.found && tmdb.title) {
+                        console.log(`[WORKER] Canonical TMDB metadata resolved: "${tmdb.title}" (${tmdb.year || "unknown"})`);
+                        cleanTitle = tmdb.title;
+                        if (tmdb.year) {
+                            cleanYear = tmdb.year;
+                        }
+                    }
+                } catch (tmdbErr: any) {
+                    console.warn(`[WORKER] TMDB lookup fallback: ${tmdbErr?.message}`);
+                }
+
                 if (cleanYear && data.year !== cleanYear) {
                     data.year = cleanYear;
                     updateDB(data.requestId, { year: cleanYear }).catch(() => {});

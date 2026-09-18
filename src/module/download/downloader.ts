@@ -14,12 +14,24 @@ export function ensureDir(dir: string) {
 }
 
 function toTitleCase(str: string): string {
+    const minorWords = new Set(["of", "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "is", "it"]);
     return str
-        .replace(/[-_]/g, " ")
-        .replace(/\b\w/g, (c) => c.toUpperCase())
-        .replace(/\b(of|the|a|an|and|or|but|in|on|at|to|for|is|it)\b/gi, (w) =>
-            w.toLowerCase()
-        )
+        .replace(/_/g, " ")
+        .split(/\s+/)
+        .map((word, wIdx) => {
+            return word
+                .split("-")
+                .map((part, pIdx) => {
+                    if (!part) return part;
+                    const lower = part.toLowerCase();
+                    if (minorWords.has(lower) && (wIdx > 0 || pIdx > 0)) {
+                        return lower;
+                    }
+                    return part.charAt(0).toUpperCase() + part.slice(1);
+                })
+                .join("-");
+        })
+        .join(" ")
         .replace(/\b\w/g, (c, i) => (i === 0 ? c.toUpperCase() : c));
 }
 
@@ -56,16 +68,22 @@ export function getMoviePath(title: string, year?: string, originalFileName?: st
         }
     }
 
-    // 4. Clean leftover release format noise from movie title
+    // 4. Clean leftover release format noise from movie title (DO NOT truncate hyphens!)
     rawTitle = rawTitle
-        .replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|web[-_.\s]*dl|webrip|bluray|brrip|dvdrip|x264|x265|hevc|10bit|dual audio|hindi|english|org|dd5\.1|esubs?|full movie)\b.*$/i, "")
-        .replace(/[–—|-].*$/, "")
+        .replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|ds4k|web[-_.\s]*dl|webrip|bluray|brrip|dvdrip|x264|x265|hevc|10bit|dual audio|hindi|english|org|dd5\.1|esubs?|full movie|complete)\b.*$/i, "")
         .replace(/\[.*?\]/g, "")
         .replace(/\s*\(\s*\)/g, "")
+        .replace(/\s*[-–—|:]\s*$/g, "")
+        .replace(/[:]/g, " ")
         .replace(/\s+/g, " ")
         .trim();
 
-    const cleanTitle = sanitizeFilename(toTitleCase(rawTitle)) || "Movie";
+    // Preserve original casing if title is already mixed/properly cased (e.g. from TMDB)
+    let cleanTitle = sanitizeFilename(rawTitle);
+    if (cleanTitle === cleanTitle.toLowerCase() || cleanTitle === cleanTitle.toUpperCase()) {
+        cleanTitle = toTitleCase(cleanTitle);
+    }
+    cleanTitle = cleanTitle || "Movie";
     const ext = originalFileName && extname(originalFileName) ? extname(originalFileName) : ".mkv";
 
     const folderName = detectedYear ? `${cleanTitle} (${detectedYear})` : cleanTitle;
@@ -96,15 +114,21 @@ export function cleanSeriesTitleAndSeason(raw: string, fallbackSeason?: number):
         }
     }
 
-    // Clean release tags, resolutions, brackets, and extra junk
+    // Clean release tags, resolutions, brackets, and extra junk (DO NOT truncate hyphens!)
     s = s
         .replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|ds4k|web[-_.\s]*dl|webrip|bluray|brrip|dvdrip|x264|x265|hevc|10bit|dual audio|hindi|english|org|dd5\.1|esubs?|complete|full\s*season(?:\s*batch)?|all\s*episodes|primevideo|netflix|nf|hotstar|disney|zee5|sonyliv|series|hdhub4u.*)\b.*$/i, "")
-        .replace(/[–—|-].*$/, "")
         .replace(/\[.*?\]/g, "")
         .replace(/\(.*?\)/g, "")
+        .replace(/\s*[-–—|:]\s*$/g, "")
+        .replace(/[:]/g, " ")
+        .replace(/\s+/g, " ")
         .trim();
 
-    const cleanTitle = sanitizeFilename(toTitleCase(s)) || "Series";
+    let cleanTitle = sanitizeFilename(s);
+    if (cleanTitle === cleanTitle.toLowerCase() || cleanTitle === cleanTitle.toUpperCase()) {
+        cleanTitle = toTitleCase(cleanTitle);
+    }
+    cleanTitle = cleanTitle || "Series";
     return { title: cleanTitle, season };
 }
 

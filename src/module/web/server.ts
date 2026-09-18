@@ -894,6 +894,15 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             } else {
                 aiMeta.isBatch = true;
             }
+        } else {
+            // Ensure movie has canonical TMDB title and year
+            try {
+                const tmdb = await lookupMedia(aiMeta.title, aiMeta.year);
+                if (tmdb && tmdb.found && tmdb.title) {
+                    aiMeta.title = tmdb.title;
+                    if (tmdb.year) aiMeta.year = tmdb.year;
+                }
+            } catch {}
         }
 
         const mediaType = aiMeta.type;
@@ -1135,6 +1144,13 @@ app.post("/api/select", requireMod, async (req: any, res) => {
             aiMeta.isBatch = true;
         } else {
             aiMeta.type = "movie";
+            try {
+                const tmdb = await lookupMedia(aiMeta.title, aiMeta.year || chosenYear);
+                if (tmdb && tmdb.found && tmdb.title) {
+                    aiMeta.title = tmdb.title;
+                    if (tmdb.year) aiMeta.year = tmdb.year;
+                }
+            } catch {}
         }
         mediaType = aiMeta.type;
         chosenYear = aiMeta.year || chosenYear;
@@ -1157,6 +1173,7 @@ app.post("/api/select", requireMod, async (req: any, res) => {
             requestId,
             type: mediaType,
             title: jobTitle,
+            cleanTitle: aiMeta.title,
             year: chosenYear || undefined,
             servers: quality.servers,
             fileSize,
