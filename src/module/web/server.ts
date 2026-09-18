@@ -2257,8 +2257,16 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         </div>
                     </div>
 
-                    <!-- Pagination -->
-                    <div class="pagination-bar" id="releasesPaginationBar" style="display:none;"></div>
+                    <!-- Infinite Scroll Sentinel & Status -->
+                    <div id="releasesInfiniteScrollSentinel" class="releases-infinite-sentinel">
+                        <div id="releasesInfiniteLoader" class="releases-infinite-loader hidden">
+                            <div class="spinner" style="width:24px; height:24px; border-width:2px; margin:0 auto 8px;"></div>
+                            <span style="font-size: 13px; color: var(--text-muted);">Loading more releases...</span>
+                        </div>
+                        <div id="releasesInfiniteEnd" class="releases-infinite-end hidden">
+                            <span class="releases-infinite-end-badge">✓ You've reached the end of the catalog</span>
+                        </div>
+                    </div>
                 </div>
             </section>
 

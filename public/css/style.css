@@ -4999,64 +4999,58 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* ==========================================================================
-   MEDIA CATALOG PREV / NEXT PAGINATION
+   MEDIA CATALOG INFINITE SCROLL
    ========================================================================== */
 
-.releases-prev-next-pagination {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 16px;
-    padding: 24px 0 32px;
-}
-
-.btn-releases-nav {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 24px;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 10px;
-    color: #fff;
-    font-size: 13.5px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
-    user-select: none;
-}
-
-.btn-releases-nav:hover:not(:disabled) {
-    background: rgba(229, 9, 20, 0.2);
-    border-color: rgba(229, 9, 20, 0.5);
-    color: #fff;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(229, 9, 20, 0.25);
-}
-
-.btn-releases-nav:active:not(:disabled) {
-    transform: translateY(0);
-}
-
-.btn-releases-nav:disabled,
-.btn-releases-nav.disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-    pointer-events: none;
-    background: rgba(255, 255, 255, 0.02);
-    border-color: rgba(255, 255, 255, 0.05);
-}
-
-.releases-page-status {
+.releases-infinite-sentinel {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 8px 22px;
+    width: 100%;
+    min-height: 60px;
+    padding: 28px 16px 48px;
+    box-sizing: border-box;
+}
+
+.releases-infinite-loader {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 16px 28px;
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     backdrop-filter: blur(8px);
+    transition: all var(--transition-normal);
 }
+
+.releases-infinite-loader.hidden,
+.releases-infinite-end.hidden {
+    display: none !important;
+}
+
+.releases-infinite-end {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 0 36px;
+}
+
+.releases-infinite-end-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 22px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 9999px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted);
+    letter-spacing: 0.2px;
+}
+
 

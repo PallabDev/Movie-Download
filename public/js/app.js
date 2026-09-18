@@ -306,6 +306,16 @@ function switchView(viewName, updateHistory = true) {
         viewName = 'releases';
     }
 
+    // Capture current scroll before switching away from releases
+    if (state.currentView === 'releases' && viewName !== 'releases') {
+        if (typeof getReleasesScrollTop === 'function') {
+            releasesState.savedScrollTop = getReleasesScrollTop();
+            if (typeof saveReleasesSessionCache === 'function') {
+                saveReleasesSessionCache();
+            }
+        }
+    }
+
     state.currentView = viewName;
 
     document.querySelectorAll('.nav-link').forEach(link => {
@@ -356,7 +366,31 @@ function switchView(viewName, updateHistory = true) {
 
     if (viewName === 'releases') {
         syncReleasesStateFromUrl();
-        loadNewReleases(releasesState.page, false);
+        const grid = document.getElementById('releasesGrid');
+        const hasExistingCards = grid && grid.querySelectorAll('.movie-release-card').length > 0;
+
+        if (hasExistingCards && releasesState.items && releasesState.items.length > 0) {
+            // Already populated in DOM: preserve cards and restore scroll position
+            const targetY = releasesState.savedScrollTop || Number(sessionStorage.getItem('releases_saved_scroll')) || 0;
+            restoreReleasesScrollPosition(targetY);
+            setupReleasesInfiniteScroll();
+        } else {
+            // Check session cache first before making fresh network request
+            const cache = typeof loadReleasesSessionCache === 'function' ? loadReleasesSessionCache() : null;
+            if (cache && Array.isArray(cache.items) && cache.items.length > 0) {
+                releasesState.items = cache.items;
+                releasesState.page = cache.page || 1;
+                releasesState.totalPages = cache.totalPages || 1;
+                releasesState.total = cache.total || 0;
+                releasesState.savedScrollTop = cache.scrollTop || 0;
+
+                renderReleaseCards(releasesState.items, false);
+                setupReleasesInfiniteScroll();
+                restoreReleasesScrollPosition(releasesState.savedScrollTop);
+            } else {
+                loadNewReleases(1, false, false);
+            }
+        }
     }
     if (viewName === 'download-picker') {
         initDownloadPickerFromUrl();
@@ -2767,8 +2801,129 @@ const releasesState = {
     loading: false,
     loadingMore: false,
     searchDebounce: null,
-    scrollObserver: null
+    scrollObserver: null,
+    savedScrollTop: 0,
+    initialLoadDone: false
 };
+
+function getReleasesFiltersKey() {
+    return JSON.stringify({
+        type: releasesState.typeFilter,
+        provider: releasesState.providerFilter,
+        industry: releasesState.industryFilter,
+        search: releasesState.searchQuery,
+        sort: releasesState.sortBy
+    });
+}
+
+function serializeReleasesForCache(items) {
+    return (items || []).slice(0, 200).map(item => ({
+        tmdbId: item.tmdbId,
+        title: item.title,
+        year: item.year,
+        mediaType: item.mediaType,
+        posterUrl: item.posterUrl,
+        rating: item.rating,
+        releaseDate: item.releaseDate,
+        ottReleaseDate: item.ottReleaseDate,
+        industry: item.industry,
+        overview: item.overview,
+        trailerKey: item.trailerKey,
+        jellyfinExists: item.jellyfinExists,
+        providers: item.providers
+    }));
+}
+
+function saveReleasesSessionCache() {
+    try {
+        if (!releasesState.items || releasesState.items.length === 0) return;
+        const currentTop = getReleasesScrollTop();
+        if (currentTop > 0) {
+            releasesState.savedScrollTop = currentTop;
+        }
+        const cache = {
+            items: serializeReleasesForCache(releasesState.items),
+            page: releasesState.page,
+            totalPages: releasesState.totalPages,
+            total: releasesState.total,
+            scrollTop: releasesState.savedScrollTop,
+            filtersKey: getReleasesFiltersKey()
+        };
+        sessionStorage.setItem('releases_catalog_cache', JSON.stringify(cache));
+        sessionStorage.setItem('releases_saved_scroll', String(releasesState.savedScrollTop));
+    } catch {}
+}
+
+function loadReleasesSessionCache() {
+    try {
+        const raw = sessionStorage.getItem('releases_catalog_cache');
+        if (!raw) return null;
+        const cache = JSON.parse(raw);
+        if (!cache || cache.filtersKey !== getReleasesFiltersKey()) {
+            return null;
+        }
+        return cache;
+    } catch {
+        return null;
+    }
+}
+
+function clearReleasesSessionCache() {
+    try {
+        sessionStorage.removeItem('releases_catalog_cache');
+        sessionStorage.removeItem('releases_saved_scroll');
+    } catch {}
+}
+
+function getReleasesScrollTop() {
+    const viewEl = document.getElementById('view-releases');
+    const viewScroll = viewEl ? viewEl.scrollTop : 0;
+    const winScroll = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+    return viewScroll > 0 ? viewScroll : winScroll;
+}
+
+function setReleasesScrollTop(top) {
+    if (typeof top !== 'number' || isNaN(top) || top < 0) return;
+    const viewEl = document.getElementById('view-releases');
+    if (viewEl) {
+        viewEl.scrollTop = top;
+    }
+    window.scrollTo({ top: top, behavior: 'instant' });
+}
+
+function restoreReleasesScrollPosition(targetY) {
+    if (typeof targetY !== 'number' || isNaN(targetY) || targetY <= 0) return;
+    requestAnimationFrame(() => {
+        setReleasesScrollTop(targetY);
+        requestAnimationFrame(() => {
+            setReleasesScrollTop(targetY);
+            setTimeout(() => {
+                setReleasesScrollTop(targetY);
+            }, 60);
+        });
+    });
+}
+
+let releasesScrollDebounce = null;
+function handleReleasesScroll() {
+    if (state.currentView !== 'releases') return;
+    const top = getReleasesScrollTop();
+    if (top > 0) {
+        releasesState.savedScrollTop = top;
+    }
+    if (typeof checkInfiniteScrollFallback === 'function') {
+        checkInfiniteScrollFallback();
+    }
+
+    if (releasesScrollDebounce) clearTimeout(releasesScrollDebounce);
+    releasesScrollDebounce = setTimeout(() => {
+        if (state.currentView === 'releases') {
+            saveReleasesSessionCache();
+        }
+    }, 150);
+}
+
+window.addEventListener('scroll', handleReleasesScroll, { passive: true });
 
 // Platform styling and brand identity map
 const OTT_PLATFORMS = {
@@ -2879,12 +3034,7 @@ function updateReleasesUrl(push = true) {
         if (state.currentView !== 'releases') return;
         const url = new URL(window.location.href);
         url.pathname = '/';
-
-        if (releasesState.page > 1) {
-            url.searchParams.set('page', String(releasesState.page));
-        } else {
-            url.searchParams.delete('page');
-        }
+        url.searchParams.delete('page'); // Infinite scroll does not need page= in URL
 
         if (releasesState.typeFilter && releasesState.typeFilter !== 'all') {
             url.searchParams.set('type', releasesState.typeFilter);
@@ -2922,9 +3072,9 @@ function updateReleasesUrl(push = true) {
 
         if (newPath !== currentPath) {
             if (push) {
-                history.pushState({ view: 'releases', page: releasesState.page }, '', newPath);
+                history.pushState({ view: 'releases' }, '', newPath);
             } else {
-                history.replaceState({ view: 'releases', page: releasesState.page }, '', newPath);
+                history.replaceState({ view: 'releases' }, '', newPath);
             }
         }
     } catch {}
@@ -2987,11 +3137,13 @@ function handleMediaCatalogSearch(query, immediate = false) {
 
     if (immediate) {
         releasesState.page = 1;
-        loadNewReleases(1, true);
+        clearReleasesSessionCache();
+        loadNewReleases(1, true, false);
     } else {
         releasesState.searchDebounce = setTimeout(() => {
             releasesState.page = 1;
-            loadNewReleases(1, true);
+            clearReleasesSessionCache();
+            loadNewReleases(1, true, false);
         }, 350);
     }
 }
@@ -3004,7 +3156,8 @@ function clearMediaCatalogSearch(reload = true) {
     if (btnClear) btnClear.classList.add('hidden');
     if (reload) {
         releasesState.page = 1;
-        loadNewReleases(1, true);
+        clearReleasesSessionCache();
+        loadNewReleases(1, true, false);
     }
 }
 
@@ -3017,7 +3170,8 @@ function setReleasesTypeFilter(type) {
     else if (type === 'movie') document.getElementById('relTabMovie')?.classList.add('active');
     else if (type === 'series') document.getElementById('relTabSeries')?.classList.add('active');
 
-    loadNewReleases(1, true);
+    clearReleasesSessionCache();
+    loadNewReleases(1, true, false);
 }
 
 function setReleasesIndustryFilter(ind) {
@@ -3028,15 +3182,21 @@ function setReleasesIndustryFilter(ind) {
         btn.classList.toggle('active', btn.dataset.industry === ind);
     });
 
-    loadNewReleases(1, true);
+    clearReleasesSessionCache();
+    loadNewReleases(1, true, false);
 }
 
-async function loadNewReleases(page = null, updateUrl = true) {
+async function loadNewReleases(page = null, updateUrl = true, preserveScroll = false) {
     if (page === null) {
         syncReleasesStateFromUrl();
         page = releasesState.page || 1;
     } else {
         releasesState.page = page;
+    }
+
+    if (!preserveScroll) {
+        releasesState.savedScrollTop = 0;
+        setReleasesScrollTop(0);
     }
 
     if (updateUrl) {
@@ -3045,6 +3205,11 @@ async function loadNewReleases(page = null, updateUrl = true) {
 
     const grid = document.getElementById('releasesGrid');
     if (!grid) return;
+
+    // Reset infinite scroll indicators
+    showReleasesLoader(false);
+    const endEl = document.getElementById('releasesInfiniteEnd');
+    if (endEl) endEl.classList.add('hidden');
 
     releasesState.loading = true;
     releasesState.loadingMore = false;
@@ -3100,22 +3265,28 @@ async function loadNewReleases(page = null, updateUrl = true) {
                     <div style="font-size: 12.5px;">Try changing your search query or industry filters.</div>
                 </div>
             `;
-            renderReleasesPagination();
             return;
         }
 
         renderReleaseCards(releasesState.items, false);
-        renderReleasesPagination();
+        saveReleasesSessionCache();
+
+        if (preserveScroll && releasesState.savedScrollTop > 0) {
+            restoreReleasesScrollPosition(releasesState.savedScrollTop);
+        }
+
+        setupReleasesInfiniteScroll();
 
     } catch (err) {
         grid.innerHTML = `
             <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--accent-rose);">
                 <div>Failed to load OTT releases: ${escapeHtml(err.message)}</div>
-                <button class="btn-header" style="margin-top: 10px;" onclick="loadNewReleases(1, true)">Retry</button>
+                <button class="btn-header" style="margin-top: 10px;" onclick="loadNewReleases(1, true, false)">Retry</button>
             </div>
         `;
     } finally {
         releasesState.loading = false;
+        releasesState.initialLoadDone = true;
     }
 }
 
@@ -3211,64 +3382,132 @@ function renderReleaseCards(items, append = false) {
     }
 }
 
-function renderReleasesPagination() {
-    const bar = document.getElementById('releasesPaginationBar');
-    if (!bar) return;
+function showReleasesLoader(show) {
+    const loader = document.getElementById('releasesInfiniteLoader');
+    if (loader) {
+        loader.classList.toggle('hidden', !show);
+    }
+}
 
-    if (releasesState.total === 0) {
-        bar.style.display = 'none';
+function showReleasesEndIndicator() {
+    showReleasesLoader(false);
+    const endEl = document.getElementById('releasesInfiniteEnd');
+    if (endEl) {
+        if (releasesState.items && releasesState.items.length > 0) {
+            endEl.classList.remove('hidden');
+        } else {
+            endEl.classList.add('hidden');
+        }
+    }
+}
+
+async function loadMoreReleases() {
+    if (releasesState.loading || releasesState.loadingMore) return;
+    if (releasesState.page >= releasesState.totalPages) {
+        showReleasesEndIndicator();
         return;
     }
 
-    bar.style.display = 'flex';
-    bar.style.flexDirection = 'row';
-    bar.style.alignItems = 'center';
-    bar.style.justifyContent = 'center';
-    bar.style.gap = '16px';
-    bar.style.padding = '28px 0 36px';
+    releasesState.loadingMore = true;
+    showReleasesLoader(true);
 
-    const currentPage = releasesState.page || 1;
-    const totalPages = releasesState.totalPages || 1;
-    const hasPrev = currentPage > 1;
-    const hasNext = currentPage < totalPages;
+    const nextPage = releasesState.page + 1;
 
-    bar.innerHTML = `
-        <div class="releases-prev-next-pagination" style="display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap;">
-            <button class="btn-releases-nav prev" 
-                    id="btnReleasesPrev" 
-                    ${!hasPrev ? 'disabled' : ''} 
-                    onclick="goToReleasesPage(${currentPage - 1})"
-                    style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 22px; background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 10px; color: ${hasPrev ? '#fff' : 'rgba(255,255,255,0.3)'}; font-size: 13.5px; font-weight: 600; cursor: ${hasPrev ? 'pointer' : 'not-allowed'}; opacity: ${hasPrev ? '1' : '0.35'}; transition: all 0.2s ease;">
-                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:16px;height:16px;"><path d="M15 6l-6 6l6 6"/></svg>
-                <span>Previous</span>
-            </button>
+    try {
+        const queryParams = new URLSearchParams({
+            page: String(nextPage),
+            limit: '24',
+            type: releasesState.typeFilter,
+            provider: releasesState.providerFilter,
+            industry: releasesState.industryFilter,
+            sort: releasesState.sortBy,
+        });
 
-            <div class="releases-page-status" style="display: flex; flex-direction: column; align-items: center; padding: 8px 20px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px;">
-                <span style="font-size: 14px; font-weight: 700; color: #fff;">Page ${currentPage.toLocaleString()} of ${totalPages.toLocaleString()}</span>
-                <span style="font-size: 11.5px; color: var(--text-muted); margin-top: 2px;">${releasesState.total > 0 ? `${releasesState.total.toLocaleString()} titles available` : ''}</span>
-            </div>
+        if (releasesState.searchQuery) {
+            queryParams.set('search', releasesState.searchQuery);
+        }
 
-            <button class="btn-releases-nav next" 
-                    id="btnReleasesNext" 
-                    ${!hasNext ? 'disabled' : ''} 
-                    onclick="goToReleasesPage(${currentPage + 1})"
-                    style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 22px; background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 10px; color: ${hasNext ? '#fff' : 'rgba(255,255,255,0.3)'}; font-size: 13.5px; font-weight: 600; cursor: ${hasNext ? 'pointer' : 'not-allowed'}; opacity: ${hasNext ? '1' : '0.35'}; transition: all 0.2s ease;">
-                <span>Next</span>
-                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:16px;height:16px;"><path d="M9 6l6 6l-6 6"/></svg>
-            </button>
-        </div>
-    `;
+        const res = await fetch(`/api/new-releases?${queryParams.toString()}`, { credentials: 'include' });
+        const data = await res.json();
+        const newItems = data.releases || [];
+
+        if (newItems.length > 0) {
+            releasesState.page = nextPage;
+            releasesState.totalPages = data.pagination?.totalPages || releasesState.totalPages;
+            releasesState.total = data.pagination?.total || releasesState.total;
+            releasesState.items.push(...newItems);
+
+            renderReleaseCards(newItems, true); // true = append
+            saveReleasesSessionCache();
+        }
+
+        if (releasesState.page >= releasesState.totalPages || newItems.length === 0) {
+            showReleasesEndIndicator();
+            if (releasesState.scrollObserver) {
+                releasesState.scrollObserver.disconnect();
+                releasesState.scrollObserver = null;
+            }
+        } else {
+            showReleasesLoader(false);
+        }
+    } catch (err) {
+        console.error('Failed to load more releases:', err);
+        showReleasesLoader(false);
+    } finally {
+        releasesState.loadingMore = false;
+    }
+}
+
+function checkInfiniteScrollFallback() {
+    if (state.currentView !== 'releases' || releasesState.loading || releasesState.loadingMore) return;
+    if (releasesState.page >= releasesState.totalPages) return;
+
+    const sentinel = document.getElementById('releasesInfiniteScrollSentinel');
+    if (!sentinel) return;
+
+    const rect = sentinel.getBoundingClientRect();
+    const windowHeight = window.innerHeight || document.documentElement.clientHeight;
+    if (rect.top <= windowHeight + 800) {
+        loadMoreReleases();
+    }
+}
+
+function setupReleasesInfiniteScroll() {
+    const sentinel = document.getElementById('releasesInfiniteScrollSentinel');
+    if (!sentinel) return;
+
+    if (releasesState.scrollObserver) {
+        releasesState.scrollObserver.disconnect();
+        releasesState.scrollObserver = null;
+    }
+
+    if (releasesState.page >= releasesState.totalPages && releasesState.items && releasesState.items.length > 0) {
+        showReleasesEndIndicator();
+        return;
+    }
+
+    const viewEl = document.getElementById('view-releases');
+    const rootEl = (viewEl && getComputedStyle(viewEl).overflowY !== 'visible') ? viewEl : null;
+
+    releasesState.scrollObserver = new IntersectionObserver((entries) => {
+        const entry = entries[0];
+        if (entry && entry.isIntersecting) {
+            if (!releasesState.loading && !releasesState.loadingMore && releasesState.page < releasesState.totalPages) {
+                loadMoreReleases();
+            }
+        }
+    }, {
+        root: rootEl,
+        rootMargin: '800px 0px',
+        threshold: 0.01
+    });
+
+    releasesState.scrollObserver.observe(sentinel);
 }
 
 function goToReleasesPage(targetPage) {
-    if (targetPage < 1 || targetPage > releasesState.totalPages || releasesState.loading) return;
-    releasesState.page = targetPage;
-    loadNewReleases(targetPage, true);
-    const target = document.getElementById('view-releases') || document.getElementById('releasesGrid');
-    if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } else {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (targetPage > releasesState.page) {
+        loadMoreReleases();
     }
 }
 window.goToReleasesPage = goToReleasesPage;
@@ -3279,7 +3518,8 @@ function filterReleasesByPlatform(platform) {
         const attr = (card.getAttribute('onclick') || '').toLowerCase();
         card.classList.toggle('active', attr.includes(`'${platform}'`));
     });
-    loadNewReleases(1, true);
+    clearReleasesSessionCache();
+    loadNewReleases(1, true, false);
 }
 
 function filterReleasesByIndustry(industry) {
@@ -3287,13 +3527,15 @@ function filterReleasesByIndustry(industry) {
     document.querySelectorAll('#industryFilterPills .pill-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.industry === industry);
     });
-    loadNewReleases(1, true);
+    clearReleasesSessionCache();
+    loadNewReleases(1, true, false);
 }
 
 function handleReleasesSortChange() {
     const select = document.getElementById('releasesSortSelect');
     releasesState.sortBy = select?.value || 'date_desc';
-    loadNewReleases(1, true);
+    clearReleasesSessionCache();
+    loadNewReleases(1, true, false);
 }
 
 function directSearchRelease(title, year) {
@@ -3389,6 +3631,12 @@ function openDownloadPicker(media) {
         }
     }
 
+    // Capture current scroll before switching view
+    if (state.currentView === 'releases') {
+        releasesState.savedScrollTop = getReleasesScrollTop();
+        saveReleasesSessionCache();
+    }
+
     // Switch view to download-picker without auto-pushing default route
     state.currentView = 'download-picker';
     document.querySelectorAll('.nav-link').forEach(link => {
@@ -3440,7 +3688,11 @@ function initDownloadPickerFromUrl() {
 }
 
 function closeDownloadPicker() {
-    switchView('releases', true);
+    if (window.history.length > 1 && window.history.state && window.history.state.view === 'download-picker') {
+        window.history.back();
+    } else {
+        switchView('releases', true);
+    }
 }
 
 function playPickerTrailer() {
@@ -3660,6 +3912,15 @@ document.addEventListener('DOMContentLoaded', () => {
         studioInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') performStudioSearch();
         });
+    }
+
+    if ('scrollRestoration' in history) {
+        history.scrollRestoration = 'manual';
+    }
+
+    const viewReleasesEl = document.getElementById('view-releases');
+    if (viewReleasesEl) {
+        viewReleasesEl.addEventListener('scroll', handleReleasesScroll, { passive: true });
     }
 
     const initialView = window.__INITIAL_VIEW__ || getViewForPath(window.location.pathname);
