@@ -23,7 +23,7 @@ import {
     fetchCuratedOTTMedia
 } from "../../common/tmdb/client.js";
 import { cleanSeriesTitleAndSeason } from "../download/downloader.js";
-import { searchMedia, getDownloadLinks, resolveSpecificFormatLink, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats, cleanFileSize } from "../download/api-client.js";
+import { searchMedia, getDownloadLinks, getMediaFormatDetails, resolveSpecificFormatLink, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats, cleanFileSize } from "../download/api-client.js";
 import { handleChat } from "./chat.js";
 import { parseMediaWithAI, formatMediaJobTitle, formatMediaFileName } from "../ai/cleaner.js";
 
@@ -796,20 +796,32 @@ app.post("/api/search", requireMod, async (req: any, res) => {
             if (Date.now() - v.createdAt > 30 * 60 * 1000) searchSessions.delete(k);
         }
 
-        const formattedResults = results.map((r, i) => ({
-            index: i + 1,
-            text: r.name,
-            name: r.name,
-            url: r.url,
-            thumbnail: r.thumbnail || "",
-            category: r.category || [],
-            director: r.director || [],
-            stars: r.stars || [],
-            imdb_id: r.imdb_id || "",
-            post_date: r.post_date || "",
-            isBest: i === 0,
-            reason: i === 0 ? "Top Matching Release" : ""
-        }));
+        const formattedResults = results.map((r, i) => {
+            let thumb = (r.thumbnail || "").trim();
+            // 1. Strip WordPress photon proxy prefixes (e.g. https://i0.wp.com/) that get blocked by ad blockers
+            thumb = thumb.replace(/^https?:\/\/i\d+\.wp\.com\//i, "https://");
+
+            // 2. If thumbnail is from a dead image domain, fall back to resolved canonical TMDB poster
+            const isDeadDomain = /imagetot\.com|extraimage\.net|jiopic\.com|keepimg\.com/i.test(thumb);
+            if ((!thumb || isDeadDomain) && mediaMetadata && mediaMetadata.posterUrl) {
+                thumb = mediaMetadata.posterUrl;
+            }
+
+            return {
+                index: i + 1,
+                text: r.name,
+                name: r.name,
+                url: r.url,
+                thumbnail: thumb,
+                category: r.category || [],
+                director: r.director || [],
+                stars: r.stars || [],
+                imdb_id: r.imdb_id || "",
+                post_date: r.post_date || "",
+                isBest: i === 0,
+                reason: i === 0 ? "Top Matching Release" : ""
+            };
+        });
 
         console.log(`[SEARCH] Found ${results.length} releases for "${cleanTitle}"`);
         return res.json({
@@ -828,7 +840,7 @@ app.post("/api/search", requireMod, async (req: any, res) => {
     }
 });
 
-// ─── MEDIA FORMAT DETAILS (Movies, Series Batches & Episodes) ───
+// ─── MEDIA FORMAT DETAILS (Fast 1-Second Resolution) ───
 
 app.post("/api/media/details", requireMod, async (req: any, res) => {
     const { targetUrl, searchId, optionIndex } = req.body;
@@ -851,8 +863,7 @@ app.post("/api/media/details", requireMod, async (req: any, res) => {
 
     try {
         console.log(`[MEDIA-DETAILS] Fetching download options for: ${chosenUrl}`);
-        const details = await getDownloadLinks(chosenUrl);
-        const parsed = parseAvailableMediaFormats(details);
+        const parsed = await getMediaFormatDetails(chosenUrl);
         if (!parsed) {
             return res.status(404).json({ error: "No downloadable formats found for this release." });
         }

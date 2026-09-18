@@ -4695,21 +4695,40 @@ h1, h2, h3, h4, h5, h6 {
 .picker-release-thumb-wrap {
     position: relative;
     width: 100%;
-    aspect-ratio: 16 / 9;
-    background: #090d16;
+    height: 190px;
+    background: radial-gradient(circle at center, #1e293b 0%, #090d16 100%);
     overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.picker-release-thumb-bg {
+    position: absolute;
+    inset: -15px;
+    background-size: cover;
+    background-position: center;
+    filter: blur(16px) brightness(0.35);
+    opacity: 0.85;
+    pointer-events: none;
+    transition: background-image 0.3s ease;
 }
 
 .picker-release-thumb {
-    width: 100%;
+    position: relative;
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
     height: 100%;
-    object-fit: cover;
+    object-fit: contain;
+    z-index: 1;
     display: block;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
     transition: transform 0.3s ease;
 }
 
 .picker-release-card:hover .picker-release-thumb {
-    transform: scale(1.03);
+    transform: scale(1.04);
 }
 
 .badge-best-match {

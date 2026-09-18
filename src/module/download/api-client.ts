@@ -807,3 +807,177 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
     }
 }
 
+const mediaDetailsFormatCache = new Map<string, { data: ParsedMediaDetails; timestamp: number }>();
+
+export function parseRawScrapedDetails(raw: any, targetUrl: string): ParsedMediaDetails | null {
+    if (!raw) return null;
+    const options: any[] = raw.download_options || raw.download_links || [];
+    if (options.length === 0) return null;
+
+    const isSeries = Boolean(
+        raw.is_tv_series ||
+        options.some(o => o.is_batch || o.category_type === 'batch_pack' || o.category_type === 'episode' || /episode|season|batch/i.test(o.label || ''))
+    );
+
+    const title = raw.title || raw.name || "Media";
+
+    if (isSeries) {
+        // 1. Batches
+        const batchOpts = options.filter(o => o.is_batch || o.category_type === 'batch_pack' || /batch|pack|zip/i.test(o.label || ''));
+        const seriesBatches: ParsedSeriesBatch[] = batchOpts.map(b => {
+            let res = b.quality || "720p";
+            if (/4k|2160p/i.test(b.label || "")) res = "4K";
+            else if (/1080p/i.test(b.label || "")) res = "1080p";
+            else if (/720p/i.test(b.label || "")) res = "720p";
+            else if (/480p/i.test(b.label || "")) res = "480p";
+
+            const qKey = "batch_" + (b.label || "pack").toLowerCase().replace(/[^a-z0-9]/g, "_");
+            const isRec = /720p.*hevc|hevc.*720p/i.test(b.label) || (!batchOpts.some(x => /hevc/i.test(x.label)) && /720p/i.test(b.label));
+
+            return {
+                qualityKey: qKey,
+                label: b.label,
+                resolution: res,
+                fileSize: b.size || cleanFileSize(b.label),
+                isRecommended: isRec,
+                serverCount: 1,
+                linkUrl: b.link_url || ""
+            };
+        });
+
+        // 2. Episodes
+        const epOpts = options.filter(o => o.category_type === 'episode' || /episode\s*\d+/i.test(o.label || ''));
+        const epMap = new Map<number, ParsedSeriesEpisode>();
+
+        for (const ep of epOpts) {
+            const m = (ep.label || "").match(/episode\s*(\d+)/i);
+            const epNum = m ? parseInt(m[1], 10) : 1;
+            if (!epMap.has(epNum)) {
+                epMap.set(epNum, {
+                    episodeNum: epNum,
+                    title: `Episode ${epNum < 10 ? '0' + epNum : epNum}`,
+                    qualities: []
+                });
+            }
+
+            let res = ep.quality || "720p";
+            if (/4k|2160p/i.test(ep.label || "")) res = "4K";
+            else if (/1080p/i.test(ep.label || "")) res = "1080p";
+            else if (/720p/i.test(ep.label || "")) res = "720p";
+            else if (/480p/i.test(ep.label || "")) res = "480p";
+
+            const qKey = `episode_${epNum}_` + (ep.quality || "direct").toLowerCase().replace(/[^a-z0-9]/g, "_");
+
+            epMap.get(epNum)!.qualities.push({
+                qualityKey: qKey,
+                label: ep.quality || ep.label,
+                resolution: res,
+                fileSize: ep.size || cleanFileSize(ep.label),
+                serverCount: 1,
+                linkUrl: ep.link_url || ""
+            });
+        }
+
+        const sortedEpisodes = Array.from(epMap.values()).sort((a, b) => a.episodeNum - b.episodeNum);
+
+        return {
+            name: title,
+            url: targetUrl,
+            thumbnail: raw.poster || raw.thumbnail,
+            synopsis: raw.synopsis,
+            category: raw.category,
+            isSeries: true,
+            seriesBatches,
+            seriesEpisodes: sortedEpisodes
+        };
+    } else {
+        // Movie formats
+        const movieFormats: ParsedMovieFormat[] = options.map((opt, idx) => {
+            let res = opt.quality || "1080p";
+            if (/4k|2160p/i.test(opt.label || "")) res = "4K";
+            else if (/1080p/i.test(opt.label || "")) res = "1080p";
+            else if (/720p/i.test(opt.label || "")) res = "720p";
+            else if (/480p/i.test(opt.label || "")) res = "480p";
+
+            const qKey = "format_" + (opt.label || `opt_${idx}`).toLowerCase().replace(/[^a-z0-9]/g, "_");
+            const isRec = /720p.*hevc|hevc.*720p/i.test(opt.label) || (!options.some(x => /hevc/i.test(x.label)) && /720p/i.test(opt.label));
+
+            return {
+                qualityKey: qKey,
+                label: opt.label,
+                resolution: res,
+                fileSize: opt.size || cleanFileSize(opt.label),
+                isRecommended: isRec,
+                serverCount: 1,
+                linkUrl: opt.link_url || ""
+            };
+        });
+
+        return {
+            name: title,
+            url: targetUrl,
+            thumbnail: raw.poster || raw.thumbnail,
+            synopsis: raw.synopsis,
+            category: raw.category,
+            isSeries: false,
+            movieFormats
+        };
+    }
+}
+
+/**
+ * Fast resolution of format/download options for a media release.
+ * Tries the lightweight /details endpoint (1s), falling back to full /download if unavailable.
+ */
+export async function getMediaFormatDetails(targetUrl: string, bypassCache = false): Promise<ParsedMediaDetails | null> {
+    if (!targetUrl) return null;
+    const cacheKey = targetUrl.trim();
+
+    if (!bypassCache) {
+        const cached = mediaDetailsFormatCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+            console.log(`[DL-API] Returning cached format details for: ${cacheKey}`);
+            return cached.data;
+        }
+    }
+
+    // 1. Try lightweight /details endpoint (1-2s response time)
+    try {
+        const detailsUrl = `${DL_API_BASE_URL}/details?param=${encodeURIComponent(targetUrl)}`;
+        console.log(`[DL-API] Fetching fast page details: ${detailsUrl}`);
+        const res = await fetch(detailsUrl, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json"
+            },
+            signal: AbortSignal.timeout(12000)
+        });
+
+        if (res.ok) {
+            const rawData = await res.json();
+            const parsed = parseRawScrapedDetails(rawData, targetUrl);
+            if (parsed && ((parsed.seriesBatches && parsed.seriesBatches.length > 0) || (parsed.seriesEpisodes && parsed.seriesEpisodes.length > 0) || (parsed.movieFormats && parsed.movieFormats.length > 0))) {
+                mediaDetailsFormatCache.set(cacheKey, { data: parsed, timestamp: Date.now() });
+                console.log(`[DL-API] Fast page details resolved successfully (${(parsed.seriesBatches?.length || 0) + (parsed.seriesEpisodes?.length || 0) + (parsed.movieFormats?.length || 0)} options)`);
+                return parsed;
+            }
+        }
+    } catch (fastErr: any) {
+        console.warn(`[DL-API] Fast details extraction fallback: ${fastErr.message}`);
+    }
+
+    // 2. Fallback to full getDownloadLinks
+    try {
+        console.log(`[DL-API] Falling back to standard getDownloadLinks for: ${targetUrl}`);
+        const fullDetails = await getDownloadLinks(targetUrl, bypassCache);
+        const parsed = parseAvailableMediaFormats(fullDetails);
+        if (parsed) {
+            mediaDetailsFormatCache.set(cacheKey, { data: parsed, timestamp: Date.now() });
+        }
+        return parsed;
+    } catch (e: any) {
+        console.error(`[DL-API] getMediaFormatDetails failed:`, e.message);
+        throw e;
+    }
+}
+

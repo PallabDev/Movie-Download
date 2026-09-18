@@ -3503,13 +3503,26 @@ async function searchScraperForPicker(searchTitle, year, type) {
         grid.innerHTML = results.map((rel, idx) => {
             const safeUrl = escapeHtml(rel.url).replace(/'/g, "\\'");
             const safeName = escapeHtml(rel.name).replace(/'/g, "\\'");
-            const thumb = rel.thumbnail || downloadPickerState.posterUrl;
+            const fallbackThumb = downloadPickerState.posterUrl || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=80';
+            let thumb = (rel.thumbnail || '').trim();
+            thumb = thumb.replace(/^https?:\/\/i\d+\.wp\.com\//i, 'https://');
+            if (!thumb || /imagetot\.com|extraimage\.net|jiopic\.com|keepimg\.com/i.test(thumb)) {
+                thumb = fallbackThumb;
+            }
+            const safeThumb = escapeHtml(thumb).replace(/'/g, "\\'");
+            const safeFallback = escapeHtml(fallbackThumb).replace(/'/g, "\\'");
             const cats = Array.isArray(rel.category) ? rel.category : [];
 
             return `
                 <div class="picker-release-card ${rel.isBest ? 'best-match' : ''}">
                     <div class="picker-release-thumb-wrap">
-                        <img src="${escapeHtml(thumb)}" alt="${escapeHtml(rel.name)}" class="picker-release-thumb" onerror="this.src='${escapeHtml(downloadPickerState.posterUrl)}'" loading="lazy">
+                        <div class="picker-release-thumb-bg" style="background-image: url('${safeThumb}');"></div>
+                        <img src="${safeThumb}" 
+                             alt="${escapeHtml(rel.name)}" 
+                             class="picker-release-thumb" 
+                             referrerpolicy="no-referrer"
+                             loading="lazy" 
+                             onerror="this.onerror=null; this.src='${safeFallback}'; if(this.previousElementSibling) this.previousElementSibling.style.backgroundImage='url(\\'${safeFallback}\\')';">
                         ${rel.isBest ? `<span class="badge-best-match">Top Match</span>` : ''}
                     </div>
                     <div class="picker-release-body">
@@ -3583,10 +3596,22 @@ async function selectScraperRelease(targetUrl, releaseName) {
             if (subEl) subEl.textContent = data.details.isSeries ? 'Available Season Batches & Episodes' : 'Select your desired quality';
             renderDrawerContent(bodyEl, data.details, targetUrl, releaseName);
         } else {
-            bodyEl.innerHTML = `<div style="color: var(--accent-rose); padding: 20px; text-align: center;">${escapeHtml(data.error || 'No download formats found for this release')}</div>`;
+            bodyEl.innerHTML = `
+                <div style="color: var(--accent-rose); padding: 30px 20px; text-align: center;">
+                    <div style="font-size: 24px; margin-bottom: 8px;">⚠️</div>
+                    <div>${escapeHtml(data.error || 'No download formats found for this release')}</div>
+                    <button class="btn-primary" style="margin-top: 16px;" onclick="selectScraperRelease('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(releaseName).replace(/'/g, "\\'")}')">Retry Inspection</button>
+                </div>
+            `;
         }
     } catch (err) {
-        bodyEl.innerHTML = `<div style="color: var(--accent-rose); padding: 20px; text-align: center;">Failed to retrieve formats: ${escapeHtml(err.message)}</div>`;
+        bodyEl.innerHTML = `
+            <div style="color: var(--accent-rose); padding: 30px 20px; text-align: center;">
+                <div style="font-size: 24px; margin-bottom: 8px;">⚠️</div>
+                <div>Failed to retrieve formats: ${escapeHtml(err.message)}</div>
+                <button class="btn-primary" style="margin-top: 16px;" onclick="selectScraperRelease('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(releaseName).replace(/'/g, "\\'")}')">Retry</button>
+            </div>
+        `;
     }
 }
 

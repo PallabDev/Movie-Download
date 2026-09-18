@@ -105,6 +105,31 @@ async def api_search(
         raise HTTPException(status_code=500, detail=f"Search failed: {str(exc)}")
 
 
+@app.get("/details")
+@app.get("/api/details")
+@app.get("/api/movie/details")
+async def api_movie_details(
+    url: Optional[str] = Query(None, description="Movie page URL"),
+    param: Optional[str] = Query(None, description="Movie page URL"),
+    impersonate: str = Query("chrome124", description="Browser TLS profile to impersonate"),
+):
+    """
+    Returns movie page details with all download options in ~1 second,
+    without resolving each download option to a final CDN server link.
+    """
+    target_url = url or param
+    if not target_url:
+        raise HTTPException(status_code=400, detail="URL or param is required")
+    try:
+        details = await CloudflareScraper.get_movie_details(
+            movie_url=target_url,
+            impersonate=impersonate
+        )
+        return JSONResponse(content=details)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Details extraction failed: {str(exc)}")
+
+
 @app.get("/download")
 @app.get("/api/download")
 @app.get("/download/search={search_query:path}")
