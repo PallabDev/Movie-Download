@@ -2152,9 +2152,17 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                 </div>
                 <div class="header-right" id="headerRightActions">
                     ${!isUser ? `
-                    <button class="btn-header primary" id="btnHeaderAction" onclick="${activeView === 'requested' ? 'openNewRequestModal()' : 'startNewChat()'}">
-                        <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
-                        <span id="btnHeaderActionText">${activeView === 'requested' ? 'New Request' : 'New Chat'}</span>
+                    <button class="btn-header primary" id="btnHeaderAction" onclick="${activeView === 'releases' ? 'toggleMediaCatalogSearch()' : (activeView === 'requested' ? 'openNewRequestModal()' : 'startNewChat()')}">
+                        ${activeView === 'releases' ? `
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
+                            <span id="btnHeaderActionText">Search</span>
+                        ` : (activeView === 'requested' ? `
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
+                            <span id="btnHeaderActionText">New Request</span>
+                        ` : `
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
+                            <span id="btnHeaderActionText">New Chat</span>
+                        `)}
                     </button>` : ""}
                 </div>
             </header>
@@ -2186,7 +2194,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             <section class="view-container ${activeView === 'releases' ? 'active' : ''}" id="view-releases">
                 <div class="releases-container">
                     <!-- Top Media Search Bar (Radarr / Jellyseerr style) -->
-                    <div class="media-search-header">
+                    <div class="media-search-header hidden" id="mediaSearchHeader">
                         <div class="media-search-input-wrap">
                             <svg class="tabler-icon media-search-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
                             <input 

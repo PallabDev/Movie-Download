@@ -324,11 +324,25 @@ function switchView(viewName, updateHistory = true) {
     const btnHeaderActionText = document.getElementById('btnHeaderActionText');
     if (btnHeaderAction && btnHeaderActionText) {
         if (viewName === 'requested') {
-            btnHeaderActionText.textContent = 'New Request';
+            btnHeaderAction.style.display = 'inline-flex';
+            btnHeaderAction.classList.remove('search-active');
+            btnHeaderAction.innerHTML = `<svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg><span id="btnHeaderActionText">New Request</span>`;
             btnHeaderAction.onclick = openNewRequestModal;
-        } else {
-            btnHeaderActionText.textContent = 'New Chat';
+        } else if (viewName === 'releases') {
+            btnHeaderAction.style.display = 'inline-flex';
+            const isOpen = isMediaSearchVisible();
+            btnHeaderAction.classList.toggle('search-active', isOpen);
+            btnHeaderAction.innerHTML = isOpen
+                ? `<svg class="tabler-icon" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg><span id="btnHeaderActionText">Close</span>`
+                : `<svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg><span id="btnHeaderActionText">Search</span>`;
+            btnHeaderAction.onclick = toggleMediaCatalogSearch;
+        } else if (viewName === 'chat') {
+            btnHeaderAction.style.display = 'inline-flex';
+            btnHeaderAction.classList.remove('search-active');
+            btnHeaderAction.innerHTML = `<svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg><span id="btnHeaderActionText">New Chat</span>`;
             btnHeaderAction.onclick = startNewChat;
+        } else {
+            btnHeaderAction.style.display = 'none';
         }
     }
     document.title = `CineGrab - ${VIEW_TITLES[viewName] || 'Media Catalog'}`;
@@ -2842,6 +2856,11 @@ function syncReleasesStateFromUrl() {
         if (btnClear) {
             btnClear.classList.toggle('hidden', !search);
         }
+        if (search) {
+            toggleMediaCatalogSearch(true);
+        } else {
+            toggleMediaCatalogSearch(false);
+        }
 
         // Sync UI form controls
         document.querySelectorAll('.releases-filters-bar .jf-tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -2910,6 +2929,48 @@ function updateReleasesUrl(push = true) {
         }
     } catch {}
 }
+
+function isMediaSearchVisible() {
+    const el = document.getElementById('mediaSearchHeader');
+    return el && !el.classList.contains('hidden') && el.style.display !== 'none';
+}
+
+function toggleMediaCatalogSearch(forceOpen = null) {
+    const header = document.getElementById('mediaSearchHeader');
+    const input = document.getElementById('mediaCatalogSearchInput');
+    const btn = document.getElementById('btnHeaderAction');
+    if (!header) return;
+
+    const currentlyVisible = isMediaSearchVisible();
+    const shouldOpen = forceOpen !== null ? forceOpen : !currentlyVisible;
+
+    if (shouldOpen) {
+        header.classList.remove('hidden');
+        header.style.display = 'block';
+        if (btn && state.currentView === 'releases') {
+            btn.classList.add('search-active');
+            btn.innerHTML = `<svg class="tabler-icon" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg><span id="btnHeaderActionText">Close</span>`;
+        }
+        setTimeout(() => {
+            if (input) {
+                input.focus();
+                input.select();
+            }
+        }, 50);
+    } else {
+        header.classList.add('hidden');
+        header.style.display = 'none';
+        if (btn && state.currentView === 'releases') {
+            btn.classList.remove('search-active');
+            btn.innerHTML = `<svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg><span id="btnHeaderActionText">Search</span>`;
+        }
+        if (releasesState.searchQuery) {
+            clearMediaCatalogSearch();
+        }
+    }
+}
+window.toggleMediaCatalogSearch = toggleMediaCatalogSearch;
+window.isMediaSearchVisible = isMediaSearchVisible;
 
 function handleMediaCatalogSearch(query, immediate = false) {
     releasesState.searchQuery = (query || '').trim();

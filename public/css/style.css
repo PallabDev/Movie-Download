@@ -4318,6 +4318,17 @@ h1, h2, h3, h4, h5, h6 {
 .media-search-header {
     margin-bottom: 20px;
     width: 100%;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.media-search-header.hidden {
+    display: none !important;
+}
+
+#btnHeaderAction.search-active {
+    background: rgba(239, 68, 68, 0.18) !important;
+    border-color: rgba(239, 68, 68, 0.4) !important;
+    color: #f87171 !important;
 }
 
 .media-search-input-wrap {
