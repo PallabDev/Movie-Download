@@ -3290,8 +3290,56 @@ async function loadNewReleases(page = null, updateUrl = true, preserveScroll = f
     }
 }
 
+const releasesCardsDataMap = new Map();
+let releasesCardCounter = 0;
+
+function registerCardData(item) {
+    releasesCardCounter++;
+    const key = `rc_${releasesCardCounter}`;
+    releasesCardsDataMap.set(key, item);
+    return key;
+}
+
+function handleReleaseCardDownload(cardKey) {
+    const item = releasesCardsDataMap.get(cardKey);
+    if (!item) {
+        console.warn('Release card data not found for key:', cardKey);
+        return;
+    }
+    openDownloadPicker({
+        title: item.title,
+        year: item.year || (item.releaseDate ? item.releaseDate.slice(0, 4) : ''),
+        tmdbId: item.tmdbId || null,
+        posterUrl: item.posterUrl || '',
+        mediaType: item.mediaType || 'movie',
+        overview: item.overview || '',
+        trailerKey: item.trailerKey || ''
+    });
+}
+window.handleReleaseCardDownload = handleReleaseCardDownload;
+
+function handleReleaseCardTrailer(cardKey, event) {
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+    const item = releasesCardsDataMap.get(cardKey);
+    if (!item) return;
+    openTrailerModal(item.title, item.trailerKey || '', item.tmdbId, item.mediaType || 'movie', event);
+}
+window.handleReleaseCardTrailer = handleReleaseCardTrailer;
+
+function handleReleaseCardCopilot(cardKey) {
+    const item = releasesCardsDataMap.get(cardKey);
+    if (!item) return;
+    const year = item.year || (item.releaseDate ? item.releaseDate.slice(0, 4) : '');
+    askCopilotRelease(item.title, year);
+}
+window.handleReleaseCardCopilot = handleReleaseCardCopilot;
+
 function generateReleaseCardsHtml(items) {
     return items.map(item => {
+        const cardKey = registerCardData(item);
         const posterSrc = item.posterUrl || 'https://via.placeholder.com/300x450/111827/ffffff?text=No+Poster';
         const rating = item.rating ? Number(item.rating).toFixed(1) : 'N/A';
         const providers = item.providers || [];
@@ -3313,7 +3361,7 @@ function generateReleaseCardsHtml(items) {
                     <div class="poster-overlay-gradient"></div>
                     
                     <!-- Hover Play Trailer Button -->
-                    <button class="card-play-trailer-btn" onclick="openTrailerModal('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${item.trailerKey || ''}', ${item.tmdbId}, '${item.mediaType || 'movie'}', event)" title="Watch Trailer">
+                    <button class="card-play-trailer-btn" onclick="handleReleaseCardTrailer('${cardKey}', event)" title="Watch Trailer">
                         <svg viewBox="0 0 24 24"><path d="M6 4v16a1 1 0 0 0 1.524 .852l13 -8a1 1 0 0 0 0 -1.704l-13 -8a1 1 0 0 0 -1.524 .852z"/></svg>
                     </button>
 
@@ -3351,15 +3399,7 @@ function generateReleaseCardsHtml(items) {
 
                     <!-- Card Bottom Actions: Jellyseerr/Radarr Style Single Download Button -->
                     <div class="card-bottom-actions">
-                        <button class="btn-card-action primary" onclick="openDownloadPicker({
-                            title: '${escapeHtml(item.title).replace(/'/g, "\\'")}',
-                            year: '${escapeHtml(year)}',
-                            tmdbId: ${item.tmdbId || 'null'},
-                            posterUrl: '${escapeHtml(posterSrc).replace(/'/g, "\\'")}',
-                            mediaType: '${item.mediaType || 'movie'}',
-                            overview: '${escapeHtml(item.overview || '').replace(/'/g, "\\'")}',
-                            trailerKey: '${item.trailerKey || ''}'
-                        })" title="Download ${escapeHtml(item.title)}">
+                        <button class="btn-card-action primary" onclick="handleReleaseCardDownload('${cardKey}')" title="Download ${escapeHtml(item.title)}">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                             <span>Download</span>
                         </button>
@@ -4055,6 +4095,7 @@ let trendingSearchTimer = null;
 let popularSearchTimer = null;
 
 function renderMediaCard(item) {
+    const cardKey = registerCardData(item);
     const posterSrc = item.posterUrl || 'https://via.placeholder.com/300x450/111827/ffffff?text=No+Poster';
     const rating = item.rating ? Number(item.rating).toFixed(1) : 'N/A';
     const providers = item.providers || [];
@@ -4076,7 +4117,7 @@ function renderMediaCard(item) {
                 <div class="poster-overlay-gradient"></div>
                 
                 <!-- Hover Play Trailer Button -->
-                <button class="card-play-trailer-btn" onclick="openTrailerModal('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${item.trailerKey || ''}', ${item.tmdbId}, '${item.mediaType || 'movie'}', event)" title="Watch Trailer">
+                <button class="card-play-trailer-btn" onclick="handleReleaseCardTrailer('${cardKey}', event)" title="Watch Trailer">
                     <svg viewBox="0 0 24 24"><path d="M6 4v16a1 1 0 0 0 1.524 .852l13 -8a1 1 0 0 0 0 -1.704l-13 -8a1 1 0 0 0 -1.524 .852z"/></svg>
                 </button>
 
@@ -4120,7 +4161,7 @@ function renderMediaCard(item) {
                             <span>In Library</span>
                         </button>
                     ` : `
-                        <button class="btn-card-action primary" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Download with AI Copilot">
+                        <button class="btn-card-action primary" onclick="handleReleaseCardCopilot('${cardKey}')" title="Download with AI Copilot">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                             <span>Download</span>
                         </button>
