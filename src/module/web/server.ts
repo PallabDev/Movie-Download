@@ -19,6 +19,7 @@ import {
     searchTV as tmdbSearchTV,
     syncIndianOTTReleasesToDB,
     discoverIndianOTTReleases,
+    discoverComprehensiveOTTMedia,
     fetchCuratedOTTMedia
 } from "../../common/tmdb/client.js";
 import { cleanSeriesTitleAndSeason } from "../download/downloader.js";
@@ -448,121 +449,26 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
 
         const page = Math.max(1, Number(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 24));
-        const offset = (page - 1) * limit;
-
         const type = (req.query.type as string || "all").trim().toLowerCase();
         const provider = (req.query.provider as string || "").trim().toLowerCase();
         const industry = (req.query.industry as string || "").trim().toLowerCase();
         const search = (req.query.search as string || "").trim();
         const sort = (req.query.sort as string || "date_desc").toLowerCase();
 
-        // Auto-ensure fresh releases in chunk without requiring user manual refresh button
-        if (page === 1 && !search) {
-            const countCheck = await db.select({ count: count() }).from(schema.ottReleases);
-            const currentTotal = Number(countCheck[0]?.count || 0);
-            if (currentTotal === 0) {
-                await ensureFreshOTTReleasesChunk(true);
-            } else if (Date.now() - lastAutoSyncEpoch > 15 * 60 * 1000) {
-                ensureFreshOTTReleasesChunk(false).catch(() => {});
-            }
-        }
+        const [discovery, jfMedia] = await Promise.all([
+            discoverComprehensiveOTTMedia({
+                page,
+                limit,
+                type,
+                provider,
+                industry,
+                search,
+                sort,
+            }),
+            getCachedJellyfinMedia()
+        ]);
 
-        const conditions: any[] = [];
-
-        if (search) {
-            conditions.push(or(
-                ilike(schema.ottReleases.title, `%${search}%`),
-                ilike(schema.ottReleases.originalTitle, `%${search}%`)
-            ));
-        }
-
-        if (type && type !== "all") {
-            conditions.push(eq(schema.ottReleases.mediaType, type));
-        }
-
-        if (industry && industry !== "all") {
-            if (industry === "south") {
-                conditions.push(sql`LOWER(${schema.ottReleases.industry}) IN ('kollywood', 'tollywood', 'mollywood', 'sandalwood')`);
-            } else if (industry === "k-drama" || industry === "kdrama" || industry === "korean") {
-                conditions.push(sql`LOWER(${schema.ottReleases.industry}) IN ('k-drama', 'kdrama', 'korean')`);
-            } else {
-                conditions.push(sql`LOWER(${schema.ottReleases.industry}) = ${industry}`);
-            }
-        }
-
-        if (provider && provider !== "all") {
-            conditions.push(sql`EXISTS (
-                SELECT 1 FROM jsonb_array_elements(${schema.ottReleases.providers}) AS elem
-                WHERE LOWER(elem->>'name') LIKE ${`%${provider}%`}
-            )`);
-        }
-
-        const whereClause = conditions.length > 0 ? sql.join(conditions, sql` AND `) : undefined;
-
-        let orderByClause = desc(sql`COALESCE(${schema.ottReleases.ottReleaseDate}, ${schema.ottReleases.releaseDate})`);
-        if (sort === "rating_desc") {
-            orderByClause = desc(schema.ottReleases.rating);
-        } else if (sort === "popularity_desc") {
-            orderByClause = desc(schema.ottReleases.popularity);
-        }
-
-        const countQuery = whereClause
-            ? db.select({ count: count() }).from(schema.ottReleases).where(whereClause)
-            : db.select({ count: count() }).from(schema.ottReleases);
-
-        const itemsQuery = whereClause
-            ? db.select().from(schema.ottReleases).where(whereClause).orderBy(orderByClause).limit(limit).offset(offset)
-            : db.select().from(schema.ottReleases).orderBy(orderByClause).limit(limit).offset(offset);
-
-        let [totalRes, items, jfMedia] = await Promise.all([countQuery, itemsQuery, getCachedJellyfinMedia()]);
-        let total = Number(totalRes[0]?.count || 0);
-
-        // Dynamic TMDB Fallback: If user searched for a specific title and local DB returned 0, lookup on TMDB
-        if (items.length === 0 && search && search.length >= 2) {
-            try {
-                const tmdb = await lookupMedia(search);
-                if (tmdb && tmdb.found && tmdb.id) {
-                    const mediaType = tmdb.type || "movie";
-                    const existing = await db.select({ id: schema.ottReleases.id })
-                        .from(schema.ottReleases)
-                        .where(and(
-                            eq(schema.ottReleases.tmdbId, tmdb.id),
-                            eq(schema.ottReleases.mediaType, mediaType)
-                        )).limit(1);
-
-                    if (existing.length === 0) {
-                        const [inserted] = await db.insert(schema.ottReleases).values({
-                            tmdbId: tmdb.id,
-                            mediaType,
-                            title: tmdb.title,
-                            originalTitle: tmdb.originalTitle || tmdb.title,
-                            originalLanguage: "hi",
-                            year: tmdb.year || "",
-                            releaseDate: tmdb.releaseDate || "",
-                            ottReleaseDate: tmdb.releaseDate || "",
-                            overview: tmdb.overview || "",
-                            posterUrl: tmdb.posterUrl || "",
-                            backdropUrl: tmdb.backdropUrl || "",
-                            rating: tmdb.rating || 7.0,
-                            voteCount: tmdb.voteCount || 10,
-                            popularity: 50.0,
-                            industry: "Cinema",
-                            providers: [{ name: "OTT Stream", logoUrl: "" }],
-                            jellyfinExists: false
-                        }).returning();
-
-                        if (inserted) {
-                            items = [inserted];
-                            total = 1;
-                        }
-                    }
-                }
-            } catch (tmdbErr: any) {
-                console.warn(`[OTT-DYNAMIC-SEARCH] TMDB fallback error: ${tmdbErr?.message}`);
-            }
-        }
-
-        const enrichedReleases = items.map(item => {
+        const enrichedReleases = discovery.results.map(item => {
             const isSeries = item.mediaType === "series";
             const jfList = isSeries ? jfMedia.series : jfMedia.movies;
             const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfList);
@@ -572,13 +478,41 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
             };
         });
 
+        // Fire-and-forget background upsert into local database
+        (async () => {
+            for (const it of discovery.results) {
+                try {
+                    await db.insert(schema.ottReleases).values({
+                        tmdbId: it.tmdbId,
+                        mediaType: it.mediaType,
+                        title: it.title,
+                        originalTitle: it.originalTitle,
+                        originalLanguage: it.originalLanguage || "hi",
+                        industry: it.industry || "Cinema",
+                        releaseDate: it.releaseDate,
+                        ottReleaseDate: it.ottReleaseDate || it.releaseDate,
+                        trailerKey: it.trailerKey || null,
+                        year: it.year,
+                        overview: it.overview,
+                        posterUrl: it.posterUrl,
+                        backdropUrl: it.backdropUrl,
+                        rating: it.rating,
+                        voteCount: it.voteCount,
+                        popularity: it.popularity,
+                        providers: it.providers,
+                        jellyfinExists: it.jellyfinExists || false,
+                    }).onConflictDoNothing();
+                } catch {}
+            }
+        })().catch(() => {});
+
         return res.json({
             releases: enrichedReleases,
             pagination: {
-                page,
+                page: discovery.page,
                 limit,
-                total,
-                totalPages: Math.ceil(total / limit) || 1,
+                total: discovery.totalResults,
+                totalPages: discovery.totalPages,
             }
         });
     } catch (err: any) {

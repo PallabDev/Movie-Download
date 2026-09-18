@@ -3147,76 +3147,6 @@ function renderReleaseCards(items, append = false) {
     }
 }
 
-async function loadNextReleasesChunk() {
-    if (releasesState.loading || releasesState.loadingMore) return;
-    if (releasesState.page >= releasesState.totalPages) return;
-
-    releasesState.loadingMore = true;
-    const btn = document.getElementById('btnLoadMoreChunks');
-    if (btn) {
-        btn.innerHTML = `<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;margin-right:6px;"></div> Loading next chunk...`;
-        btn.disabled = true;
-    }
-
-    const nextPage = releasesState.page + 1;
-
-    try {
-        const queryParams = new URLSearchParams({
-            page: String(nextPage),
-            limit: '24',
-            type: releasesState.typeFilter,
-            provider: releasesState.providerFilter,
-            industry: releasesState.industryFilter,
-            sort: releasesState.sortBy,
-        });
-
-        if (releasesState.searchQuery) {
-            queryParams.set('search', releasesState.searchQuery);
-        }
-
-        const res = await fetch(`/api/new-releases?${queryParams.toString()}`, { credentials: 'include' });
-        const data = await res.json();
-        const newItems = data.releases || [];
-
-        if (newItems.length > 0) {
-            releasesState.page = nextPage;
-            releasesState.items.push(...newItems);
-            renderReleaseCards(newItems, true);
-        } else {
-            releasesState.totalPages = releasesState.page;
-        }
-    } catch (err) {
-        console.error('[CHUNK LOAD] Error loading next chunk:', err);
-    } finally {
-        releasesState.loadingMore = false;
-        renderReleasesPagination();
-    }
-}
-
-function setupReleasesScrollObserver() {
-    if (releasesState.scrollObserver) {
-        releasesState.scrollObserver.disconnect();
-        releasesState.scrollObserver = null;
-    }
-
-    const sentinel = document.getElementById('releasesScrollSentinel');
-    if (!sentinel) return;
-
-    releasesState.scrollObserver = new IntersectionObserver((entries) => {
-        const entry = entries[0];
-        if (entry && entry.isIntersecting) {
-            if (!releasesState.loading && !releasesState.loadingMore && releasesState.page < releasesState.totalPages) {
-                loadNextReleasesChunk();
-            }
-        }
-    }, {
-        rootMargin: '350px 0px 350px 0px',
-        threshold: 0.05
-    });
-
-    releasesState.scrollObserver.observe(sentinel);
-}
-
 function renderReleasesPagination() {
     const bar = document.getElementById('releasesPaginationBar');
     if (!bar) return;
@@ -3227,31 +3157,57 @@ function renderReleasesPagination() {
     }
 
     bar.style.display = 'flex';
-    bar.style.flexDirection = 'column';
+    bar.style.flexDirection = 'row';
     bar.style.alignItems = 'center';
-    bar.style.gap = '12px';
-    bar.style.padding = '24px 0 32px';
+    bar.style.justifyContent = 'center';
+    bar.style.gap = '16px';
+    bar.style.padding = '28px 0 36px';
 
-    const hasMore = releasesState.page < releasesState.totalPages;
-    const showingCount = Math.min(releasesState.items.length, releasesState.total);
+    const currentPage = releasesState.page || 1;
+    const totalPages = releasesState.totalPages || 1;
+    const hasPrev = currentPage > 1;
+    const hasNext = currentPage < totalPages;
 
     bar.innerHTML = `
-        <div id="releasesScrollSentinel" style="height: 10px; width: 100%;"></div>
-
-        ${hasMore ? `
-            <button class="btn-load-more-chunks" id="btnLoadMoreChunks" onclick="loadNextReleasesChunk()" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 24px; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s ease;">
-                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:16px;height:16px;"><path d="M12 5l0 14"/><path d="M18 13l-6 6"/><path d="M6 13l6 6"/></svg>
-                <span>Load Next Chunk (${showingCount} of ${releasesState.total} titles)</span>
+        <div class="releases-prev-next-pagination" style="display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap;">
+            <button class="btn-releases-nav prev" 
+                    id="btnReleasesPrev" 
+                    ${!hasPrev ? 'disabled' : ''} 
+                    onclick="goToReleasesPage(${currentPage - 1})"
+                    style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 22px; background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 10px; color: ${hasPrev ? '#fff' : 'rgba(255,255,255,0.3)'}; font-size: 13.5px; font-weight: 600; cursor: ${hasPrev ? 'pointer' : 'not-allowed'}; opacity: ${hasPrev ? '1' : '0.35'}; transition: all 0.2s ease;">
+                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:16px;height:16px;"><path d="M15 6l-6 6l6 6"/></svg>
+                <span>Previous</span>
             </button>
-        ` : `
-            <div style="font-size: 12px; color: var(--text-muted); padding: 8px 16px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
-                ✓ All ${releasesState.total} releases loaded
-            </div>
-        `}
-    `;
 
-    setupReleasesScrollObserver();
+            <div class="releases-page-status" style="display: flex; flex-direction: column; align-items: center; padding: 8px 20px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px;">
+                <span style="font-size: 14px; font-weight: 700; color: #fff;">Page ${currentPage.toLocaleString()} of ${totalPages.toLocaleString()}</span>
+                <span style="font-size: 11.5px; color: var(--text-muted); margin-top: 2px;">${releasesState.total > 0 ? `${releasesState.total.toLocaleString()} titles available` : ''}</span>
+            </div>
+
+            <button class="btn-releases-nav next" 
+                    id="btnReleasesNext" 
+                    ${!hasNext ? 'disabled' : ''} 
+                    onclick="goToReleasesPage(${currentPage + 1})"
+                    style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 22px; background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 10px; color: ${hasNext ? '#fff' : 'rgba(255,255,255,0.3)'}; font-size: 13.5px; font-weight: 600; cursor: ${hasNext ? 'pointer' : 'not-allowed'}; opacity: ${hasNext ? '1' : '0.35'}; transition: all 0.2s ease;">
+                <span>Next</span>
+                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:16px;height:16px;"><path d="M9 6l6 6l-6 6"/></svg>
+            </button>
+        </div>
+    `;
 }
+
+function goToReleasesPage(targetPage) {
+    if (targetPage < 1 || targetPage > releasesState.totalPages || releasesState.loading) return;
+    releasesState.page = targetPage;
+    loadNewReleases(targetPage, true);
+    const target = document.getElementById('view-releases') || document.getElementById('releasesGrid');
+    if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+}
+window.goToReleasesPage = goToReleasesPage;
 
 function filterReleasesByPlatform(platform) {
     releasesState.providerFilter = platform;

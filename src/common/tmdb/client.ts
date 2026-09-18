@@ -1412,3 +1412,262 @@ export async function fetchCuratedOTTMedia(options: CuratedOTTOptions): Promise<
     };
 }
 
+export interface ComprehensiveOTTOptions {
+    page?: number;
+    limit?: number;
+    type?: string; // "all" | "movie" | "series"
+    industry?: string; // "all" | "bollywood" | "tollywood" | "south" | "hollywood" | "k-drama"
+    provider?: string;
+    sort?: string; // "date_desc" | "popularity_desc" | "rating_desc"
+    search?: string;
+}
+
+export interface ComprehensiveOTTResult {
+    results: IndianOTTReleaseItem[];
+    totalResults: number;
+    totalPages: number;
+    page: number;
+}
+
+/**
+ * High-performance, comprehensive OTT media discovery across thousands of movies and TV shows
+ * Supports deep pagination (up to 500 pages / 20,000+ streaming titles)
+ */
+export async function discoverComprehensiveOTTMedia(options: ComprehensiveOTTOptions = {}): Promise<ComprehensiveOTTResult> {
+    const page = Math.min(500, Math.max(1, options.page || 1));
+    const limit = Math.min(100, Math.max(1, options.limit || 24));
+    const type = (options.type || "all").toLowerCase();
+    const industry = (options.industry || "all").toLowerCase();
+    const provider = (options.provider || "all").toLowerCase();
+    const sort = (options.sort || "date_desc").toLowerCase();
+    const search = (options.search || "").trim();
+
+    // 1. Live TMDB Multi-search with deep pagination if search query is provided
+    if (search && search.length >= 2) {
+        try {
+            const searchData = await tmdbFetch("/search/multi", {
+                query: search,
+                page,
+                include_adult: false,
+            });
+
+            if (searchData && Array.isArray(searchData.results)) {
+                let filtered = searchData.results.filter((item: any) => {
+                    if (item.media_type !== "movie" && item.media_type !== "tv") return false;
+                    if (type === "movie" && item.media_type !== "movie") return false;
+                    if (type === "series" && item.media_type !== "tv") return false;
+                    return true;
+                });
+
+                const results: IndianOTTReleaseItem[] = filtered.map((m: any) => {
+                    const isTv = m.media_type === "tv";
+                    const { industry: ind } = mapLanguageToIndustry(m.original_language);
+                    const releaseDate = isTv ? (m.first_air_date || "") : (m.release_date || "");
+                    const year = releaseDate ? releaseDate.slice(0, 4) : "";
+                    const title = isTv ? (m.name || m.original_name) : (m.title || m.original_title);
+
+                    return {
+                        tmdbId: m.id,
+                        mediaType: isTv ? "series" : "movie",
+                        title: title || "Untitled",
+                        originalTitle: isTv ? (m.original_name || m.name) : (m.original_title || m.title),
+                        originalLanguage: m.original_language || "en",
+                        industry: ind,
+                        releaseDate,
+                        ottReleaseDate: releaseDate,
+                        year,
+                        overview: m.overview || "",
+                        posterUrl: getTMDBImageUrl(m.poster_path, "w500"),
+                        backdropUrl: getTMDBImageUrl(m.backdrop_path, "original"),
+                        rating: m.vote_average || 0,
+                        voteCount: m.vote_count || 0,
+                        popularity: m.popularity || 0,
+                        providers: [{ id: 0, name: "OTT Streaming", logoUrl: null, type: "flatrate" }],
+                    };
+                });
+
+                return {
+                    results,
+                    totalResults: searchData.total_results || results.length,
+                    totalPages: Math.min(500, searchData.total_pages || 1),
+                    page,
+                };
+            }
+        } catch (searchErr: any) {
+            console.warn(`[TMDB-SEARCH] Search error: ${searchErr?.message}`);
+        }
+    }
+
+    // 2. Discover Catalog (Thousands of movies & TV shows on OTT)
+    const today = new Date().toISOString().split("T")[0];
+
+    // Language targeting
+    let targetLanguages: string | undefined = undefined;
+    if (industry === "bollywood") targetLanguages = "hi";
+    else if (industry === "tollywood") targetLanguages = "te";
+    else if (industry === "south") targetLanguages = "te|ta|ml|kn";
+    else if (industry === "hollywood") targetLanguages = "en";
+    else if (industry === "k-drama" || industry === "kdrama") targetLanguages = "ko";
+
+    // Provider targeting
+    let ottProviders = "8|119|9|122|337|232|237|220|192";
+    if (provider && provider !== "all") {
+        if (provider.includes("netflix")) ottProviders = "8";
+        else if (provider.includes("prime") || provider.includes("amazon")) ottProviders = "119";
+        else if (provider.includes("hotstar") || provider.includes("disney")) ottProviders = "122|337";
+        else if (provider.includes("zee")) ottProviders = "232";
+        else if (provider.includes("sony")) ottProviders = "237";
+        else if (provider.includes("jio")) ottProviders = "220";
+        else if (provider.includes("apple")) ottProviders = "350|2";
+    }
+
+    // Movie discovery parameters
+    let movieSortBy = "primary_release_date.desc";
+    const movieParams: Record<string, any> = {
+        watch_region: "IN",
+        with_watch_providers: ottProviders,
+        page,
+    };
+    if (targetLanguages) movieParams["with_original_language"] = targetLanguages;
+
+    if (sort === "popularity_desc") {
+        movieSortBy = "popularity.desc";
+    } else if (sort === "rating_desc") {
+        movieSortBy = "vote_average.desc";
+        movieParams["vote_count.gte"] = 50;
+    } else {
+        // date_desc
+        movieSortBy = "primary_release_date.desc";
+        movieParams["primary_release_date.lte"] = today;
+    }
+    movieParams["sort_by"] = movieSortBy;
+
+    // TV discovery parameters
+    let tvSortBy = "first_air_date.desc";
+    const tvParams: Record<string, any> = {
+        watch_region: "IN",
+        with_watch_providers: ottProviders,
+        page,
+    };
+    if (targetLanguages) tvParams["with_original_language"] = targetLanguages;
+
+    if (sort === "popularity_desc") {
+        tvSortBy = "popularity.desc";
+    } else if (sort === "rating_desc") {
+        tvSortBy = "vote_average.desc";
+        tvParams["vote_count.gte"] = 30;
+    } else {
+        // date_desc
+        tvSortBy = "first_air_date.desc";
+        tvParams["first_air_date.lte"] = today;
+    }
+    tvParams["sort_by"] = tvSortBy;
+
+    const mapMovie = (m: any): IndianOTTReleaseItem => {
+        const { industry: ind } = mapLanguageToIndustry(m.original_language);
+        const year = m.release_date ? m.release_date.slice(0, 4) : "";
+        const pKey = `movie_${m.id}`;
+        const cachedProviders = providerMemoryCache.get(pKey);
+
+        return {
+            tmdbId: m.id,
+            mediaType: "movie",
+            title: m.title || m.original_title || "Untitled",
+            originalTitle: m.original_title || m.title,
+            originalLanguage: m.original_language || "hi",
+            industry: ind,
+            releaseDate: m.release_date || "",
+            ottReleaseDate: m.release_date || "",
+            year,
+            overview: m.overview || "",
+            posterUrl: getTMDBImageUrl(m.poster_path, "w500"),
+            backdropUrl: getTMDBImageUrl(m.backdrop_path, "original"),
+            rating: m.vote_average || 0,
+            voteCount: m.vote_count || 0,
+            popularity: m.popularity || 0,
+            providers: cachedProviders && cachedProviders.length > 0 ? cachedProviders : [{ id: 0, name: "OTT Streaming", logoUrl: null, type: "flatrate" }],
+        };
+    };
+
+    const mapTV = (s: any): IndianOTTReleaseItem => {
+        const { industry: ind } = mapLanguageToIndustry(s.original_language);
+        const year = s.first_air_date ? s.first_air_date.slice(0, 4) : "";
+        const pKey = `series_${s.id}`;
+        const cachedProviders = providerMemoryCache.get(pKey);
+
+        return {
+            tmdbId: s.id,
+            mediaType: "series",
+            title: s.name || s.original_name || "Untitled",
+            originalTitle: s.original_name || s.name,
+            originalLanguage: s.original_language || "hi",
+            industry: ind,
+            releaseDate: s.first_air_date || "",
+            ottReleaseDate: s.first_air_date || "",
+            year,
+            overview: s.overview || "",
+            posterUrl: getTMDBImageUrl(s.poster_path, "w500"),
+            backdropUrl: getTMDBImageUrl(s.backdrop_path, "original"),
+            rating: s.vote_average || 0,
+            voteCount: s.vote_count || 0,
+            popularity: s.popularity || 0,
+            providers: cachedProviders && cachedProviders.length > 0 ? cachedProviders : [{ id: 0, name: "OTT Streaming", logoUrl: null, type: "flatrate" }],
+        };
+    };
+
+    if (type === "movie") {
+        const movieData = await tmdbFetch("/discover/movie", movieParams);
+        const results = (movieData?.results || []).map(mapMovie);
+        return {
+            results,
+            totalResults: movieData?.total_results || results.length,
+            totalPages: Math.min(500, movieData?.total_pages || 1),
+            page,
+        };
+    } else if (type === "series") {
+        const tvData = await tmdbFetch("/discover/tv", tvParams);
+        const results = (tvData?.results || []).map(mapTV);
+        return {
+            results,
+            totalResults: tvData?.total_results || results.length,
+            totalPages: Math.min(500, tvData?.total_pages || 1),
+            page,
+        };
+    } else {
+        // "all" — fetch both movies and tv shows concurrently
+        const [movieData, tvData] = await Promise.all([
+            tmdbFetch("/discover/movie", movieParams),
+            tmdbFetch("/discover/tv", tvParams),
+        ]);
+
+        const movies = (movieData?.results || []).map(mapMovie);
+        const series = (tvData?.results || []).map(mapTV);
+
+        // Combine and interleave/sort
+        let combined = [...movies, ...series];
+        if (sort === "popularity_desc") {
+            combined.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
+        } else if (sort === "rating_desc") {
+            combined.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+        } else {
+            // date_desc
+            combined.sort((a, b) => {
+                const dateA = a.ottReleaseDate || a.releaseDate || "";
+                const dateB = b.ottReleaseDate || b.releaseDate || "";
+                return dateB.localeCompare(dateA);
+            });
+        }
+
+        const totalResults = (movieData?.total_results || 0) + (tvData?.total_results || 0);
+        const totalPages = Math.min(500, Math.max(movieData?.total_pages || 1, tvData?.total_pages || 1));
+
+        return {
+            results: combined.slice(0, limit),
+            totalResults: totalResults || combined.length,
+            totalPages,
+            page,
+        };
+    }
+}
+
+
