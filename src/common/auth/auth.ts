@@ -151,13 +151,121 @@ export function extractUser(req: { headers: { authorization?: string; cookie?: s
 
     // Try cookie
     const cookie = req.headers.cookie;
-    console.log(`[AUTH] Host: ${req.headers.host}, Cookie header: ${cookie ? cookie.substring(0, 80) + "..." : "NONE"}`);
     if (cookie) {
         const match = cookie.match(/token=([^;]+)/);
         if (match) {
             const payload = verifyToken(match[1]);
-            console.log(`[AUTH] Token valid: ${!!payload}, role: ${payload?.role}`);
             return payload;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Attempt to refresh a token that is either currently valid or expired within grace period.
+ * Verifies cryptographic signature using JWT_SECRET and checks database that user still exists.
+ */
+export async function tryRefreshToken(token: string, maxExpiredAgeMs: number = 7 * 24 * 60 * 60 * 1000): Promise<{ token: string; user: { id: number; email: string; name: string; role: string } } | null> {
+    if (!token) return null;
+
+    let payload: TokenPayload | null = null;
+
+    // 1. If currently valid, we can refresh it directly
+    try {
+        payload = jwt.verify(token, JWT_SECRET) as TokenPayload;
+    } catch (err: any) {
+        if (err?.name === "TokenExpiredError") {
+            // Check if within grace period
+            try {
+                const decoded = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true }) as (TokenPayload & { exp?: number });
+                if (decoded && decoded.exp) {
+                    const expiredAtMs = decoded.exp * 1000;
+                    const elapsedSinceExpiry = Date.now() - expiredAtMs;
+                    if (elapsedSinceExpiry <= maxExpiredAgeMs) {
+                        payload = {
+                            userId: decoded.userId,
+                            email: decoded.email,
+                            role: decoded.role
+                        };
+                    }
+                }
+            } catch {
+                return null;
+            }
+        } else {
+            return null;
+        }
+    }
+
+    if (!payload || !payload.userId) {
+        return null;
+    }
+
+    // Verify user still exists in database (or fall back to payload if DB temporarily unreachable)
+    let user: any = null;
+    try {
+        user = await getUserById(payload.userId);
+    } catch {
+        user = { id: payload.userId, email: payload.email, name: payload.email.split("@")[0], role: payload.role };
+    }
+
+    if (!user) {
+        return null;
+    }
+
+    // Generate fresh 7-day token
+    const newToken = generateToken({
+        userId: user.id,
+        email: user.email,
+        role: user.role
+    });
+
+    return {
+        token: newToken,
+        user: { id: user.id, email: user.email, name: user.name, role: user.role }
+    };
+}
+
+/**
+ * Middleware helper: extract user from cookie/header with optional automatic transparent refresh
+ */
+export async function extractUserAsync(req: any, res?: any): Promise<TokenPayload | null> {
+    // 1. Try Authorization header
+    const authHeader = req.headers?.authorization;
+    if (authHeader?.startsWith("Bearer ")) {
+        const token = authHeader.slice(7);
+        const verified = verifyToken(token);
+        if (verified) return verified;
+        const refreshed = await tryRefreshToken(token);
+        if (refreshed) {
+            return { userId: refreshed.user.id, email: refreshed.user.email, role: refreshed.user.role };
+        }
+        return null;
+    }
+
+    // 2. Try cookie
+    const cookie = req.headers?.cookie;
+    if (cookie) {
+        const match = cookie.match(/token=([^;]+)/);
+        if (match) {
+            const token = match[1];
+            const verified = verifyToken(token);
+            if (verified) return verified;
+
+            // Token expired: attempt transparent refresh
+            const refreshed = await tryRefreshToken(token);
+            if (refreshed) {
+                if (res && typeof res.cookie === "function") {
+                    res.cookie("token", refreshed.token, {
+                        httpOnly: true,
+                        maxAge: 7 * 24 * 60 * 60 * 1000,
+                        sameSite: "lax",
+                        path: "/"
+                    });
+                }
+                return { userId: refreshed.user.id, email: refreshed.user.email, role: refreshed.user.role };
+            }
         }
     }
 

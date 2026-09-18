@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const ROOT = resolve(import.meta.dirname, "..", "..");
+const ROOT = resolve(import.meta.dirname, "..");
 
 export interface HarnessConfig {
     baseUrl: string;

@@ -65,9 +65,50 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
+let isAuthRedirecting = false;
+function handleAuthExpired() {
+    if (isAuthRedirecting) return;
+    if (window.location.pathname === '/login' || window.location.pathname === '/register') return;
+
+    isAuthRedirecting = true;
+    showToast('Session expired. Redirecting to login...', 'error');
+
+    try {
+        if (typeof state !== 'undefined' && state && state.ws) {
+            state.ws.close();
+        }
+    } catch {}
+
+    setTimeout(() => {
+        window.location.href = '/login';
+    }, 800);
+}
+
+// Global fetch interceptor to catch any unhandled 401s across the application
+const originalWindowFetch = window.fetch;
+window.fetch = async function(...args) {
+    const res = await originalWindowFetch.apply(this, args);
+    if (res && res.status === 401) {
+        const targetUrl = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || '');
+        const isAuthRoute = targetUrl.includes('/api/auth/login') || targetUrl.includes('/api/auth/register') || targetUrl.includes('/api/auth/logout');
+        if (!isAuthRoute) {
+            handleAuthExpired();
+        }
+    }
+    return res;
+};
+
 async function safeApiFetch(url, options = {}) {
     try {
         const res = await fetch(url, { credentials: 'include', ...options });
+        if (res.status === 401) {
+            const isAuthRoute = typeof url === 'string' && (url.includes('/api/auth/login') || url.includes('/api/auth/register'));
+            if (!isAuthRoute) {
+                handleAuthExpired();
+                return { success: false, error: 'Session expired. Please log in again.' };
+            }
+        }
+
         const text = await res.text();
         let data = null;
         try {
@@ -79,6 +120,9 @@ async function safeApiFetch(url, options = {}) {
             return { success: false, error: 'Unexpected server response format' };
         }
         if (!res.ok) {
+            if (data?.code === 'AUTH_EXPIRED' || (typeof data?.error === 'string' && (data.error === 'Not authenticated' || data.error.toLowerCase().includes('session expired')))) {
+                handleAuthExpired();
+            }
             return { success: false, error: data?.error || data?.message || `HTTP ${res.status}` };
         }
         return data;

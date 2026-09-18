@@ -309,23 +309,23 @@ export function createDownloadWorker() {
 
             // Determine target download file path using clean metadata
             let targetPath: string;
-            let cleanTitle = data.cleanTitle;
+            let cleanTitle: string = data.cleanTitle || data.title || "Media";
             let cleanYear = data.year && /^\d{4}$/.test(String(data.year).trim()) ? String(data.year).trim() : undefined;
             let cleanSeason = data.season || 1;
             let cleanEpisode = data.episode || 1;
             let isBatch = Boolean(data.isBatchPack);
             let mediaType = data.type;
 
-            // Only call AI if clean metadata was not already passed in job
-            if (!cleanTitle) {
-                const rawNameToParse = [data.title, data.year, data.fileName].filter(Boolean).join(" ");
-                const aiMeta = await parseMediaWithAI(rawNameToParse);
+            // ALWAYS use the AI cleaner harness to resolve canonical TMDB/IMDb title and release year
+            const rawNameToParse = [cleanTitle, cleanYear, data.fileName].filter(Boolean).join(" ");
+            const aiMeta = await parseMediaWithAI(rawNameToParse);
+            if (aiMeta && aiMeta.title && aiMeta.title !== "Unknown Media") {
                 cleanTitle = aiMeta.title;
-                cleanYear = aiMeta.year || cleanYear;
-                cleanSeason = aiMeta.season || cleanSeason;
-                cleanEpisode = data.episode || aiMeta.episode || cleanEpisode;
-                isBatch = data.isBatchPack || aiMeta.isBatch;
-                mediaType = data.type || aiMeta.type;
+                if (aiMeta.year) cleanYear = aiMeta.year;
+                if (aiMeta.season && !cleanSeason) cleanSeason = aiMeta.season;
+                if (aiMeta.episode && !data.episode) cleanEpisode = aiMeta.episode;
+                if (aiMeta.isBatch) isBatch = true;
+                if (aiMeta.type) mediaType = aiMeta.type;
             }
 
             if (mediaType === "series") {
@@ -335,22 +335,6 @@ export function createDownloadWorker() {
                     targetPath = getSeriesPath(cleanTitle, cleanSeason, cleanEpisode, data.fileName);
                 }
             } else {
-                // ALWAYS lookup TMDB/IMDb to get the exact original canonical movie title and release year
-                try {
-                    const lookupQuery = cleanTitle || data.title;
-                    const lookupYear = cleanYear || data.year;
-                    const tmdb = await lookupMedia(lookupQuery, lookupYear);
-                    if (tmdb && tmdb.found && tmdb.title) {
-                        console.log(`[WORKER] Canonical TMDB metadata resolved: "${tmdb.title}" (${tmdb.year || "unknown"})`);
-                        cleanTitle = tmdb.title;
-                        if (tmdb.year) {
-                            cleanYear = tmdb.year;
-                        }
-                    }
-                } catch (tmdbErr: any) {
-                    console.warn(`[WORKER] TMDB lookup fallback: ${tmdbErr?.message}`);
-                }
-
                 if (cleanYear && data.year !== cleanYear) {
                     data.year = cleanYear;
                     updateDB(data.requestId, { year: cleanYear }).catch(() => {});

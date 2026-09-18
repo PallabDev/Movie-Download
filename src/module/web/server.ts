@@ -2,7 +2,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import { db, schema } from "../../common/db/index.js";
 import { eq, or, and, desc, like, sql, count } from "drizzle-orm";
-import { register, login, extractUser, getAllUsers, updateUser, deleteUser, type UserRole } from "../../common/auth/auth.js";
+import { register, login, extractUser, extractUserAsync, tryRefreshToken, getAllUsers, updateUser, deleteUser, type UserRole } from "../../common/auth/auth.js";
 import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries, checkMediaExists } from "../../common/jellyfin/client.js";
 import { downloadQueue, secureBotFileToSavedMessages } from "../queue/queue.js";
 import { getHarness } from "../../../command/harness.js";
@@ -47,19 +47,21 @@ const searchSessions = new Map<string, any>();
 
 // ─── AUTH MIDDLEWARE ───
 
-function requireAuth(req: any, res: any, next: any) {
-    const user = extractUser(req);
+async function requireAuth(req: any, res: any, next: any) {
+    const user = await extractUserAsync(req, res);
     if (!user) {
-        return res.status(401).json({ error: "Not authenticated" });
+        res.clearCookie("token", { path: "/" });
+        return res.status(401).json({ error: "Session expired. Please log in again.", code: "AUTH_EXPIRED" });
     }
     req.user = user;
     next();
 }
 
-function requireMod(req: any, res: any, next: any) {
-    const user = extractUser(req);
+async function requireMod(req: any, res: any, next: any) {
+    const user = await extractUserAsync(req, res);
     if (!user) {
-        return res.status(401).json({ error: "Not authenticated" });
+        res.clearCookie("token", { path: "/" });
+        return res.status(401).json({ error: "Session expired. Please log in again.", code: "AUTH_EXPIRED" });
     }
     if (user.role !== "admin" && user.role !== "mod") {
         return res.status(403).json({ error: "Moderator or Admin access required" });
@@ -68,10 +70,11 @@ function requireMod(req: any, res: any, next: any) {
     next();
 }
 
-function requireAdmin(req: any, res: any, next: any) {
-    const user = extractUser(req);
+async function requireAdmin(req: any, res: any, next: any) {
+    const user = await extractUserAsync(req, res);
     if (!user) {
-        return res.status(401).json({ error: "Not authenticated" });
+        res.clearCookie("token", { path: "/" });
+        return res.status(401).json({ error: "Session expired. Please log in again.", code: "AUTH_EXPIRED" });
     }
     if (user.role !== "admin") {
         return res.status(403).json({ error: "Admin access required" });
@@ -112,8 +115,44 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 app.post("/api/auth/logout", (_req, res) => {
-    res.clearCookie("token");
+    res.clearCookie("token", { path: "/" });
     res.json({ success: true });
+});
+
+app.post("/api/auth/refresh", async (req, res) => {
+    try {
+        let token = "";
+        const authHeader = req.headers?.authorization;
+        if (authHeader?.startsWith("Bearer ")) {
+            token = authHeader.slice(7);
+        } else if (req.headers?.cookie) {
+            const match = req.headers.cookie.match(/token=([^;]+)/);
+            if (match) token = match[1];
+        }
+
+        if (!token) {
+            res.clearCookie("token", { path: "/" });
+            return res.status(401).json({ error: "No token provided", code: "AUTH_EXPIRED" });
+        }
+
+        const refreshed = await tryRefreshToken(token);
+        if (!refreshed) {
+            res.clearCookie("token", { path: "/" });
+            return res.status(401).json({ error: "Session expired or invalid. Please log in again.", code: "AUTH_EXPIRED" });
+        }
+
+        res.cookie("token", refreshed.token, {
+            httpOnly: true,
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+            sameSite: "lax",
+            path: "/"
+        });
+
+        res.json({ success: true, token: refreshed.token, user: refreshed.user });
+    } catch (err: any) {
+        res.clearCookie("token", { path: "/" });
+        res.status(401).json({ error: err.message || "Failed to refresh session", code: "AUTH_EXPIRED" });
+    }
 });
 
 app.get("/api/auth/me", requireAuth, async (req: any, res) => {
@@ -1724,9 +1763,12 @@ const pageRoutes = [
 
 app.get(["/telegram", "/bot"], (req, res) => res.redirect("/"));
 
-app.get(pageRoutes, (req, res) => {
-    const user = extractUser(req);
-    if (!user) return res.redirect("/login");
+app.get(pageRoutes, async (req, res) => {
+    const user = await extractUserAsync(req, res);
+    if (!user) {
+        res.clearCookie("token", { path: "/" });
+        return res.redirect("/login");
+    }
 
     const role = user.role || "user";
     const path = req.path.toLowerCase();
@@ -1765,13 +1807,13 @@ app.get(pageRoutes, (req, res) => {
     res.send(getDashboardPage(user, initialView));
 });
 
-app.get("/login", (req, res) => {
-    if (extractUser(req)) return res.redirect("/");
+app.get("/login", async (req, res) => {
+    if (await extractUserAsync(req, res)) return res.redirect("/");
     res.send(getLoginPage());
 });
 
 app.get("/register", async (req, res) => {
-    if (extractUser(req)) return res.redirect("/");
+    if (await extractUserAsync(req, res)) return res.redirect("/");
     const existingUsers = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
     if (existingUsers.length > 0) {
         return res.redirect("/login");
