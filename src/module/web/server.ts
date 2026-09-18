@@ -2223,23 +2223,9 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         </div>
                     </div>
 
-                    <!-- Type Filter Tabs & Industry Pills -->
-                    <div class="releases-filters-bar">
-                        <div class="jf-filter-tabs">
-                            <button class="jf-tab-btn active" id="relTabAll" onclick="setReleasesTypeFilter('all')">
-                                <span>All</span>
-                                <span class="tab-badge" id="relCountAll">-</span>
-                            </button>
-                            <button class="jf-tab-btn" id="relTabMovie" onclick="setReleasesTypeFilter('movie')">
-                                <span>Movies</span>
-                                <span class="tab-badge" id="relCountMovie">-</span>
-                            </button>
-                            <button class="jf-tab-btn" id="relTabSeries" onclick="setReleasesTypeFilter('series')">
-                                <span>TV Shows</span>
-                                <span class="tab-badge" id="relCountSeries">-</span>
-                            </button>
-                        </div>
-                        <div class="releases-industry-pills">
+                    <!-- Industry Pills (Centered) -->
+                    <div class="releases-filters-bar" style="justify-content: center;">
+                        <div class="releases-industry-pills" style="justify-content: center;">
                             <button class="rel-industry-pill active" data-industry="all" onclick="setReleasesIndustryFilter('all')">All</button>
                             <button class="rel-industry-pill" data-industry="bollywood" onclick="setReleasesIndustryFilter('bollywood')">Bollywood</button>
                             <button class="rel-industry-pill" data-industry="tollywood" onclick="setReleasesIndustryFilter('tollywood')">Tollywood</button>

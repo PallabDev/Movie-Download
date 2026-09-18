@@ -4108,7 +4108,7 @@ h1, h2, h3, h4, h5, h6 {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
+    justify-content: center;
     gap: 12px;
     margin: 14px 0 16px 0;
 }
@@ -4116,8 +4116,9 @@ h1, h2, h3, h4, h5, h6 {
 .releases-industry-pills {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px;
     align-items: center;
+    justify-content: center;
 }
 
 .rel-industry-pill {
