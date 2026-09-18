@@ -1,7 +1,7 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import { db, schema } from "../../common/db/index.js";
-import { eq, or, and, desc, like, sql, count } from "drizzle-orm";
+import { eq, or, and, desc, like, ilike, sql, count } from "drizzle-orm";
 import { register, login, extractUser, extractUserAsync, tryRefreshToken, getAllUsers, updateUser, deleteUser, type UserRole } from "../../common/auth/auth.js";
 import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries, checkMediaExists } from "../../common/jellyfin/client.js";
 import { downloadQueue, secureBotFileToSavedMessages } from "../queue/queue.js";
@@ -437,7 +437,10 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
         const conditions: any[] = [];
 
         if (search) {
-            conditions.push(like(schema.ottReleases.title, `%${search}%`));
+            conditions.push(or(
+                ilike(schema.ottReleases.title, `%${search}%`),
+                ilike(schema.ottReleases.originalTitle, `%${search}%`)
+            ));
         }
 
         if (type && type !== "all") {
@@ -478,8 +481,53 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
             ? db.select().from(schema.ottReleases).where(whereClause).orderBy(orderByClause).limit(limit).offset(offset)
             : db.select().from(schema.ottReleases).orderBy(orderByClause).limit(limit).offset(offset);
 
-        const [totalRes, items, jfMedia] = await Promise.all([countQuery, itemsQuery, getCachedJellyfinMedia()]);
-        const total = Number(totalRes[0]?.count || 0);
+        let [totalRes, items, jfMedia] = await Promise.all([countQuery, itemsQuery, getCachedJellyfinMedia()]);
+        let total = Number(totalRes[0]?.count || 0);
+
+        // Dynamic TMDB Fallback: If user searched for a specific title and local DB returned 0, lookup on TMDB
+        if (items.length === 0 && search && search.length >= 2) {
+            try {
+                const tmdb = await lookupMedia(search);
+                if (tmdb && tmdb.found && tmdb.id) {
+                    const mediaType = tmdb.type || "movie";
+                    const existing = await db.select({ id: schema.ottReleases.id })
+                        .from(schema.ottReleases)
+                        .where(and(
+                            eq(schema.ottReleases.tmdbId, tmdb.id),
+                            eq(schema.ottReleases.mediaType, mediaType)
+                        )).limit(1);
+
+                    if (existing.length === 0) {
+                        const [inserted] = await db.insert(schema.ottReleases).values({
+                            tmdbId: tmdb.id,
+                            mediaType,
+                            title: tmdb.title,
+                            originalTitle: tmdb.originalTitle || tmdb.title,
+                            originalLanguage: "hi",
+                            year: tmdb.year || "",
+                            releaseDate: tmdb.releaseDate || "",
+                            ottReleaseDate: tmdb.releaseDate || "",
+                            overview: tmdb.overview || "",
+                            posterUrl: tmdb.posterUrl || "",
+                            backdropUrl: tmdb.backdropUrl || "",
+                            rating: tmdb.rating || 7.0,
+                            voteCount: tmdb.voteCount || 10,
+                            popularity: 50.0,
+                            industry: "Cinema",
+                            providers: [{ name: "OTT Stream", logoUrl: "" }],
+                            jellyfinExists: false
+                        }).returning();
+
+                        if (inserted) {
+                            items = [inserted];
+                            total = 1;
+                        }
+                    }
+                }
+            } catch (tmdbErr: any) {
+                console.warn(`[OTT-DYNAMIC-SEARCH] TMDB fallback error: ${tmdbErr?.message}`);
+            }
+        }
 
         const enrichedReleases = items.map(item => {
             const isSeries = item.mediaType === "series";
@@ -1748,8 +1796,9 @@ app.use("/api/inngest", inngestApp);
 // ─── PAGES & ROUTES ───
 
 const pageRoutes = [
-    "/", "/ai",
+    "/", "/ai", "/chat",
     "/releases", "/new-releases", "/ott",
+    "/download/select", "/download-picker",
     "/trending",
     "/popular",
     "/download", "/downloads", "/downlaod",
@@ -1788,9 +1837,10 @@ app.get(pageRoutes, async (req, res) => {
         }
     }
 
-    // 3. Resolve initial view for mod and admin
-    let initialView = "chat";
-    if (path.startsWith("/releases") || path.startsWith("/new-releases") || path.startsWith("/ott")) initialView = "releases";
+    // 3. Resolve initial view for mod and admin (Default: unified Media Catalog)
+    let initialView = "releases";
+    if (path.startsWith("/download/select") || path.startsWith("/download-picker")) initialView = "download-picker";
+    else if (path.startsWith("/releases") || path.startsWith("/new-releases") || path.startsWith("/ott")) initialView = "releases";
     else if (path.startsWith("/trending")) initialView = "trending";
     else if (path.startsWith("/popular")) initialView = "popular";
     else if (path.startsWith("/download") || path.startsWith("/downlaod")) initialView = "downloads";
@@ -1800,9 +1850,10 @@ app.get(pageRoutes, async (req, res) => {
     else if (path.startsWith("/optimizer") || path.startsWith("/optimise")) initialView = "optimizer";
     else if (path.startsWith("/user") || path.startsWith("/admin")) {
         if (role === "admin") initialView = "admin";
-        else initialView = "chat";
+        else initialView = "releases";
     }
-    else initialView = "chat";
+    else if (path === "/ai" || path === "/chat") initialView = "chat";
+    else initialView = "releases";
 
     res.send(getDashboardPage(user, initialView));
 });
@@ -1958,16 +2009,15 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
     });
 
     const titles: Record<string, string> = {
-        chat: "AI Downloader",
-        releases: "New Releases",
-        trending: "Trending Media",
-        popular: "Popular Media",
+        releases: "Media Catalog",
+        "download-picker": "Download Media",
         downloads: "Download Station",
-        media: "Media Mover",
-        optimizer: "Library Optimizer",
         requested: "Requested Media",
+        media: "Library Mover",
+        optimizer: "Library Optimizer",
         jellyfin: "Jellyfin Library",
-        admin: "User Management"
+        admin: "User Management",
+        chat: "AI Copilot"
     };
 
     const headerTitle = titles[activeView] || "Jellyfin Library";
@@ -2045,7 +2095,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
         <!-- Sidebar Navigation -->
         <aside class="app-sidebar" id="appSidebar">
             <div class="sidebar-header">
-                <a href="${isUser ? '/jellyfin' : '/'}" class="brand-logo" onclick="navigateRoute(event, '${isUser ? 'jellyfin' : 'chat'}')">
+                <a href="${isUser ? '/jellyfin' : '/'}" class="brand-logo" onclick="navigateRoute(event, '${isUser ? 'jellyfin' : 'releases'}')">
                     <div class="brand-icon-box">
                         <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4l0 16"/><path d="M16 4l0 16"/><path d="M4 8l4 0"/><path d="M4 16l4 0"/><path d="M4 12l16 0"/><path d="M16 8l4 0"/><path d="M16 16l4 0"/></svg>
                     </div>
@@ -2067,24 +2117,10 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                             <span>Jellyfin Library</span>
                         </a>
                         ` : `
-                        <a class="nav-link ${activeView === 'chat' ? 'active' : ''}" href="/" data-view="chat" onclick="navigateRoute(event, 'chat')">
-                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
-                            <span>AI Copilot</span>
-                        </a>
-                        <a class="nav-link ${activeView === 'releases' ? 'active' : ''}" href="/releases" data-view="releases" onclick="navigateRoute(event, 'releases')">
+                        <a class="nav-link ${activeView === 'releases' ? 'active' : ''}" href="/" data-view="releases" onclick="navigateRoute(event, 'releases')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4v16"/><path d="M16 4v16"/><path d="M4 8h4"/><path d="M4 16h4"/><path d="M4 12h16"/><path d="M16 8h4"/><path d="M16 16h4"/></svg>
-                            <span>New Releases</span>
+                            <span>Media</span>
                             <span class="nav-badge" style="background: rgba(229, 9, 20, 0.2); color: #ff5252; border: 1px solid rgba(229, 9, 20, 0.4);">OTT</span>
-                        </a>
-                        <a class="nav-link ${activeView === 'trending' ? 'active' : ''}" href="/trending" data-view="trending" onclick="navigateRoute(event, 'trending')">
-                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M3 17l6 -6l4 4l8 -8"/><path d="M14 7l7 0l0 7"/></svg>
-                            <span>Trending</span>
-                            <span class="nav-badge" style="background: rgba(236, 72, 153, 0.2); color: #f472b6; border: 1px solid rgba(236, 72, 153, 0.4);">Hot</span>
-                        </a>
-                        <a class="nav-link ${activeView === 'popular' ? 'active' : ''}" href="/popular" data-view="popular" onclick="navigateRoute(event, 'popular')">
-                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></svg>
-                            <span>Popular</span>
-                            <span class="nav-badge" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">Top</span>
                         </a>
                         <a class="nav-link ${activeView === 'downloads' ? 'active' : ''}" href="/download" data-view="downloads" onclick="navigateRoute(event, 'downloads')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
@@ -2097,7 +2133,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         </a>
                         <a class="nav-link ${activeView === 'media' ? 'active' : ''}" href="/media" data-view="media" onclick="navigateRoute(event, 'media')">
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M15 10l4.553 -2.276a1 1 0 0 1 1.447 .894v6.764a1 1 0 0 1 -1.447 .894l-4.553 -2.276v-4z"/><path d="M3 6m0 2a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2z"/></svg>
-                            <span>Media Mover</span>
+                            <span>Library Mover</span>
                             <span class="nav-badge" id="pendingMediaBadge" style="display:none; background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4);">0</span>
                         </a>
                         <a class="nav-link ${activeView === 'optimizer' ? 'active' : ''}" href="/optimizer" data-view="optimizer" onclick="navigateRoute(event, 'optimizer')">
@@ -2182,11 +2218,30 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             <!-- VIEW: NEW OTT RELEASES (BOLLYWOOD & SOUTH INDIAN) -->
             <section class="view-container ${activeView === 'releases' ? 'active' : ''}" id="view-releases">
                 <div class="releases-container">
+                    <!-- Top Media Search Bar (Radarr / Jellyseerr style) -->
+                    <div class="media-search-header">
+                        <div class="media-search-input-wrap">
+                            <svg class="tabler-icon media-search-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
+                            <input 
+                                type="text" 
+                                id="mediaCatalogSearchInput" 
+                                class="media-catalog-search-input" 
+                                placeholder="Search movies & TV shows released on OTT / streaming services..." 
+                                autocomplete="off"
+                                oninput="handleMediaCatalogSearch(this.value)"
+                                onkeydown="if (event.key === 'Enter') handleMediaCatalogSearch(this.value, true)"
+                            />
+                            <button class="btn-clear-media-search hidden" id="btnClearMediaSearch" onclick="clearMediaCatalogSearch()" title="Clear Search">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>
+                            </button>
+                        </div>
+                    </div>
+
                     <!-- Compact Header & Refresh Panel -->
                     <div class="releases-compact-header">
                         <div class="releases-header-left">
-                            <h1 style="font-size: 15px; font-weight: 700; color: #fff; margin: 0;">New OTT Releases</h1>
-                            <span class="chip quality" style="background: rgba(229, 9, 20, 0.18); color: #ff5252; border-color: rgba(229, 9, 20, 0.35); font-size: 10px; padding: 1px 6px;">OTT Radar</span>
+                            <h1 style="font-size: 15px; font-weight: 700; color: #fff; margin: 0;">Media Catalog</h1>
+                            <span class="chip quality" style="background: rgba(229, 9, 20, 0.18); color: #ff5252; border-color: rgba(229, 9, 20, 0.35); font-size: 10px; padding: 1px 6px;">OTT Releases</span>
                             <span id="releasesLastUpdatedTag" style="font-size: 11px; color: var(--text-muted);">Loading...</span>
                         </div>
                         <div class="releases-header-right">
@@ -2227,12 +2282,91 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                     <div class="releases-grid" id="releasesGrid">
                         <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted);">
                             <div class="spinner" style="margin: 0 auto 12px;"></div>
-                            <div>Loading new OTT releases...</div>
+                            <div>Loading OTT releases...</div>
                         </div>
                     </div>
 
                     <!-- Pagination -->
                     <div class="pagination-bar" id="releasesPaginationBar" style="display:none;"></div>
+                </div>
+            </section>
+
+            <!-- VIEW: DEDICATED DOWNLOAD PICKER (RADARR / JELLYSEERR SCRAPER INTERFACE) -->
+            <section class="view-container ${activeView === 'download-picker' ? 'active' : ''}" id="view-download-picker">
+                <div class="download-picker-container">
+                    <!-- Top navigation bar -->
+                    <div class="picker-top-nav">
+                        <button class="btn-picker-back" onclick="closeDownloadPicker()">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 12l14 0"/><path d="M5 12l6 6"/><path d="M5 12l6 -6"/></svg>
+                            <span>Back to Media Catalog</span>
+                        </button>
+                        <div class="picker-breadcrumbs" id="pickerBreadcrumbs">
+                            <span class="crumb-root">Media</span>
+                            <span class="crumb-sep">/</span>
+                            <span class="crumb-title" id="pickerCrumbTitle">Download Media</span>
+                        </div>
+                    </div>
+
+                    <!-- Target Media Hero Banner -->
+                    <div class="picker-hero" id="pickerHeroCard">
+                        <div class="picker-hero-poster-wrap">
+                            <img id="pickerPosterImg" src="https://via.placeholder.com/300x450/111827/ffffff?text=Loading..." alt="Poster" class="picker-hero-poster">
+                        </div>
+                        <div class="picker-hero-info">
+                            <div class="picker-hero-title-row">
+                                <h1 class="picker-hero-title" id="pickerHeroTitle">Loading title...</h1>
+                                <span class="picker-hero-year" id="pickerHeroYear"></span>
+                                <span class="card-type-tag" id="pickerHeroTypeBadge">Movie</span>
+                            </div>
+                            <p class="picker-hero-overview" id="pickerHeroOverview"></p>
+                            <div class="picker-hero-actions">
+                                <button class="btn-picker-trailer" id="btnPickerTrailer" onclick="playPickerTrailer()" style="display:none;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M6 4v16a1 1 0 0 0 1.524 .852l13 -8a1 1 0 0 0 0 -1.704l-13 -8a1 1 0 0 0 -1.524 .852z"/></svg>
+                                    <span>Watch Trailer</span>
+                                </button>
+                                <span class="picker-hero-status-note" id="pickerHeroStatusNote">Searching scraper service for HD/OTT releases...</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Scraper Search & Query Bar -->
+                    <div class="picker-scraper-section">
+                        <div class="picker-section-header">
+                            <div class="picker-section-title-wrap">
+                                <h3>Available Releases on Scraper Index</h3>
+                                <span class="picker-results-count-badge" id="pickerResultsCountBadge">Searching...</span>
+                            </div>
+                            <div class="picker-custom-search-wrap">
+                                <input type="text" id="pickerCustomSearchInput" placeholder="Adjust search query..." onkeydown="if (event.key === 'Enter') triggerPickerCustomSearch()">
+                                <button class="btn-primary-action" onclick="triggerPickerCustomSearch()" style="padding: 6px 14px; font-size: 12px;">Search</button>
+                            </div>
+                        </div>
+
+                        <!-- Scraper Releases Cards Grid -->
+                        <div class="picker-releases-grid" id="pickerReleasesGrid">
+                            <div class="picker-loading-state">
+                                <div class="spinner" style="margin: 0 auto 12px;"></div>
+                                <div>Searching releases on scraper index...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Format & Quality Options Drawer Modal -->
+                    <div class="picker-formats-modal hidden" id="pickerFormatsModal">
+                        <div class="picker-formats-backdrop" onclick="closePickerFormatsModal()"></div>
+                        <div class="picker-formats-content">
+                            <div class="picker-formats-header">
+                                <div>
+                                    <h3 id="pickerFormatsTitle">Select Quality to Download</h3>
+                                    <div class="picker-formats-subtitle" id="pickerFormatsSubtitle">Direct CDN links</div>
+                                </div>
+                                <button class="btn-close-modal" onclick="closePickerFormatsModal()">✕</button>
+                            </div>
+                            <div class="picker-formats-body" id="pickerFormatsBody">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </section>
 

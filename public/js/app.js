@@ -248,8 +248,9 @@ function showAlertModal({
 // NAVIGATION & ROUTING CONTROLLER
 // ==========================================================================
 const VIEW_ROUTES = {
-    chat: '/',
-    releases: '/releases',
+    chat: '/ai',
+    releases: '/',
+    'download-picker': '/download/select',
     trending: '/trending',
     popular: '/popular',
     downloads: '/download',
@@ -261,13 +262,14 @@ const VIEW_ROUTES = {
 };
 
 const VIEW_TITLES = {
-    chat: 'AI Downloader',
-    releases: 'New Releases',
+    releases: 'Media Catalog',
+    'download-picker': 'Download Media',
+    chat: 'AI Copilot',
     trending: 'Trending Media',
     popular: 'Popular Media',
     downloads: 'Download Station',
     requested: 'Requested Media',
-    media: 'Media Mover',
+    media: 'Library Mover',
     optimizer: 'Library Optimizer',
     jellyfin: 'Jellyfin Library',
     admin: 'User Management'
@@ -278,6 +280,7 @@ function getViewForPath(pathname) {
     if (userRole === 'user') return 'jellyfin';
 
     const p = (pathname || window.location.pathname || '/').toLowerCase();
+    if (p.startsWith('/download/select') || p.startsWith('/download-picker')) return 'download-picker';
     if (p.startsWith('/releases') || p.startsWith('/new-releases') || p.startsWith('/ott')) return 'releases';
     if (p.startsWith('/trending')) return 'trending';
     if (p.startsWith('/popular')) return 'popular';
@@ -286,10 +289,11 @@ function getViewForPath(pathname) {
     if (p.startsWith('/media')) return 'media';
     if (p.startsWith('/optimizer') || p.startsWith('/optimise')) return 'optimizer';
     if (p.startsWith('/jellyfin')) return 'jellyfin';
+    if (p.startsWith('/ai') || p.startsWith('/chat')) return 'chat';
     if (p.startsWith('/user') || p.startsWith('/users') || p.startsWith('/admin')) {
-        return userRole === 'admin' ? 'admin' : 'chat';
+        return userRole === 'admin' ? 'admin' : 'releases';
     }
-    return 'chat';
+    return 'releases';
 }
 
 function switchView(viewName, updateHistory = true) {
@@ -299,13 +303,13 @@ function switchView(viewName, updateHistory = true) {
     if (userRole === 'user' && viewName !== 'jellyfin') {
         viewName = 'jellyfin';
     } else if (userRole === 'mod' && viewName === 'admin') {
-        viewName = 'chat';
+        viewName = 'releases';
     }
 
     state.currentView = viewName;
 
     document.querySelectorAll('.nav-link').forEach(link => {
-        link.classList.toggle('active', link.dataset.view === viewName);
+        link.classList.toggle('active', link.dataset.view === viewName || (viewName === 'download-picker' && link.dataset.view === 'releases'));
     });
 
     document.querySelectorAll('.view-container').forEach(container => {
@@ -327,7 +331,7 @@ function switchView(viewName, updateHistory = true) {
             btnHeaderAction.onclick = startNewChat;
         }
     }
-    document.title = `CineGrab - ${VIEW_TITLES[viewName] || 'AI Copilot'}`;
+    document.title = `CineGrab - ${VIEW_TITLES[viewName] || 'Media Catalog'}`;
 
     if (updateHistory) {
         const targetPath = VIEW_ROUTES[viewName] || '/';
@@ -339,6 +343,9 @@ function switchView(viewName, updateHistory = true) {
     if (viewName === 'releases') {
         syncReleasesStateFromUrl();
         loadNewReleases(releasesState.page, false);
+    }
+    if (viewName === 'download-picker') {
+        initDownloadPickerFromUrl();
     }
     if (viewName === 'trending') {
         loadTrendingMedia(trendingState.page || 1, false);
@@ -2824,6 +2831,17 @@ function syncReleasesStateFromUrl() {
             releasesState.sortBy = 'date_desc';
         }
 
+        const search = (params.get('search') || '').trim();
+        releasesState.searchQuery = search;
+        const searchInput = document.getElementById('mediaCatalogSearchInput');
+        if (searchInput) {
+            searchInput.value = search;
+        }
+        const btnClear = document.getElementById('btnClearMediaSearch');
+        if (btnClear) {
+            btnClear.classList.toggle('hidden', !search);
+        }
+
         // Sync UI form controls
         document.querySelectorAll('.releases-filters-bar .jf-tab-btn').forEach(btn => btn.classList.remove('active'));
         if (releasesState.typeFilter === 'all') document.getElementById('relTabAll')?.classList.add('active');
@@ -2840,7 +2858,7 @@ function updateReleasesUrl(push = true) {
     try {
         if (state.currentView !== 'releases') return;
         const url = new URL(window.location.href);
-        url.pathname = '/releases';
+        url.pathname = '/';
 
         if (releasesState.page > 1) {
             url.searchParams.set('page', String(releasesState.page));
@@ -2867,7 +2885,11 @@ function updateReleasesUrl(push = true) {
             url.searchParams.delete('industry');
         }
 
-        url.searchParams.delete('search');
+        if (releasesState.searchQuery) {
+            url.searchParams.set('search', releasesState.searchQuery);
+        } else {
+            url.searchParams.delete('search');
+        }
 
         if (releasesState.sortBy && releasesState.sortBy !== 'date_desc') {
             url.searchParams.set('sort', releasesState.sortBy);
@@ -2886,6 +2908,39 @@ function updateReleasesUrl(push = true) {
             }
         }
     } catch {}
+}
+
+function handleMediaCatalogSearch(query, immediate = false) {
+    releasesState.searchQuery = (query || '').trim();
+    const btnClear = document.getElementById('btnClearMediaSearch');
+    if (btnClear) {
+        btnClear.classList.toggle('hidden', !releasesState.searchQuery);
+    }
+
+    if (releasesState.searchDebounce) {
+        clearTimeout(releasesState.searchDebounce);
+        releasesState.searchDebounce = null;
+    }
+
+    if (immediate) {
+        releasesState.page = 1;
+        loadNewReleases(1, true);
+    } else {
+        releasesState.searchDebounce = setTimeout(() => {
+            releasesState.page = 1;
+            loadNewReleases(1, true);
+        }, 350);
+    }
+}
+
+function clearMediaCatalogSearch() {
+    releasesState.searchQuery = '';
+    const input = document.getElementById('mediaCatalogSearchInput');
+    if (input) input.value = '';
+    const btnClear = document.getElementById('btnClearMediaSearch');
+    if (btnClear) btnClear.classList.add('hidden');
+    releasesState.page = 1;
+    loadNewReleases(1, true);
 }
 
 function setReleasesTypeFilter(type) {
@@ -2943,6 +2998,10 @@ async function loadNewReleases(page = null, updateUrl = true) {
             sort: releasesState.sortBy,
         });
 
+        if (releasesState.searchQuery) {
+            queryParams.set('search', releasesState.searchQuery);
+        }
+
         const [releasesRes, statsRes] = await Promise.all([
             fetch(`/api/new-releases?${queryParams.toString()}`, { credentials: 'include' }),
             fetch('/api/new-releases/stats', { credentials: 'include' })
@@ -2997,7 +3056,7 @@ async function loadNewReleases(page = null, updateUrl = true) {
                 grid.innerHTML = `
                     <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
                         <div style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 4px;">No matching releases found</div>
-                        <div style="font-size: 12.5px;">Try changing your type, platform, or industry filters.</div>
+                        <div style="font-size: 12.5px;">Try changing your search query or industry filters.</div>
                     </div>
                 `;
             }
@@ -3082,19 +3141,20 @@ function renderReleaseCards(items) {
 
                     ${item.overview ? `<p class="card-synopsis-text" title="${escapeHtml(item.overview)}">${escapeHtml(item.overview)}</p>` : ''}
 
-                    <!-- Card Bottom Actions -->
+                    <!-- Card Bottom Actions: Jellyseerr/Radarr Style Single Download Button -->
                     <div class="card-bottom-actions">
-                        ${isExists ? `
-                            <button class="btn-card-action in-library" onclick="switchView('jellyfin')" title="Already in your Jellyfin Library">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></svg>
-                                <span>In Library</span>
-                            </button>
-                        ` : `
-                            <button class="btn-card-action primary" onclick="askCopilotRelease('${escapeHtml(item.title).replace(/'/g, "\\'")}', '${escapeHtml(year)}')" title="Download with AI Copilot">
-                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                <span>Download</span>
-                            </button>
-                        `}
+                        <button class="btn-card-action primary" onclick="openDownloadPicker({
+                            title: '${escapeHtml(item.title).replace(/'/g, "\\'")}',
+                            year: '${escapeHtml(year)}',
+                            tmdbId: ${item.tmdbId || 'null'},
+                            posterUrl: '${escapeHtml(posterSrc).replace(/'/g, "\\'")}',
+                            mediaType: '${item.mediaType || 'movie'}',
+                            overview: '${escapeHtml(item.overview || '').replace(/'/g, "\\'")}',
+                            trailerKey: '${item.trailerKey || ''}'
+                        })" title="Download ${escapeHtml(item.title)}">
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                            <span>Download</span>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -3234,6 +3294,273 @@ async function addReleaseToWatchlist(title, year) {
     } catch (err) {
         showToast(err.message, 'error');
     }
+}
+
+// ==========================================================================
+// DEDICATED DOWNLOAD PICKER (JELLYSEERR / RADARR STYLE SCRAPER INTEGRATION)
+// ==========================================================================
+const downloadPickerState = {
+    title: '',
+    year: '',
+    tmdbId: null,
+    mediaType: 'movie',
+    posterUrl: '',
+    overview: '',
+    trailerKey: null,
+    searchId: null,
+    scraperResults: [],
+    loading: false,
+    selectedRelease: null
+};
+
+function openDownloadPicker(media) {
+    if (!media || !media.title) return;
+    
+    downloadPickerState.title = media.title;
+    downloadPickerState.year = media.year || '';
+    downloadPickerState.tmdbId = media.tmdbId || null;
+    downloadPickerState.mediaType = media.mediaType === 'series' ? 'series' : 'movie';
+    downloadPickerState.posterUrl = media.posterUrl || 'https://via.placeholder.com/300x450/111827/ffffff?text=No+Poster';
+    downloadPickerState.overview = media.overview || '';
+    downloadPickerState.trailerKey = media.trailerKey || null;
+    downloadPickerState.scraperResults = [];
+    downloadPickerState.selectedRelease = null;
+
+    // Update UI elements in hero
+    const posterEl = document.getElementById('pickerPosterImg');
+    const titleEl = document.getElementById('pickerHeroTitle');
+    const yearEl = document.getElementById('pickerHeroYear');
+    const typeBadge = document.getElementById('pickerHeroTypeBadge');
+    const overviewEl = document.getElementById('pickerHeroOverview');
+    const trailerBtn = document.getElementById('btnPickerTrailer');
+    const crumbTitle = document.getElementById('pickerCrumbTitle');
+    const customInput = document.getElementById('pickerCustomSearchInput');
+    const statusNote = document.getElementById('pickerHeroStatusNote');
+
+    if (posterEl) posterEl.src = downloadPickerState.posterUrl;
+    if (titleEl) titleEl.textContent = downloadPickerState.title;
+    if (yearEl) yearEl.textContent = downloadPickerState.year ? `(${downloadPickerState.year})` : '';
+    if (typeBadge) {
+        typeBadge.textContent = downloadPickerState.mediaType === 'series' ? 'TV Series' : 'Movie';
+        typeBadge.className = `card-type-tag ${downloadPickerState.mediaType === 'series' ? 'series' : 'movie'}`;
+    }
+    if (overviewEl) overviewEl.textContent = downloadPickerState.overview || 'No synopsis available.';
+    if (crumbTitle) crumbTitle.textContent = `${downloadPickerState.title} ${downloadPickerState.year ? '(' + downloadPickerState.year + ')' : ''}`;
+    if (customInput) customInput.value = downloadPickerState.title;
+    if (statusNote) statusNote.textContent = 'Searching scraper index for HD/OTT releases...';
+
+    if (trailerBtn) {
+        if (downloadPickerState.trailerKey || downloadPickerState.tmdbId) {
+            trailerBtn.style.display = 'inline-flex';
+        } else {
+            trailerBtn.style.display = 'none';
+        }
+    }
+
+    // Switch view to download-picker without auto-pushing default route
+    state.currentView = 'download-picker';
+    document.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.toggle('active', link.dataset.view === 'releases'); // highlight Media nav
+    });
+    document.querySelectorAll('.view-container').forEach(c => {
+        c.classList.toggle('active', c.id === 'view-download-picker');
+    });
+    const headerTitle = document.getElementById('headerViewTitle');
+    if (headerTitle) headerTitle.textContent = 'Download Media';
+
+    // Update browser URL (Real pushState link so user can share or use browser back button)
+    const url = new URL(window.location.href);
+    url.pathname = '/download/select';
+    url.searchParams.set('title', downloadPickerState.title);
+    if (downloadPickerState.year) url.searchParams.set('year', downloadPickerState.year);
+    if (downloadPickerState.tmdbId) url.searchParams.set('tmdbId', String(downloadPickerState.tmdbId));
+    if (downloadPickerState.mediaType) url.searchParams.set('type', downloadPickerState.mediaType);
+    if (downloadPickerState.posterUrl && !downloadPickerState.posterUrl.includes('placeholder')) {
+        url.searchParams.set('poster', downloadPickerState.posterUrl);
+    }
+    history.pushState({ view: 'download-picker', title: downloadPickerState.title }, '', url.toString());
+
+    // Auto-search scraper service
+    searchScraperForPicker(downloadPickerState.title, downloadPickerState.year, downloadPickerState.mediaType);
+}
+
+function initDownloadPickerFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const title = params.get('title');
+    if (!title) {
+        switchView('releases', true);
+        return;
+    }
+    const year = params.get('year') || '';
+    const tmdbId = params.get('tmdbId') ? Number(params.get('tmdbId')) : null;
+    const mediaType = params.get('type') || 'movie';
+    const posterUrl = params.get('poster') || '';
+    const overview = params.get('overview') || '';
+
+    openDownloadPicker({
+        title,
+        year,
+        tmdbId,
+        mediaType,
+        posterUrl,
+        overview
+    });
+}
+
+function closeDownloadPicker() {
+    switchView('releases', true);
+}
+
+function playPickerTrailer() {
+    if (downloadPickerState.trailerKey || downloadPickerState.tmdbId) {
+        openTrailerModal(downloadPickerState.title, downloadPickerState.trailerKey, downloadPickerState.tmdbId, downloadPickerState.mediaType);
+    }
+}
+
+async function searchScraperForPicker(searchTitle, year, type) {
+    const grid = document.getElementById('pickerReleasesGrid');
+    const badge = document.getElementById('pickerResultsCountBadge');
+    const statusNote = document.getElementById('pickerHeroStatusNote');
+
+    if (!grid) return;
+    grid.innerHTML = `
+        <div class="picker-loading-state" style="grid-column: 1 / -1; text-align: center; padding: 45px 20px; color: var(--text-muted);">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            <div>Searching scraper service (dl.pallabdev.in) for <strong>${escapeHtml(searchTitle)}</strong>...</div>
+        </div>
+    `;
+    if (badge) badge.textContent = 'Searching...';
+
+    try {
+        const res = await fetch('/api/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                title: searchTitle,
+                type: type || 'all',
+                year: year || ''
+            })
+        });
+
+        const data = await res.json();
+        downloadPickerState.searchId = data.searchId;
+        const results = data.results || [];
+        downloadPickerState.scraperResults = results;
+
+        if (badge) badge.textContent = `${results.length} release${results.length === 1 ? '' : 's'} found`;
+        if (statusNote) {
+            statusNote.textContent = results.length > 0 
+                ? `Found ${results.length} release options from scraper.`
+                : `No exact release matches found. Try adjusting the search query above.`;
+        }
+
+        if (results.length === 0) {
+            grid.innerHTML = `
+                <div class="picker-empty-state" style="grid-column: 1 / -1; text-align: center; padding: 45px 20px; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.1); border-radius: 12px;">
+                    <div style="font-size: 32px; margin-bottom: 10px;">🔍</div>
+                    <h4 style="color: #fff; margin-bottom: 6px;">No Scraper Releases Found for "${escapeHtml(searchTitle)}"</h4>
+                    <p style="color: var(--text-muted); font-size: 13px; max-width: 450px; margin: 0 auto 16px;">
+                        The title could not be matched automatically. Try entering an alternate spelling or omitting subtitles in the box above.
+                    </p>
+                </div>
+            `;
+            return;
+        }
+
+        grid.innerHTML = results.map((rel, idx) => {
+            const safeUrl = escapeHtml(rel.url).replace(/'/g, "\\'");
+            const safeName = escapeHtml(rel.name).replace(/'/g, "\\'");
+            const thumb = rel.thumbnail || downloadPickerState.posterUrl;
+            const cats = Array.isArray(rel.category) ? rel.category : [];
+
+            return `
+                <div class="picker-release-card ${rel.isBest ? 'best-match' : ''}">
+                    <div class="picker-release-thumb-wrap">
+                        <img src="${escapeHtml(thumb)}" alt="${escapeHtml(rel.name)}" class="picker-release-thumb" onerror="this.src='${escapeHtml(downloadPickerState.posterUrl)}'" loading="lazy">
+                        ${rel.isBest ? `<span class="badge-best-match">Top Match</span>` : ''}
+                    </div>
+                    <div class="picker-release-body">
+                        <div class="picker-release-title" title="${escapeHtml(rel.name)}">${escapeHtml(rel.name)}</div>
+                        <div class="picker-release-meta">
+                            ${rel.post_date ? `<span class="picker-meta-item"><svg class="tabler-icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><path d="M4 5m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M16 3l0 4"/><path d="M8 3l0 4"/><path d="M4 11l16 0"/></svg> ${escapeHtml(rel.post_date)}</span>` : ''}
+                            ${rel.stars && rel.stars.length ? `<span class="picker-meta-item"><svg class="tabler-icon" style="width:12px;height:12px;color:#fbbf24;" viewBox="0 0 24 24"><path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></svg> ${escapeHtml(rel.stars.slice(0, 2).join(', '))}</span>` : ''}
+                        </div>
+                        ${cats.length > 0 ? `
+                            <div class="picker-release-tags">
+                                ${cats.slice(0, 4).map(c => `<span class="picker-tag">${escapeHtml(c)}</span>`).join('')}
+                            </div>
+                        ` : ''}
+                        <div class="picker-release-actions">
+                            <button class="btn-picker-select" onclick="selectScraperRelease('${safeUrl}', '${safeName}')">
+                                <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                <span>Inspect Download Options</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+    } catch (err) {
+        if (grid) {
+            grid.innerHTML = `
+                <div style="grid-column: 1 / -1; color: var(--accent-rose); padding: 30px; text-align: center;">
+                    Failed to search scraper index: ${escapeHtml(err.message)}
+                </div>
+            `;
+        }
+    }
+}
+
+function triggerPickerCustomSearch() {
+    const input = document.getElementById('pickerCustomSearchInput');
+    const query = input ? input.value.trim() : '';
+    if (!query) return;
+    searchScraperForPicker(query, downloadPickerState.year, downloadPickerState.mediaType);
+}
+
+async function selectScraperRelease(targetUrl, releaseName) {
+    const modal = document.getElementById('pickerFormatsModal');
+    const titleEl = document.getElementById('pickerFormatsTitle');
+    const subEl = document.getElementById('pickerFormatsSubtitle');
+    const bodyEl = document.getElementById('pickerFormatsBody');
+
+    if (!modal || !bodyEl) return;
+
+    modal.classList.remove('hidden');
+    if (titleEl) titleEl.textContent = releaseName || downloadPickerState.title;
+    if (subEl) subEl.textContent = 'Inspecting available download streams & server links...';
+
+    bodyEl.innerHTML = `
+        <div style="text-align: center; padding: 40px 20px; color: var(--text-secondary);">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            <div>Resolving direct download links & quality packages...</div>
+        </div>
+    `;
+
+    try {
+        const res = await fetch('/api/media/details', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ targetUrl })
+        });
+        const data = await res.json();
+        if (data.success && data.details) {
+            if (subEl) subEl.textContent = data.details.isSeries ? 'Available Season Batches & Episodes' : 'Select your desired quality';
+            renderDrawerContent(bodyEl, data.details, targetUrl, releaseName);
+        } else {
+            bodyEl.innerHTML = `<div style="color: var(--accent-rose); padding: 20px; text-align: center;">${escapeHtml(data.error || 'No download formats found for this release')}</div>`;
+        }
+    } catch (err) {
+        bodyEl.innerHTML = `<div style="color: var(--accent-rose); padding: 20px; text-align: center;">Failed to retrieve formats: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function closePickerFormatsModal() {
+    const modal = document.getElementById('pickerFormatsModal');
+    if (modal) modal.classList.add('hidden');
 }
 
 // ==========================================================================
