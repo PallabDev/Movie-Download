@@ -2751,8 +2751,9 @@ const releasesState = {
     searchQuery: '',
     sortBy: 'date_desc',
     loading: false,
-    refreshing: false,
+    loadingMore: false,
     searchDebounce: null,
+    scrollObserver: null
 };
 
 // Platform styling and brand identity map
@@ -2981,10 +2982,13 @@ async function loadNewReleases(page = null, updateUrl = true) {
     const grid = document.getElementById('releasesGrid');
     if (!grid) return;
 
+    releasesState.loading = true;
+    releasesState.loadingMore = false;
+
     grid.innerHTML = `
         <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted);">
             <div class="spinner" style="margin: 0 auto 12px;"></div>
-            <div>Discovering new OTT releases...</div>
+            <div>Loading fresh OTT releases...</div>
         </div>
     `;
 
@@ -3019,16 +3023,6 @@ async function loadNewReleases(page = null, updateUrl = true) {
             if (countAll) countAll.textContent = stats.total || '0';
             if (countMovie) countMovie.textContent = stats.moviesCount || '0';
             if (countSeries) countSeries.textContent = stats.seriesCount || '0';
-
-            const lastUpdatedEl = document.getElementById('releasesLastUpdatedTag');
-            if (lastUpdatedEl) {
-                if (stats.lastRefreshed) {
-                    const d = new Date(stats.lastRefreshed);
-                    lastUpdatedEl.textContent = `Last refreshed: ${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-                } else {
-                    lastUpdatedEl.textContent = `No items cached yet (Click Refresh)`;
-                }
-            }
         }
 
         releasesState.items = data.releases || [];
@@ -3036,35 +3030,17 @@ async function loadNewReleases(page = null, updateUrl = true) {
         releasesState.totalPages = data.pagination?.totalPages || 1;
 
         if (releasesState.items.length === 0) {
-            if (releasesState.total === 0 && !releasesState.searchQuery && releasesState.providerFilter === 'all' && releasesState.industryFilter === 'all') {
-                grid.innerHTML = `
-                    <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px;" class="releases-empty-card">
-                        <div class="brand-icon-box" style="width: 48px; height: 48px; margin: 0 auto 16px; background: rgba(229, 9, 20, 0.15); color: #ff5252;">
-                            <svg class="tabler-icon" style="width:28px;height:28px;" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M8 4v16"/><path d="M16 4v16"/><path d="M4 8h4"/><path d="M4 16h4"/><path d="M4 12h16"/><path d="M16 8h4"/><path d="M16 16h4"/></svg>
-                        </div>
-                        <h2 style="font-size: 18px; margin-bottom: 6px; font-weight: 700;">No OTT Releases Cached Yet</h2>
-                        <p style="color: var(--text-secondary); font-size: 13px; max-width: 500px; margin: 0 auto 20px;">
-                            Click below to perform an initial scan of TMDB for the latest OTT releases across Bollywood, Tollywood, South Cinema, Hollywood, Netflix, Prime Video, Hotstar, and Zee5.
-                        </p>
-                        <button class="btn-primary-action" onclick="triggerManualReleasesRefresh(90)" style="padding: 10px 24px; font-size: 13.5px; margin: 0 auto;">
-                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
-                            Fetch OTT Releases Now
-                        </button>
-                    </div>
-                `;
-            } else {
-                grid.innerHTML = `
-                    <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
-                        <div style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 4px;">No matching releases found</div>
-                        <div style="font-size: 12.5px;">Try changing your search query or industry filters.</div>
-                    </div>
-                `;
-            }
+            grid.innerHTML = `
+                <div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
+                    <div style="font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 4px;">No matching releases found</div>
+                    <div style="font-size: 12.5px;">Try changing your search query or industry filters.</div>
+                </div>
+            `;
             renderReleasesPagination();
             return;
         }
 
-        renderReleaseCards(releasesState.items);
+        renderReleaseCards(releasesState.items, false);
         renderReleasesPagination();
 
     } catch (err) {
@@ -3074,14 +3050,13 @@ async function loadNewReleases(page = null, updateUrl = true) {
                 <button class="btn-header" style="margin-top: 10px;" onclick="loadNewReleases(1, true)">Retry</button>
             </div>
         `;
+    } finally {
+        releasesState.loading = false;
     }
 }
 
-function renderReleaseCards(items) {
-    const grid = document.getElementById('releasesGrid');
-    if (!grid) return;
-
-    grid.innerHTML = items.map(item => {
+function generateReleaseCardsHtml(items) {
+    return items.map(item => {
         const posterSrc = item.posterUrl || 'https://via.placeholder.com/300x450/111827/ffffff?text=No+Poster';
         const rating = item.rating ? Number(item.rating).toFixed(1) : 'N/A';
         const providers = item.providers || [];
@@ -3089,8 +3064,6 @@ function renderReleaseCards(items) {
         const extraCount = providers.length > 2 ? `<span class="ott-badge more" title="${providers.slice(2).map(p => escapeHtml(p.name)).join(', ')}">+${providers.length - 2}</span>` : '';
 
         const year = item.year || (item.releaseDate ? item.releaseDate.slice(0, 4) : '');
-
-        // User requirement: "one improv don't show thier normal release date in case of movie if you found the ott release date show that"
         const displayDate = item.ottReleaseDate || item.releaseDate;
         const formattedDate = displayDate ? new Date(displayDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recent';
         const isOttDate = Boolean(item.ottReleaseDate);
@@ -3162,83 +3135,122 @@ function renderReleaseCards(items) {
     }).join('');
 }
 
+function renderReleaseCards(items, append = false) {
+    const grid = document.getElementById('releasesGrid');
+    if (!grid) return;
+
+    const cardsHtml = generateReleaseCardsHtml(items);
+    if (append) {
+        grid.insertAdjacentHTML('beforeend', cardsHtml);
+    } else {
+        grid.innerHTML = cardsHtml;
+    }
+}
+
+async function loadNextReleasesChunk() {
+    if (releasesState.loading || releasesState.loadingMore) return;
+    if (releasesState.page >= releasesState.totalPages) return;
+
+    releasesState.loadingMore = true;
+    const btn = document.getElementById('btnLoadMoreChunks');
+    if (btn) {
+        btn.innerHTML = `<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;margin-right:6px;"></div> Loading next chunk...`;
+        btn.disabled = true;
+    }
+
+    const nextPage = releasesState.page + 1;
+
+    try {
+        const queryParams = new URLSearchParams({
+            page: String(nextPage),
+            limit: '24',
+            type: releasesState.typeFilter,
+            provider: releasesState.providerFilter,
+            industry: releasesState.industryFilter,
+            sort: releasesState.sortBy,
+        });
+
+        if (releasesState.searchQuery) {
+            queryParams.set('search', releasesState.searchQuery);
+        }
+
+        const res = await fetch(`/api/new-releases?${queryParams.toString()}`, { credentials: 'include' });
+        const data = await res.json();
+        const newItems = data.releases || [];
+
+        if (newItems.length > 0) {
+            releasesState.page = nextPage;
+            releasesState.items.push(...newItems);
+            renderReleaseCards(newItems, true);
+        } else {
+            releasesState.totalPages = releasesState.page;
+        }
+    } catch (err) {
+        console.error('[CHUNK LOAD] Error loading next chunk:', err);
+    } finally {
+        releasesState.loadingMore = false;
+        renderReleasesPagination();
+    }
+}
+
+function setupReleasesScrollObserver() {
+    if (releasesState.scrollObserver) {
+        releasesState.scrollObserver.disconnect();
+        releasesState.scrollObserver = null;
+    }
+
+    const sentinel = document.getElementById('releasesScrollSentinel');
+    if (!sentinel) return;
+
+    releasesState.scrollObserver = new IntersectionObserver((entries) => {
+        const entry = entries[0];
+        if (entry && entry.isIntersecting) {
+            if (!releasesState.loading && !releasesState.loadingMore && releasesState.page < releasesState.totalPages) {
+                loadNextReleasesChunk();
+            }
+        }
+    }, {
+        rootMargin: '350px 0px 350px 0px',
+        threshold: 0.05
+    });
+
+    releasesState.scrollObserver.observe(sentinel);
+}
+
 function renderReleasesPagination() {
     const bar = document.getElementById('releasesPaginationBar');
     if (!bar) return;
 
-    if (releasesState.totalPages <= 1) {
+    if (releasesState.total === 0) {
         bar.style.display = 'none';
         return;
     }
 
     bar.style.display = 'flex';
-    const cur = releasesState.page;
-    const total = releasesState.totalPages;
+    bar.style.flexDirection = 'column';
+    bar.style.alignItems = 'center';
+    bar.style.gap = '12px';
+    bar.style.padding = '24px 0 32px';
 
-    let pageBtnsHtml = '';
-    const maxVisible = 5;
-    let startPage = Math.max(1, cur - Math.floor(maxVisible / 2));
-    let endPage = Math.min(total, startPage + maxVisible - 1);
-    if (endPage - startPage + 1 < maxVisible) {
-        startPage = Math.max(1, endPage - maxVisible + 1);
-    }
-
-    for (let p = startPage; p <= endPage; p++) {
-        pageBtnsHtml += `
-            <button class="btn-page ${p === cur ? 'active' : ''}" style="${p === cur ? 'background: var(--accent-blue); color: #fff; font-weight: 700; border-color: var(--accent-blue);' : ''}" onclick="loadNewReleases(${p}, true)">${p}</button>
-        `;
-    }
+    const hasMore = releasesState.page < releasesState.totalPages;
+    const showingCount = Math.min(releasesState.items.length, releasesState.total);
 
     bar.innerHTML = `
-        <button class="btn-page ${cur <= 1 ? 'disabled' : ''}" onclick="loadNewReleases(${cur - 1}, true)" ${cur <= 1 ? 'disabled' : ''}>Previous</button>
-        <div class="page-numbers-wrap" style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap; justify-content: center;">
-            ${pageBtnsHtml}
-        </div>
-        <button class="btn-page ${cur >= total ? 'disabled' : ''}" onclick="loadNewReleases(${cur + 1}, true)" ${cur >= total ? 'disabled' : ''}>Next</button>
-        <span class="page-indicator" style="font-size: 12px; color: var(--text-muted); margin: 0 4px;">Page ${cur} of ${total} (${releasesState.total} titles)</span>
+        <div id="releasesScrollSentinel" style="height: 10px; width: 100%;"></div>
+
+        ${hasMore ? `
+            <button class="btn-load-more-chunks" id="btnLoadMoreChunks" onclick="loadNextReleasesChunk()" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 24px; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s ease;">
+                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:16px;height:16px;"><path d="M12 5l0 14"/><path d="M18 13l-6 6"/><path d="M6 13l6 6"/></svg>
+                <span>Load Next Chunk (${showingCount} of ${releasesState.total} titles)</span>
+            </button>
+        ` : `
+            <div style="font-size: 12px; color: var(--text-muted); padding: 8px 16px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
+                ✓ All ${releasesState.total} releases loaded
+            </div>
+        `}
     `;
-}
 
-async function triggerManualReleasesRefresh(daysBack = 90) {
-    const btnManual = document.getElementById('btnManualRefreshReleases');
-
-    if (releasesState.refreshing) return;
-    releasesState.refreshing = true;
-
-    const originalManualHtml = btnManual ? btnManual.innerHTML : '';
-    if (btnManual) {
-        btnManual.innerHTML = `<div class="spinner" style="width:13px;height:13px;border-width:2px;display:inline-block;margin-right:6px;"></div> Scanning OTT (3 Mo)...`;
-        btnManual.disabled = true;
-    }
-
-    showToast('Scanning last 3 months of Indian OTT releases from TMDB...', 'info');
-
-    try {
-        const res = await fetch('/api/new-releases/refresh', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ daysBack })
-        });
-
-        const data = await res.json();
-        if (res.status === 429) {
-            showToast(`⚠️ ${data.error}`, 'warning', 7000);
-        } else if (data.success) {
-            showToast(`✅ ${data.message}`, 'success', 6000);
-            await loadNewReleases(1, true);
-        } else {
-            showToast(data.error || 'Refresh failed', 'error');
-        }
-    } catch (err) {
-        showToast(err.message, 'error');
-    } finally {
-        releasesState.refreshing = false;
-        if (btnManual) {
-            btnManual.innerHTML = originalManualHtml;
-            btnManual.disabled = false;
-        }
-    }
+    setupReleasesScrollObserver();
 }
 
 function filterReleasesByPlatform(platform) {

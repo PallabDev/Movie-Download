@@ -422,8 +422,30 @@ function checkMovieInLibrary(title: string, year?: string | null, originalTitle?
     return false;
 }
 
+let lastAutoSyncEpoch = 0;
+let isSyncingChunk = false;
+
+async function ensureFreshOTTReleasesChunk(force = false) {
+    const now = Date.now();
+    if (isSyncingChunk) return;
+    if (!force && (now - lastAutoSyncEpoch < 15 * 60 * 1000)) return;
+
+    isSyncingChunk = true;
+    lastAutoSyncEpoch = now;
+    try {
+        console.log("[AUTO-SYNC] Fetching fresh chunk of Indian OTT releases from TMDB...");
+        await syncIndianOTTReleasesToDB({ daysBack: 30, pageLimit: 1 });
+    } catch (e: any) {
+        console.warn(`[AUTO-SYNC] Background chunk sync error: ${e.message}`);
+    } finally {
+        isSyncingChunk = false;
+    }
+}
+
 app.get("/api/new-releases", requireMod, async (req: any, res) => {
     try {
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+
         const page = Math.max(1, Number(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 24));
         const offset = (page - 1) * limit;
@@ -433,6 +455,17 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
         const industry = (req.query.industry as string || "").trim().toLowerCase();
         const search = (req.query.search as string || "").trim();
         const sort = (req.query.sort as string || "date_desc").toLowerCase();
+
+        // Auto-ensure fresh releases in chunk without requiring user manual refresh button
+        if (page === 1 && !search) {
+            const countCheck = await db.select({ count: count() }).from(schema.ottReleases);
+            const currentTotal = Number(countCheck[0]?.count || 0);
+            if (currentTotal === 0) {
+                await ensureFreshOTTReleasesChunk(true);
+            } else if (Date.now() - lastAutoSyncEpoch > 15 * 60 * 1000) {
+                ensureFreshOTTReleasesChunk(false).catch(() => {});
+            }
+        }
 
         const conditions: any[] = [];
 
@@ -2237,18 +2270,12 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         </div>
                     </div>
 
-                    <!-- Compact Header & Refresh Panel -->
+                    <!-- Compact Header -->
                     <div class="releases-compact-header">
                         <div class="releases-header-left">
                             <h1 style="font-size: 15px; font-weight: 700; color: #fff; margin: 0;">Media Catalog</h1>
                             <span class="chip quality" style="background: rgba(229, 9, 20, 0.18); color: #ff5252; border-color: rgba(229, 9, 20, 0.35); font-size: 10px; padding: 1px 6px;">OTT Releases</span>
-                            <span id="releasesLastUpdatedTag" style="font-size: 11px; color: var(--text-muted);">Loading...</span>
-                        </div>
-                        <div class="releases-header-right">
-                            <button class="btn-primary-action" id="btnManualRefreshReleases" onclick="triggerManualReleasesRefresh(90)" style="padding: 5px 12px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px;">
-                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
-                                <span>Refresh</span>
-                            </button>
+                            <span style="font-size: 11px; color: var(--text-muted);">Fresh streaming releases</span>
                         </div>
                     </div>
 
