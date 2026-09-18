@@ -2935,14 +2935,15 @@ function isMediaSearchVisible() {
     return el && !el.classList.contains('hidden') && el.style.display !== 'none';
 }
 
-function toggleMediaCatalogSearch(forceOpen = null) {
+function toggleMediaCatalogSearch(forceOpen) {
     const header = document.getElementById('mediaSearchHeader');
     const input = document.getElementById('mediaCatalogSearchInput');
     const btn = document.getElementById('btnHeaderAction');
     if (!header) return;
 
     const currentlyVisible = isMediaSearchVisible();
-    const shouldOpen = forceOpen !== null ? forceOpen : !currentlyVisible;
+    // Only use forceOpen if explicitly passed as boolean (ignores PointerEvent/MouseEvent)
+    const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !currentlyVisible;
 
     if (shouldOpen) {
         header.classList.remove('hidden');
@@ -2965,7 +2966,7 @@ function toggleMediaCatalogSearch(forceOpen = null) {
             btn.innerHTML = `<svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg><span id="btnHeaderActionText">Search</span>`;
         }
         if (releasesState.searchQuery) {
-            clearMediaCatalogSearch();
+            clearMediaCatalogSearch(true);
         }
     }
 }
@@ -2995,14 +2996,16 @@ function handleMediaCatalogSearch(query, immediate = false) {
     }
 }
 
-function clearMediaCatalogSearch() {
+function clearMediaCatalogSearch(reload = true) {
     releasesState.searchQuery = '';
     const input = document.getElementById('mediaCatalogSearchInput');
     if (input) input.value = '';
     const btnClear = document.getElementById('btnClearMediaSearch');
     if (btnClear) btnClear.classList.add('hidden');
-    releasesState.page = 1;
-    loadNewReleases(1, true);
+    if (reload) {
+        releasesState.page = 1;
+        loadNewReleases(1, true);
+    }
 }
 
 function setReleasesTypeFilter(type) {

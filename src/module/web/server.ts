@@ -2204,20 +2204,11 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                                 placeholder="Search movies & TV shows released on OTT / streaming services..." 
                                 autocomplete="off"
                                 oninput="handleMediaCatalogSearch(this.value)"
-                                onkeydown="if (event.key === 'Enter') handleMediaCatalogSearch(this.value, true)"
+                                onkeydown="if (event.key === 'Escape') toggleMediaCatalogSearch(false); if (event.key === 'Enter') handleMediaCatalogSearch(this.value, true)"
                             />
                             <button class="btn-clear-media-search hidden" id="btnClearMediaSearch" onclick="clearMediaCatalogSearch()" title="Clear Search">
                                 <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>
                             </button>
-                        </div>
-                    </div>
-
-                    <!-- Compact Header -->
-                    <div class="releases-compact-header">
-                        <div class="releases-header-left">
-                            <h1 style="font-size: 15px; font-weight: 700; color: #fff; margin: 0;">Media Catalog</h1>
-                            <span class="chip quality" style="background: rgba(229, 9, 20, 0.18); color: #ff5252; border-color: rgba(229, 9, 20, 0.35); font-size: 10px; padding: 1px 6px;">OTT Releases</span>
-                            <span style="font-size: 11px; color: var(--text-muted);">Fresh streaming releases</span>
                         </div>
                     </div>
 
