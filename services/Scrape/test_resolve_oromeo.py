@@ -45,31 +45,6 @@ async def main():
             print("--- ALL SCRIPTS ON HOMELANDER ---")
             for i, s in enumerate(soup_hl.find_all('script')):
                 if s.string:
-                    print(f"\n[Script {i}]:\n", s.string)
-            print("Hub page title:", soup2.title.string if soup2.title else "None")
-            
-            print("\nAll <a> tags on Hub page:")
-            for a in soup2.find_all('a'):
-                h = a.get('href', '')
-                t = a.get_text(' ', strip=True)
-                print(f"  - text='{t}' href='{h}'")
-                
-            gen_link = None
-            for a in soup2.find_all('a'):
-                h = a.get('href', '')
-                if 'hubcloud.php' in h or 'token=' in h:
-                    gen_link = h
-                    break
-            
-            if gen_link:
-                print(f"\nFound gen_link: {gen_link}")
-                r3 = await session.get(gen_link, headers={**headers, 'Referer': hub_url}, timeout=20)
-                print("Gen page status:", r3.status_code)
-                soup3 = BeautifulSoup(r3.text, 'html.parser')
-                print("All <a> tags on Gen page:")
-                for a in soup3.find_all('a'):
-                    h = a.get('href', '')
-                    t = a.get_text(' ', strip=True)
-                    print(f"  - text='{t}' href='{h}'")
+                    print(f"\n================ [Script {i}] ================\n{s.string}\n")
 
 asyncio.run(main())
