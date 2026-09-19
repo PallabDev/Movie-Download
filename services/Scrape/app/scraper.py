@@ -27,8 +27,21 @@ HOST_ENDPOINTS = [
 ]
 
 # In-memory caches
-_cached_active_domain: Optional[str] = None
-_cached_modlist_mirrors: Dict[str, str] = {}
+def _rot13(s: str) -> str:
+    return codecs.decode(s, "rot_13")
+
+def _decode_greenmotors_payload(payload: str) -> Optional[str]:
+    try:
+        d1 = base64.b64decode(payload).decode("utf-8")
+        d2 = base64.b64decode(d1).decode("utf-8")
+        d3 = _rot13(d2)
+        d4 = base64.b64decode(d3).decode("utf-8")
+        data = json.loads(d4)
+        if isinstance(data, dict) and "o" in data:
+            return base64.b64decode(data["o"]).decode("utf-8")
+    except Exception as e:
+        print(f"[GREENMOTORS DECODE ERROR]: {e}")
+    return None
 
 
 class CloudflareScraper:
@@ -758,23 +771,6 @@ class CloudflareScraper:
             except Exception as e:
                 print(f"[HDHUB4U DETAILS ERROR]: {e}")
                 return {"name": "", "title": "", "url": movie_url, "downloads": {}, "download_options": []}
-
-def _rot13(s: str) -> str:
-    return codecs.decode(s, "rot_13")
-
-def _decode_greenmotors_payload(payload: str) -> Optional[str]:
-    try:
-        d1 = base64.b64decode(payload).decode("utf-8")
-        d2 = base64.b64decode(d1).decode("utf-8")
-        d3 = _rot13(d2)
-        d4 = base64.b64decode(d3).decode("utf-8")
-        data = json.loads(d4)
-        if isinstance(data, dict) and "o" in data:
-            return base64.b64decode(data["o"]).decode("utf-8")
-    except Exception as e:
-        print(f"[GREENMOTORS DECODE ERROR]: {e}")
-    return None
-
 
     # ─────────────────────────────────────────────────────────────
     # 0s INTERMEDIATE REDIRECT BYPASSER & DIRECT LINK RESOLVER
