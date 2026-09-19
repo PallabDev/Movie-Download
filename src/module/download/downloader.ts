@@ -249,8 +249,12 @@ export async function downloadHttpStream(
                 "Accept": "*/*",
             };
 
-            if (directUrl.includes("workers.dev") || directUrl.includes("hubcloud")) {
+            if (directUrl.includes("workers.dev") || directUrl.includes("hubcloud") || directUrl.includes("hubdrive")) {
                 headers["Referer"] = "https://gamerxyt.com/";
+            } else if (directUrl.includes("fast-dl") || directUrl.includes("nexdrive") || directUrl.includes("gdflix")) {
+                headers["Referer"] = "https://vegamoviess.foo/";
+            } else if (directUrl.includes("pixeldrain")) {
+                headers["Referer"] = "https://pixeldrain.com/";
             }
 
             if (existingBytes > 0) {

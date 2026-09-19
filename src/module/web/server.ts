@@ -23,7 +23,7 @@ import {
     fetchCuratedOTTMedia
 } from "../../common/tmdb/client.js";
 import { cleanSeriesTitleAndSeason } from "../download/downloader.js";
-import { searchMedia, getDownloadLinks, getMediaFormatDetails, resolveSpecificFormatLink, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats, cleanFileSize } from "../download/api-client.js";
+import { searchMedia, getDownloadLinks, getMediaFormatDetails, resolveSpecificFormatLink, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats, cleanFileSize, testScraperSource } from "../download/api-client.js";
 import { handleChat } from "./chat.js";
 import { parseMediaWithAI, formatMediaJobTitle, formatMediaFileName } from "../ai/cleaner.js";
 
@@ -203,6 +203,117 @@ app.delete("/api/admin/users/:id", requireAdmin, async (req: any, res) => {
     }
     await deleteUser(id);
     res.json({ success: true });
+});
+
+// ─── ADMIN SCRAPER SOURCES MANAGEMENT ───
+
+async function getOrSeedScraperSources() {
+    try {
+        const existing = await db.select().from(schema.scraperSources).orderBy(schema.scraperSources.priority);
+        if (existing.length > 0) return existing;
+
+        const defaultSources = [
+            { name: "HDHub4u", type: "hdhub4u", baseUrl: "https://hdhub4u.bi", enabled: true, priority: 1 },
+            { name: "Modlist (UHD & MoviesMod)", type: "modlist", baseUrl: "https://modlist.in", enabled: true, priority: 2 },
+            { name: "Vegamovies", type: "vegamovies", baseUrl: "https://vegamoviess.foo", enabled: true, priority: 3 }
+        ];
+
+        for (const src of defaultSources) {
+            await db.insert(schema.scraperSources).values(src);
+        }
+
+        return await db.select().from(schema.scraperSources).orderBy(schema.scraperSources.priority);
+    } catch (e: any) {
+        console.warn("[SCRAPER SOURCES] Seed check warning:", e.message);
+        return [];
+    }
+}
+
+app.get("/api/admin/sources", requireAdmin, async (_req, res) => {
+    try {
+        const sources = await getOrSeedScraperSources();
+        res.json({ success: true, sources });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post("/api/admin/sources", requireAdmin, async (req, res) => {
+    try {
+        const { name, type, baseUrl, enabled, priority, headers, metadata } = req.body;
+        if (!name || !baseUrl) return res.status(400).json({ error: "Source Name and Base URL are required" });
+        const [created] = await db.insert(schema.scraperSources).values({
+            name: name.trim(),
+            type: (type || "custom").trim().toLowerCase(),
+            baseUrl: baseUrl.trim(),
+            enabled: enabled !== false,
+            priority: Number(priority) || 1,
+            headers: headers || null,
+            metadata: metadata || null
+        }).returning();
+        res.json({ success: true, source: created });
+    } catch (err: any) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+app.put("/api/admin/sources/:id", requireAdmin, async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid source ID" });
+        const { name, type, baseUrl, enabled, priority, headers, metadata } = req.body;
+        const [updated] = await db.update(schema.scraperSources).set({
+            ...(name ? { name: name.trim() } : {}),
+            ...(type ? { type: type.trim().toLowerCase() } : {}),
+            ...(baseUrl ? { baseUrl: baseUrl.trim() } : {}),
+            ...(typeof enabled === "boolean" ? { enabled } : {}),
+            ...(priority !== undefined ? { priority: Number(priority) } : {}),
+            ...(headers !== undefined ? { headers } : {}),
+            ...(metadata !== undefined ? { metadata } : {}),
+            updatedAt: new Date()
+        }).where(eq(schema.scraperSources.id, id)).returning();
+        res.json({ success: true, source: updated });
+    } catch (err: any) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+app.post("/api/admin/sources/toggle/:id", requireAdmin, async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid source ID" });
+        const [src] = await db.select().from(schema.scraperSources).where(eq(schema.scraperSources.id, id)).limit(1);
+        if (!src) return res.status(404).json({ error: "Source not found" });
+        const [updated] = await db.update(schema.scraperSources).set({
+            enabled: !src.enabled,
+            updatedAt: new Date()
+        }).where(eq(schema.scraperSources.id, id)).returning();
+        res.json({ success: true, source: updated });
+    } catch (err: any) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+app.delete("/api/admin/sources/:id", requireAdmin, async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid source ID" });
+        await db.delete(schema.scraperSources).where(eq(schema.scraperSources.id, id));
+        res.json({ success: true });
+    } catch (err: any) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+app.post("/api/admin/sources/test", requireAdmin, async (req, res) => {
+    try {
+        const { url, type } = req.body;
+        if (!url) return res.status(400).json({ error: "URL is required" });
+        const testResult = await testScraperSource(url, type || "hdhub4u");
+        res.json(testResult);
+    } catch (err: any) {
+        res.status(500).json({ success: false, status: "error", latency_ms: 0, message: err.message });
+    }
 });
 
 // ─── BOT STATUS & WEB AUTH ───
@@ -777,7 +888,20 @@ app.post("/api/search", requireMod, async (req: any, res) => {
         }
 
         const query = cleanTitle;
-        const results = await searchMedia(query);
+        // Fetch enabled scraper sources from DB
+        let activeSources: any[] = [];
+        try {
+            activeSources = await db.select().from(schema.scraperSources)
+                .where(eq(schema.scraperSources.enabled, true))
+                .orderBy(schema.scraperSources.priority);
+            if (activeSources.length === 0) {
+                activeSources = await getOrSeedScraperSources();
+            }
+        } catch (dbErr: any) {
+            console.warn(`[SEARCH] DB scraper sources lookup warning: ${dbErr.message}`);
+        }
+
+        const results = await searchMedia(query, activeSources);
 
         if (!results || results.length === 0) {
             return res.json({ searchId, status: "no_results", message: "No releases found", results: [], mediaMetadata });
@@ -807,6 +931,8 @@ app.post("/api/search", requireMod, async (req: any, res) => {
                 thumb = mediaMetadata.posterUrl;
             }
 
+            const srcName = r.source || (r.sourceType === "vegamovies" ? "Vegamovies" : (r.sourceType === "modlist" ? "Modlist" : "HDHub4u"));
+
             return {
                 index: i + 1,
                 text: r.name,
@@ -818,8 +944,11 @@ app.post("/api/search", requireMod, async (req: any, res) => {
                 stars: r.stars || [],
                 imdb_id: r.imdb_id || "",
                 post_date: r.post_date || "",
+                source: srcName,
+                sourceType: r.sourceType || r.source_type || "hdhub4u",
+                qualityTags: r.qualityTags || r.quality_tags || [],
                 isBest: i === 0,
-                reason: i === 0 ? "Top Matching Release" : ""
+                reason: i === 0 ? `Top Match (${srcName})` : ""
             };
         });
 
@@ -1994,7 +2123,7 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
         media: "Library Mover",
         optimizer: "Library Optimizer",
         jellyfin: "Jellyfin Library",
-        admin: "User Management",
+        admin: "Admin Settings",
         chat: "AI Copilot"
     };
 
@@ -2125,8 +2254,8 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         </a>
                         ${isAdmin ? `
                         <a class="nav-link ${activeView === 'admin' ? 'active' : ''}" href="/user" data-view="admin" onclick="navigateRoute(event, 'admin')">
-                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
-                            <span>User Management</span>
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z"/><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/></svg>
+                            <span>Admin Settings</span>
                         </a>` : ""}`}
                     </nav>
                 </div>
@@ -2951,47 +3080,140 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             ${isAdmin ? `
             <section class="view-container ${activeView === 'admin' ? 'active' : ''}" id="view-admin">
                 <div class="admin-wrap">
-                    <div class="studio-search-card">
-                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-                            <h2 style="font-size: 15px; margin: 0;">Create New User</h2>
-                            <span class="chip best" style="font-size: 11px;">Admin Only</span>
+                    <!-- Admin Navigation Sub-Tabs -->
+                    <div class="jf-filter-tabs" style="margin-bottom: 16px;">
+                        <button type="button" class="jf-tab-btn active" id="adminTabUsers" onclick="switchAdminSubTab('users')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/></svg>
+                            <span>User Management</span>
+                        </button>
+                        <button type="button" class="jf-tab-btn" id="adminTabSources" onclick="switchAdminSubTab('sources')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M9 4v16"/><path d="M15 4v16"/><path d="M4 9h16"/><path d="M4 15h16"/></svg>
+                            <span>Scraper Sources Pipeline</span>
+                            <span class="tab-badge" id="adminSourcesCountBadge" style="background: rgba(56, 139, 253, 0.2); color: #58a6ff;">3</span>
+                        </button>
+                    </div>
+
+                    <!-- SUB-SECTION 1: USER MANAGEMENT -->
+                    <div id="adminSectionUsers">
+                        <div class="studio-search-card">
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                                <h2 style="font-size: 15px; margin: 0;">Create New User</h2>
+                                <span class="chip best" style="font-size: 11px;">Admin Only</span>
+                            </div>
+                            <div class="admin-create-user-grid">
+                                <input type="text" id="adminNewName" class="form-input" placeholder="Full Name">
+                                <input type="email" id="adminNewEmail" class="form-input" placeholder="Email Address">
+                                <input type="password" id="adminNewPass" class="form-input" placeholder="Password">
+                                <select id="adminNewRole" class="form-input" style="background: var(--bg-input);">
+                                    <option value="user">User (Jellyfin Library Only)</option>
+                                    <option value="mod">Mod (Full Access except Users)</option>
+                                    <option value="admin">Admin (Full Access + Users)</option>
+                                </select>
+                                <button class="btn-primary-action" onclick="addAdminUser()">Add User</button>
+                            </div>
                         </div>
-                        <div class="admin-create-user-grid">
-                            <input type="text" id="adminNewName" class="form-input" placeholder="Full Name">
-                            <input type="email" id="adminNewEmail" class="form-input" placeholder="Email Address">
-                            <input type="password" id="adminNewPass" class="form-input" placeholder="Password">
-                            <select id="adminNewRole" class="form-input" style="background: var(--bg-input);">
-                                <option value="user">User (Jellyfin Library Only)</option>
-                                <option value="mod">Mod (Full Access except Users)</option>
-                                <option value="admin">Admin (Full Access + Users)</option>
-                            </select>
-                            <button class="btn-primary-action" onclick="addAdminUser()">Add User</button>
+
+                        <div class="history-card">
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                                <h2 style="font-size: 15px; margin: 0;">Registered Users</h2>
+                                <button class="btn-header" onclick="loadAdminUsers()" title="Refresh Users" style="display: inline-flex; align-items: center; gap: 4px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                    Refresh
+                                </button>
+                            </div>
+                            <div class="data-table-wrap">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Email</th>
+                                            <th>Role</th>
+                                            <th>Registered</th>
+                                            <th style="text-align:right;">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="adminUsersTableBody">
+                                        <tr><td colspan="5" style="text-align:center; padding: 20px;">Loading users...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="history-card">
-                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-                            <h2 style="font-size: 15px; margin: 0;">Registered Users</h2>
-                            <button class="btn-header" onclick="loadAdminUsers()" title="Refresh Users" style="display: inline-flex; align-items: center; gap: 4px;">
-                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
-                                Refresh
-                            </button>
+                    <!-- SUB-SECTION 2: SCRAPER SOURCES PIPELINE -->
+                    <div id="adminSectionSources" style="display: none;">
+                        <div class="studio-search-card">
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                                <div>
+                                    <h2 style="font-size: 15px; margin: 0;">Add Scraper Source</h2>
+                                    <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">
+                                        Add mirrors or search indexes (HDHub4u, Modlist directory, Vegamovies, or custom sites).
+                                    </p>
+                                </div>
+                                <span class="chip best" style="font-size: 11px;">Scraper Pipeline</span>
+                            </div>
+                            <div class="admin-create-source-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; align-items: end;">
+                                <div>
+                                    <label style="font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;">Source Name</label>
+                                    <input type="text" id="adminNewSourceName" class="form-input" placeholder="e.g. Vegamovies Main">
+                                </div>
+                                <div>
+                                    <label style="font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;">Source Type</label>
+                                    <select id="adminNewSourceType" class="form-input" style="background: var(--bg-input);">
+                                        <option value="hdhub4u">HDHub4u Mirror</option>
+                                        <option value="modlist">Modlist Directory (UHD/MoviesMod)</option>
+                                        <option value="vegamovies">Vegamovies Mirror</option>
+                                        <option value="custom">Custom Site</option>
+                                    </select>
+                                </div>
+                                <div style="grid-column: span 2;">
+                                    <label style="font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;">Base URL</label>
+                                    <input type="url" id="adminNewSourceUrl" class="form-input" placeholder="https://vegamoviess.foo">
+                                </div>
+                                <div>
+                                    <label style="font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;">Priority (1 = highest)</label>
+                                    <input type="number" id="adminNewSourcePriority" class="form-input" value="1" min="1" max="100">
+                                </div>
+                                <div style="display: flex; gap: 8px;">
+                                    <button type="button" class="btn-header" id="btnTestNewSource" onclick="testNewAdminSource()" style="flex: 1; padding: 7px 10px; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 4px;">
+                                        <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M12 18l.01 0"/><path d="M9.172 15.172a4 4 0 0 1 5.656 0"/><path d="M6.343 12.343a8 8 0 0 1 11.314 0"/><path d="M3.515 9.515c4.686 -4.687 12.284 -4.687 17 0"/></svg>
+                                        <span>Test</span>
+                                    </button>
+                                    <button type="button" class="btn-primary-action" onclick="addAdminSource()" style="flex: 1; padding: 7px 12px; font-size: 12px;">Add Source</button>
+                                </div>
+                            </div>
+                            <div id="newSourceTestResult" style="display:none; margin-top: 10px; font-size: 12px; padding: 8px 12px; border-radius: var(--radius-sm);"></div>
                         </div>
-                        <div class="data-table-wrap">
-                            <table class="data-table">
-                                <thead>
-                                    <tr>
-                                        <th>Name</th>
-                                        <th>Email</th>
-                                        <th>Role</th>
-                                        <th>Registered</th>
-                                        <th style="text-align:right;">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="adminUsersTableBody">
-                                    <tr><td colspan="5" style="text-align:center; padding: 20px;">Loading users...</td></tr>
-                                </tbody>
-                            </table>
+
+                        <div class="history-card">
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                                <div>
+                                    <h2 style="font-size: 15px; margin: 0;">Configured Scraper Sources</h2>
+                                    <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Active sources queried simultaneously when users search media.</p>
+                                </div>
+                                <button class="btn-header" onclick="loadAdminSources()" title="Refresh Sources" style="display: inline-flex; align-items: center; gap: 4px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></svg>
+                                    Refresh
+                                </button>
+                            </div>
+                            <div class="data-table-wrap">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Status</th>
+                                            <th>Priority</th>
+                                            <th>Source Name</th>
+                                            <th>Type</th>
+                                            <th>Base URL</th>
+                                            <th>Ping / Latency</th>
+                                            <th style="text-align:right;">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="adminSourcesTableBody">
+                                        <tr><td colspan="7" style="text-align:center; padding: 20px;">Loading scraper sources...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>

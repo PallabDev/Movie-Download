@@ -14,6 +14,21 @@ export interface SearchResultItem {
     stars?: string[];
     imdb_id?: string;
     post_date?: string;
+    source?: string;
+    sourceType?: string;
+    source_type?: string;
+    qualityTags?: string[];
+    quality_tags?: string[];
+    score?: number;
+}
+
+export interface ScraperSourceConfig {
+    name: string;
+    type: string;
+    baseUrl: string;
+    enabled: boolean;
+    priority?: number;
+    headers?: Record<string, string>;
 }
 
 export interface DownloadServer {
@@ -44,14 +59,89 @@ export interface SelectedQualityResult {
 }
 
 /**
- * Searches dl.pallabdev.in for any movie or web series with auto-retry
+ * Tests connectivity and latency to a scraper source mirror
  */
-export async function searchMedia(query: string, maxRetries = 2): Promise<SearchResultItem[]> {
+export async function testScraperSource(url: string, sourceType = "hdhub4u"): Promise<{
+    success: boolean;
+    status: string;
+    latency_ms: number;
+    message?: string;
+    resolved_mirror?: string;
+}> {
+    try {
+        const endpoint = `${DL_API_BASE_URL}/api/sources/test`;
+        const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify({ url, source_type: sourceType }),
+            signal: AbortSignal.timeout(15000)
+        });
+        if (res.ok) {
+            return await res.json();
+        }
+        return { success: false, status: "error", latency_ms: 0, message: `Scraper test returned status ${res.status}` };
+    } catch (err: any) {
+        return { success: false, status: "offline", latency_ms: 0, message: err.message || "Connection timed out" };
+    }
+}
+
+/**
+ * Searches across all enabled scraper sources (HDHub4u, Modlist, Vegamovies, etc.) with auto-retry
+ */
+export async function searchMedia(query: string, sources?: ScraperSourceConfig[], maxRetries = 2): Promise<SearchResultItem[]> {
     const cleanQuery = (query || "").trim();
     if (!cleanQuery) return [];
 
+    // 1. If multi-sources provided, attempt POST /api/scrape/multi-search first
+    if (sources && Array.isArray(sources) && sources.length > 0) {
+        const multiUrl = `${DL_API_BASE_URL}/api/scrape/multi-search`;
+        console.log(`[DL-API] Multi-Source Searching (${sources.length} sources): "${cleanQuery}"`);
+
+        for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+            try {
+                const res = await fetch(multiUrl, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    },
+                    body: JSON.stringify({
+                        query: cleanQuery,
+                        sources: sources.map(s => ({
+                            name: s.name,
+                            type: s.type,
+                            base_url: s.baseUrl,
+                            enabled: s.enabled
+                        }))
+                    }),
+                    signal: AbortSignal.timeout(35000)
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    const list = Array.isArray(data) ? data : (Array.isArray(data?.results) ? data.results : []);
+                    if (list.length > 0) {
+                        return list.map((r: any) => ({
+                            ...r,
+                            source: r.source || "HDHub4u",
+                            sourceType: r.source_type || r.sourceType || "hdhub4u",
+                            qualityTags: r.quality_tags || r.qualityTags || []
+                        }));
+                    }
+                }
+            } catch (err: any) {
+                if (attempt <= maxRetries) {
+                    console.warn(`[DL-API] Multi-search attempt ${attempt} failed (${err.message}). Retrying in 1.5s...`);
+                    await new Promise(r => setTimeout(r, 1500));
+                }
+            }
+        }
+    }
+
+    // 2. Fallback to standard GET /search?param=...
     const url = `${DL_API_BASE_URL}/search?param=${encodeURIComponent(cleanQuery)}`;
-    console.log(`[DL-API] Searching: ${url}`);
+    console.log(`[DL-API] Searching standard: ${url}`);
 
     let lastError: any = null;
     for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
@@ -73,7 +163,12 @@ export async function searchMedia(query: string, maxRetries = 2): Promise<Search
                 return [];
             }
 
-            return data;
+            return data.map((r: any) => ({
+                ...r,
+                source: r.source || "HDHub4u",
+                sourceType: r.source_type || r.sourceType || "hdhub4u",
+                qualityTags: r.quality_tags || r.qualityTags || []
+            }));
         } catch (err: any) {
             lastError = err;
             if (attempt <= maxRetries) {
@@ -199,7 +294,7 @@ export async function resolveSpecificFormatLink(
     }
 
     // 3. If direct intermediate linkUrl is provided, resolve directly via /api/resolve (1.5s)
-    if (linkUrl && /hubcloud|hubdrive|hblinks|greenmount/i.test(linkUrl)) {
+    if (linkUrl && /hubcloud|hubdrive|hblinks|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hubcdn|drive/i.test(linkUrl)) {
         const resolveUrl = `${DL_API_BASE_URL}/api/resolve?url=${encodeURIComponent(linkUrl)}`;
         console.log(`[DL-API] Fast single-link resolution: ${resolveUrl}`);
         try {
@@ -234,7 +329,7 @@ export async function resolveSpecificFormatLink(
     if (targetUrl) params.set("param", targetUrl);
     if (qualityKey) params.set("quality_key", qualityKey);
     // Only pass link_url if it's an intermediate redirect URL, avoid confusing scraper with final URLs
-    if (linkUrl && /hubcloud|hubdrive|hblinks|greenmount/i.test(linkUrl)) {
+    if (linkUrl && /hubcloud|hubdrive|hblinks|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hubcdn|drive/i.test(linkUrl)) {
         params.set("link_url", linkUrl);
     }
 
@@ -549,6 +644,7 @@ export interface ParsedMediaDetails {
     synopsis?: string;
     category?: string[];
     isSeries: boolean;
+    source?: string;
     movieFormats?: ParsedMovieFormat[];
     seriesBatches?: ParsedSeriesBatch[];
     seriesEpisodes?: ParsedSeriesEpisode[];
@@ -821,37 +917,49 @@ export function parseRawScrapedDetails(raw: any, targetUrl: string): ParsedMedia
 
     const title = raw.title || raw.name || "Media";
 
+    const qualOrder: Record<string, number> = { "4K": 4, "1080p": 3, "720p": 2, "480p": 1 };
+
     if (isSeries) {
-        // 1. Batches
+        // 1. Batches (Deduplicate and sort 4K -> 1080p -> 720p -> 480p)
         const batchOpts = options.filter(o => o.is_batch || o.category_type === 'batch_pack' || /batch|pack|zip/i.test(o.label || ''));
-        const seriesBatches: ParsedSeriesBatch[] = batchOpts.map(b => {
+        const seenBatches = new Set<string>();
+        const seriesBatches: ParsedSeriesBatch[] = [];
+
+        for (const b of batchOpts) {
             let res = b.quality || "720p";
             if (/4k|2160p/i.test(b.label || "")) res = "4K";
             else if (/1080p/i.test(b.label || "")) res = "1080p";
             else if (/720p/i.test(b.label || "")) res = "720p";
             else if (/480p/i.test(b.label || "")) res = "480p";
 
+            const sz = b.size || cleanFileSize(b.label);
+            const bKey = `${res}_${sz}_${b.label}`.toLowerCase();
+            if (seenBatches.has(bKey)) continue;
+            seenBatches.add(bKey);
+
             const qKey = "batch_" + (b.label || "pack").toLowerCase().replace(/[^a-z0-9]/g, "_");
             const isRec = /720p.*hevc|hevc.*720p/i.test(b.label) || (!batchOpts.some(x => /hevc/i.test(x.label)) && /720p/i.test(b.label));
 
-            return {
+            seriesBatches.push({
                 qualityKey: qKey,
                 label: b.label,
                 resolution: res,
-                fileSize: b.size || cleanFileSize(b.label),
+                fileSize: sz,
                 isRecommended: isRec,
                 serverCount: 1,
                 linkUrl: b.link_url || ""
-            };
-        });
+            });
+        }
 
-        // 2. Episodes
+        seriesBatches.sort((a, b) => (qualOrder[b.resolution] || 0) - (qualOrder[a.resolution] || 0));
+
+        // 2. Episodes (Deduplicate per episode and sort qualities 4K -> 1080p -> 720p -> 480p)
         const epOpts = options.filter(o => o.category_type === 'episode' || /episode\s*\d+/i.test(o.label || ''));
         const epMap = new Map<number, ParsedSeriesEpisode>();
 
         for (const ep of epOpts) {
-            const m = (ep.label || "").match(/episode\s*(\d+)/i);
-            const epNum = m ? parseInt(m[1], 10) : 1;
+            const m = (ep.label || "").match(/episode\s*(\d+)/i) || (ep.episode_num ? [null, String(ep.episode_num)] : null);
+            const epNum = m ? parseInt(m[1], 10) : (ep.episode_num || 1);
             if (!epMap.has(epNum)) {
                 epMap.set(epNum, {
                     episodeNum: epNum,
@@ -866,16 +974,24 @@ export function parseRawScrapedDetails(raw: any, targetUrl: string): ParsedMedia
             else if (/720p/i.test(ep.label || "")) res = "720p";
             else if (/480p/i.test(ep.label || "")) res = "480p";
 
-            const qKey = `episode_${epNum}_` + (ep.quality || "direct").toLowerCase().replace(/[^a-z0-9]/g, "_");
+            const existingQuals = epMap.get(epNum)!.qualities;
+            // Only add if this resolution is not already present or if this one is a better server
+            if (!existingQuals.some(q => q.resolution === res)) {
+                const qKey = `episode_${epNum}_` + res.toLowerCase().replace(/[^a-z0-9]/g, "_");
+                existingQuals.push({
+                    qualityKey: qKey,
+                    label: res,
+                    resolution: res,
+                    fileSize: ep.size || cleanFileSize(ep.label),
+                    serverCount: 1,
+                    linkUrl: ep.link_url || ""
+                });
+            }
+        }
 
-            epMap.get(epNum)!.qualities.push({
-                qualityKey: qKey,
-                label: ep.quality || ep.label,
-                resolution: res,
-                fileSize: ep.size || cleanFileSize(ep.label),
-                serverCount: 1,
-                linkUrl: ep.link_url || ""
-            });
+        // Sort episode qualities
+        for (const [, epObj] of epMap) {
+            epObj.qualities.sort((a, b) => (qualOrder[b.resolution] || 0) - (qualOrder[a.resolution] || 0));
         }
 
         const sortedEpisodes = Array.from(epMap.values()).sort((a, b) => a.episodeNum - b.episodeNum);
@@ -887,31 +1003,42 @@ export function parseRawScrapedDetails(raw: any, targetUrl: string): ParsedMedia
             synopsis: raw.synopsis,
             category: raw.category,
             isSeries: true,
+            source: raw.source || raw.source_name || "",
             seriesBatches,
             seriesEpisodes: sortedEpisodes
         };
     } else {
-        // Movie formats
-        const movieFormats: ParsedMovieFormat[] = options.map((opt, idx) => {
+        // Movie formats (Deduplicate and sort 4K -> 1080p -> 720p -> 480p)
+        const seenMovieFormats = new Set<string>();
+        const movieFormats: ParsedMovieFormat[] = [];
+
+        options.forEach((opt, idx) => {
             let res = opt.quality || "1080p";
             if (/4k|2160p/i.test(opt.label || "")) res = "4K";
             else if (/1080p/i.test(opt.label || "")) res = "1080p";
             else if (/720p/i.test(opt.label || "")) res = "720p";
             else if (/480p/i.test(opt.label || "")) res = "480p";
 
+            const sz = opt.size || cleanFileSize(opt.label);
+            const mKey = `${res}_${sz}_${opt.label}`.toLowerCase();
+            if (seenMovieFormats.has(mKey)) return;
+            seenMovieFormats.add(mKey);
+
             const qKey = "format_" + (opt.label || `opt_${idx}`).toLowerCase().replace(/[^a-z0-9]/g, "_");
             const isRec = /720p.*hevc|hevc.*720p/i.test(opt.label) || (!options.some(x => /hevc/i.test(x.label)) && /720p/i.test(opt.label));
 
-            return {
+            movieFormats.push({
                 qualityKey: qKey,
                 label: opt.label,
                 resolution: res,
-                fileSize: opt.size || cleanFileSize(opt.label),
+                fileSize: sz,
                 isRecommended: isRec,
                 serverCount: 1,
                 linkUrl: opt.link_url || ""
-            };
+            });
         });
+
+        movieFormats.sort((a, b) => (qualOrder[b.resolution] || 0) - (qualOrder[a.resolution] || 0));
 
         return {
             name: title,
@@ -920,6 +1047,7 @@ export function parseRawScrapedDetails(raw: any, targetUrl: string): ParsedMedia
             synopsis: raw.synopsis,
             category: raw.category,
             isSeries: false,
+            source: raw.source || raw.source_name || "",
             movieFormats
         };
     }

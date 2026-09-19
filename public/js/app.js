@@ -416,7 +416,10 @@ function switchView(viewName, updateHistory = true) {
         loadJellyfinStats();
         loadJellyfinLibrary();
     }
-    if (viewName === 'admin') loadAdminUsers();
+    if (viewName === 'admin') {
+        loadAdminUsers();
+        loadAdminSources();
+    }
 
     document.getElementById('appSidebar')?.classList.remove('open');
 }
@@ -2785,6 +2788,392 @@ async function deleteAdminUser(id) {
     }
 }
 
+// ─── ADMIN SCRAPER SOURCES MANAGEMENT ───
+let adminSourcesList = [];
+
+function switchAdminSubTab(tab) {
+    const isUsers = tab === 'users';
+    document.getElementById('adminTabUsers')?.classList.toggle('active', isUsers);
+    document.getElementById('adminTabSources')?.classList.toggle('active', !isUsers);
+    const secUsers = document.getElementById('adminSectionUsers');
+    const secSources = document.getElementById('adminSectionSources');
+    if (secUsers) secUsers.style.display = isUsers ? 'block' : 'none';
+    if (secSources) secSources.style.display = isUsers ? 'none' : 'block';
+
+    if (!isUsers) {
+        loadAdminSources();
+    } else {
+        loadAdminUsers();
+    }
+}
+
+async function loadAdminSources() {
+    const tableBody = document.getElementById('adminSourcesTableBody');
+    const countBadge = document.getElementById('adminSourcesCountBadge');
+    if (!tableBody) return;
+
+    try {
+        const res = await fetch('/api/admin/sources', { credentials: 'include' });
+        const data = await res.json();
+        adminSourcesList = data.sources || [];
+        if (countBadge) countBadge.textContent = adminSourcesList.length;
+
+        if (adminSourcesList.length === 0) {
+            tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center; color: var(--text-muted); padding: 24px;">No scraper sources configured</td></tr>`;
+            return;
+        }
+
+        tableBody.innerHTML = adminSourcesList.map(s => {
+            const isEnabled = Boolean(s.enabled);
+            const typeLabel = s.type === 'hdhub4u' ? 'HDHub4u Mirror' : (s.type === 'modlist' ? 'Modlist Directory' : (s.type === 'vegamovies' ? 'Vegamovies Mirror' : 'Custom'));
+            const typeChipClass = s.type === 'hdhub4u' ? 'quality' : (s.type === 'modlist' ? 'best' : (s.type === 'vegamovies' ? 'source' : ''));
+
+            return `
+            <tr>
+                <td style="width: 50px; text-align: center;">
+                    <label class="toggle-switch">
+                        <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="handleSourceToggleChange(this, ${s.id})">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </td>
+                <td style="font-weight: 600; color: #fff; font-size: 13px; width: 60px;">#${s.priority || 1}</td>
+                <td style="font-weight: 600; color: #fff; white-space: nowrap;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span>${escapeHtml(s.name)}</span>
+                        <span class="chip source-disabled-badge" style="display: ${isEnabled ? 'none' : 'inline-block'}; font-size: 9px; padding: 0 4px; background: rgba(239,68,68,0.15); color: #ef4444;">Disabled</span>
+                    </div>
+                </td>
+                <td style="white-space: nowrap;"><span class="chip ${typeChipClass}" style="font-weight: 600; font-size: 11px; white-space: nowrap;">${typeLabel}</span></td>
+                <td style="white-space: nowrap;">
+                    <a href="${escapeHtml(s.baseUrl)}" target="_blank" rel="noopener noreferrer" style="color: var(--accent-cyan); text-decoration: none; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;">
+                        ${escapeHtml(s.baseUrl)}
+                        <svg class="tabler-icon" viewBox="0 0 24 24" style="width: 11px; height: 11px;"><path d="M12 6h-6a2 2 0 0 0 -2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-6"/><path d="M11 13l9 -9"/><path d="M15 4h5v5"/></svg>
+                    </a>
+                </td>
+                <td style="white-space: nowrap;">
+                    <span id="sourcePingBadge_${s.id}" class="chip" style="font-size: 11px; background: rgba(255,255,255,0.06); color: var(--text-muted); white-space: nowrap;">
+                        Ready to test
+                    </span>
+                </td>
+                <td style="text-align: right; white-space: nowrap;">
+                    <div style="display: inline-flex; gap: 6px; align-items: center; justify-content: flex-end;">
+                        <button class="btn-header" style="padding: 3px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px;" onclick="testAdminSource('${escapeHtml(s.baseUrl).replace(/'/g, "\\'")}', '${s.type}', this, 'sourcePingBadge_${s.id}')">
+                            <svg class="tabler-icon" viewBox="0 0 24 24" style="width: 12px; height: 12px;"><path d="M12 18l.01 0"/><path d="M9.172 15.172a4 4 0 0 1 5.656 0"/><path d="M6.343 12.343a8 8 0 0 1 11.314 0"/><path d="M3.515 9.515c4.686 -4.687 12.284 -4.687 17 0"/></svg>
+                            Ping
+                        </button>
+                        <button class="btn-header" style="padding: 3px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px;" onclick="openEditSourceModal(${s.id})">
+                            <svg class="tabler-icon" viewBox="0 0 24 24" style="width: 12px; height: 12px;"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4"/><path d="M13.5 6.5l4 4"/></svg>
+                            Edit
+                        </button>
+                        <button class="btn-header" style="color: var(--accent-rose); padding: 3px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px;" onclick="deleteAdminSource(${s.id})">
+                            <svg class="tabler-icon" viewBox="0 0 24 24" style="width: 12px; height: 12px;"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>
+                            Delete
+                        </button>
+                    </div>
+                </td>
+            </tr>
+            `;
+        }).join('');
+    } catch (err) {
+        tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center; color: var(--accent-rose); padding: 20px;">Failed to load sources: ${escapeHtml(err.message)}</td></tr>`;
+    }
+}
+
+async function handleSourceToggleChange(inputEl, id) {
+    const isChecked = inputEl.checked;
+    try {
+        const res = await fetch(`/api/admin/sources/toggle/${id}`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast(`Source ${data.source?.enabled ? 'enabled' : 'disabled'}`, 'info');
+            const item = adminSourcesList.find(s => s.id === id);
+            if (item) item.enabled = data.source?.enabled;
+            const row = inputEl.closest('tr');
+            if (row) {
+                const disabledBadge = row.querySelector('.source-disabled-badge');
+                if (disabledBadge) {
+                    disabledBadge.style.display = data.source?.enabled ? 'none' : 'inline-block';
+                }
+            }
+        } else {
+            inputEl.checked = !isChecked;
+            showToast(data.error || 'Failed to toggle source', 'error');
+        }
+    } catch (err) {
+        inputEl.checked = !isChecked;
+        showToast(err.message, 'error');
+    }
+}
+
+async function testAdminSource(url, type, btnEl, badgeId) {
+    const badge = document.getElementById(badgeId);
+    if (badge) {
+        badge.innerHTML = `<span class="spinner" style="width:10px;height:10px;display:inline-block;margin-right:4px;"></span> Testing...`;
+        badge.style.background = `rgba(255,255,255,0.08)`;
+        badge.style.color = `var(--text-muted)`;
+    }
+    if (btnEl) btnEl.disabled = true;
+
+    try {
+        const res = await fetch('/api/admin/sources/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ url, type })
+        });
+        const data = await res.json();
+        if (badge) {
+            const isOnline = Boolean(data.ok === true || data.success === true || data.status === 'online' || data.status === 'ok' || (data.statusCode >= 200 && data.statusCode < 400));
+            const latency = data.latencyMs ?? data.latency_ms ?? 0;
+            if (isOnline) {
+                const color = latency < 800 ? '#10b981' : (latency < 2500 ? '#f59e0b' : '#38bdf8');
+                badge.style.background = `rgba(16, 185, 129, 0.15)`;
+                badge.style.color = color;
+                badge.style.border = `1px solid rgba(16, 185, 129, 0.3)`;
+                badge.innerHTML = `✓ Online ${latency}ms`;
+            } else {
+                badge.style.background = `rgba(239, 68, 68, 0.15)`;
+                badge.style.color = '#ef4444';
+                badge.style.border = `1px solid rgba(239, 68, 68, 0.3)`;
+                badge.innerHTML = `✗ Offline (${escapeHtml(data.message || 'Error')})`;
+            }
+        }
+    } catch (err) {
+        if (badge) {
+            badge.style.background = `rgba(239, 68, 68, 0.15)`;
+            badge.style.color = '#ef4444';
+            badge.textContent = `✗ Failed (${err.message})`;
+        }
+    } finally {
+        if (btnEl) btnEl.disabled = false;
+    }
+}
+
+async function testNewAdminSource() {
+    const url = document.getElementById('adminNewSourceUrl')?.value?.trim();
+    const type = document.getElementById('adminNewSourceType')?.value;
+    const resultBox = document.getElementById('newSourceTestResult');
+    const btn = document.getElementById('btnTestNewSource');
+    if (!url) {
+        showToast('Please enter a Base URL to test', 'error');
+        return;
+    }
+
+    if (resultBox) {
+        resultBox.style.display = 'block';
+        resultBox.style.background = 'rgba(56, 139, 253, 0.1)';
+        resultBox.style.color = '#58a6ff';
+        resultBox.innerHTML = '<div class="spinner" style="width:12px;height:12px;display:inline-block;margin-right:6px;"></div> Testing connection to mirror...';
+    }
+    if (btn) btn.disabled = true;
+
+    try {
+        const res = await fetch('/api/admin/sources/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ url, type })
+        });
+        const data = await res.json();
+        if (resultBox) {
+            const isOnline = Boolean(data.ok === true || data.success === true || data.status === 'online' || data.status === 'ok' || (data.statusCode >= 200 && data.statusCode < 400));
+            const latency = data.latencyMs ?? data.latency_ms ?? 0;
+            if (isOnline) {
+                resultBox.style.background = 'rgba(16, 185, 129, 0.15)';
+                resultBox.style.color = '#10b981';
+                resultBox.innerHTML = `✓ Connection Successful! Latency: ${latency}ms ${data.finalUrl ? `• Active Mirror: ${escapeHtml(data.finalUrl)}` : ''}`;
+            } else {
+                resultBox.style.background = 'rgba(239, 68, 68, 0.15)';
+                resultBox.style.color = '#ef4444';
+                resultBox.innerHTML = `✗ Test Failed: ${escapeHtml(data.message || 'Could not connect to target source mirror')}`;
+            }
+        }
+    } catch (err) {
+        if (resultBox) {
+            resultBox.style.background = 'rgba(239, 68, 68, 0.15)';
+            resultBox.style.color = '#ef4444';
+            resultBox.textContent = `✗ Error: ${err.message}`;
+        }
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function addAdminSource() {
+    const name = document.getElementById('adminNewSourceName')?.value?.trim();
+    const type = document.getElementById('adminNewSourceType')?.value;
+    const baseUrl = document.getElementById('adminNewSourceUrl')?.value?.trim();
+    const priority = parseInt(document.getElementById('adminNewSourcePriority')?.value || '1', 10);
+
+    if (!name || !baseUrl) {
+        showToast('Source name and base URL are required', 'error');
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/admin/sources', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ name, type, baseUrl, priority, enabled: true })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Scraper source added successfully', 'success');
+            document.getElementById('adminNewSourceName').value = '';
+            document.getElementById('adminNewSourceUrl').value = '';
+            const resultBox = document.getElementById('newSourceTestResult');
+            if (resultBox) resultBox.style.display = 'none';
+            loadAdminSources();
+        } else {
+            showToast(data.error || 'Failed to add scraper source', 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function toggleAdminSource(id) {
+    try {
+        const res = await fetch(`/api/admin/sources/toggle/${id}`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast(`Source ${data.source?.enabled ? 'enabled' : 'disabled'}`, 'info');
+            loadAdminSources();
+        } else {
+            showToast(data.error || 'Failed to toggle source', 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function deleteAdminSource(id) {
+    const confirmed = await showConfirmModal({
+        title: 'Delete Scraper Source',
+        message: 'Are you sure you want to delete this scraper source from the pipeline?',
+        confirmText: 'Delete Source',
+        type: 'danger'
+    });
+    if (!confirmed) return;
+
+    try {
+        const res = await fetch(`/api/admin/sources/${id}`, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Scraper source deleted', 'success');
+            loadAdminSources();
+        } else {
+            showToast(data.error || 'Failed to delete source', 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+function openEditSourceModal(sourceId) {
+    const source = adminSourcesList.find(s => String(s.id) === String(sourceId));
+    if (!source) {
+        showToast('Source not found', 'error');
+        return;
+    }
+
+    const existing = document.getElementById('editSourceModalBackdrop');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'editSourceModalBackdrop';
+    backdrop.className = 'modal-backdrop';
+    backdrop.innerHTML = `
+        <div class="modal-card" style="max-width: 480px;" role="dialog" aria-modal="true">
+            <div class="modal-header">
+                <div class="modal-header-icon" style="background: rgba(56, 139, 253, 0.15); color: #58a6ff;">
+                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M9 4v16"/><path d="M15 4v16"/><path d="M4 9h16"/><path d="M4 15h16"/></svg>
+                </div>
+                <div>
+                    <h3 class="modal-title" style="font-size: 16px;">Edit Scraper Source</h3>
+                    <p class="modal-subtitle" style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">Configure mirror and scraping parameters</p>
+                </div>
+            </div>
+            <form id="dynamicEditSourceForm" onsubmit="saveEditSource(event, ${source.id})">
+                <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 16px 0;">
+                    <div class="form-group">
+                        <label class="form-label" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;">Source Name</label>
+                        <input type="text" id="editSourceNameInput" class="form-input" required value="${escapeHtml(source.name || '')}" placeholder="Source Name">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;">Source Type</label>
+                        <select id="editSourceTypeInput" class="form-input" style="background: var(--bg-input);">
+                            <option value="hdhub4u" ${source.type === 'hdhub4u' ? 'selected' : ''}>HDHub4u Mirror</option>
+                            <option value="modlist" ${source.type === 'modlist' ? 'selected' : ''}>Modlist Directory (UHD/MoviesMod)</option>
+                            <option value="vegamovies" ${source.type === 'vegamovies' ? 'selected' : ''}>Vegamovies Mirror</option>
+                            <option value="custom" ${source.type === 'custom' ? 'selected' : ''}>Custom Site</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;">Base URL</label>
+                        <input type="url" id="editSourceUrlInput" class="form-input" required value="${escapeHtml(source.baseUrl || '')}" placeholder="https://domain.com">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;">Priority</label>
+                        <input type="number" id="editSourcePriorityInput" class="form-input" required value="${source.priority || 1}" min="1" max="100">
+                    </div>
+                </div>
+                <div class="modal-actions" style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px;">
+                    <button type="button" class="btn-cancel" onclick="document.getElementById('editSourceModalBackdrop')?.remove()">Cancel</button>
+                    <button type="submit" class="btn-primary-action">Save Source</button>
+                </div>
+            </form>
+        </div>
+    `;
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(() => {
+        backdrop.classList.add('active');
+        document.getElementById('editSourceNameInput')?.focus();
+    });
+}
+
+async function saveEditSource(event, sourceId) {
+    if (event && event.preventDefault) event.preventDefault();
+    const name = document.getElementById('editSourceNameInput')?.value?.trim();
+    const type = document.getElementById('editSourceTypeInput')?.value;
+    const baseUrl = document.getElementById('editSourceUrlInput')?.value?.trim();
+    const priority = parseInt(document.getElementById('editSourcePriorityInput')?.value || '1', 10);
+
+    if (!name || !baseUrl) {
+        showToast('Source name and base URL are required', 'error');
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/admin/sources/${sourceId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ name, type, baseUrl, priority })
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Scraper source updated', 'success');
+            document.getElementById('editSourceModalBackdrop')?.remove();
+            loadAdminSources();
+        } else {
+            showToast(data.error || 'Failed to update source', 'error');
+        }
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
 // ==========================================================================
 // NEW OTT RELEASES MODULE (MOVIES & SERIES ACROSS BOLLYWOOD, TOLLYWOOD, SOUTH, HOLLYWOOD)
 // ==========================================================================
@@ -3803,7 +4192,10 @@ async function searchScraperForPicker(searchTitle, year, type) {
             }
             const safeThumb = escapeHtml(thumb).replace(/'/g, "\\'");
             const safeFallback = escapeHtml(fallbackThumb).replace(/'/g, "\\'");
-            const cats = Array.isArray(rel.category) ? rel.category : [];
+            const srcName = rel.source || (rel.sourceType === 'vegamovies' ? 'Vegamovies' : (rel.sourceType === 'modlist' ? 'Modlist' : 'HDHub4u'));
+            const srcClass = (rel.sourceType === 'vegamovies') ? 'source' : ((rel.sourceType === 'modlist' || (rel.source && (rel.source.includes('UHD') || rel.source.includes('MoviesMod')))) ? 'best' : 'quality');
+            const qTags = Array.isArray(rel.qualityTags) ? rel.qualityTags : [];
+            const cats = Array.isArray(rel.categories) ? rel.categories : (Array.isArray(rel.category) ? rel.category : (typeof rel.category === 'string' && rel.category ? [rel.category] : []));
 
             return `
                 <div class="picker-release-card ${rel.isBest ? 'best-match' : ''}">
@@ -3815,16 +4207,21 @@ async function searchScraperForPicker(searchTitle, year, type) {
                              referrerpolicy="no-referrer"
                              loading="lazy" 
                              onerror="this.onerror=null; this.src='${safeFallback}'; if(this.previousElementSibling) this.previousElementSibling.style.backgroundImage='url(\\'${safeFallback}\\')';">
-                        ${rel.isBest ? `<span class="badge-best-match">Top Match</span>` : ''}
+                        <div style="position: absolute; top: 8px; left: 8px; display: flex; flex-direction: column; gap: 4px; z-index: 2;">
+                            <span class="chip ${srcClass}" style="font-size: 9.5px; font-weight: 700; text-transform: uppercase; padding: 2px 7px; backdrop-filter: blur(8px); box-shadow: 0 2px 6px rgba(0,0,0,0.5);">${escapeHtml(srcName)}</span>
+                            ${rel.isBest ? `<span class="badge-best-match" style="position: static;">Top Match</span>` : ''}
+                        </div>
                     </div>
                     <div class="picker-release-body">
                         <div class="picker-release-title" title="${escapeHtml(rel.name)}">${escapeHtml(rel.name)}</div>
                         <div class="picker-release-meta">
+                            <span class="chip ${srcClass}" style="font-size: 9px; font-weight: 700; padding: 1px 6px;">${escapeHtml(srcName)}</span>
                             ${rel.post_date ? `<span class="picker-meta-item"><svg class="tabler-icon" style="width:12px;height:12px;" viewBox="0 0 24 24"><path d="M4 5m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/><path d="M16 3l0 4"/><path d="M8 3l0 4"/><path d="M4 11l16 0"/></svg> ${escapeHtml(rel.post_date)}</span>` : ''}
                             ${rel.stars && rel.stars.length ? `<span class="picker-meta-item"><svg class="tabler-icon" style="width:12px;height:12px;color:#fbbf24;" viewBox="0 0 24 24"><path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873z"/></svg> ${escapeHtml(rel.stars.slice(0, 2).join(', '))}</span>` : ''}
                         </div>
-                        ${cats.length > 0 ? `
+                        ${(qTags.length > 0 || cats.length > 0) ? `
                             <div class="picker-release-tags">
+                                ${qTags.map(q => `<span class="picker-tag" style="background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.3); font-weight: 600;">${escapeHtml(q)}</span>`).join('')}
                                 ${cats.slice(0, 4).map(c => `<span class="picker-tag">${escapeHtml(c)}</span>`).join('')}
                             </div>
                         ` : ''}

@@ -4,13 +4,16 @@ import codecs
 import json
 import os
 import re
+import time
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 
-DEFAULT_BASE_DOMAIN = "https://new5.hdhub4u.cl"
+DEFAULT_BASE_DOMAIN = "https://hdhub4u.ms"
 LANDING_PAGE_URL = "https://hdhub4u.bi/"
+MODLIST_PORTAL_URL = "https://modlist.in"
+VEGAMOVIES_BASE_DOMAIN = "https://vegamoviess.foo"
 SEARCH_BACKEND_URL = "https://search.pingora.fyi/collections/post/documents/search"
 DEFAULT_IMPERSONATE = "chrome124"
 DEFAULT_TIMEOUT = 25
@@ -23,19 +26,26 @@ HOST_ENDPOINTS = [
     "https://cdn.hub4u.cloud/host/",
 ]
 
-# In-memory cache for discovered domain
+# In-memory caches
 _cached_active_domain: Optional[str] = None
+_cached_modlist_mirrors: Dict[str, str] = {}
 
 
 class CloudflareScraper:
     """
-    Multi-stage browserless scraping & direct download resolution engine:
-    1. Dynamic Domain Discovery: Auto-fetch working domain from https://hdhub4u.bi/
-    2. Search: Query Pingora/Typesense search engine and rewrite permalinks to working domain
-    3. Movie / TV Series Scraper: Extract storyline, posters, screenshots, batch season packs, and episode-wise links
-    4. Intermediate Bypass: Instant 0s bypass of mediator redirect sites (greenmountmotors, etc.)
-    5. Final Link Resolver: Extract 10Gbps High-Speed & Direct CDN (.mkv/.zip) download links from HubCloud / HBLinks
+    Multi-source AI-assisted scraping & direct download resolution engine:
+    1. Multi-Source Scraping:
+       - Source 1: HDHub4u (hdhub4u.bi -> dynamic active mirror)
+       - Source 2: Modlist.in Directory (UHDMovies, MoviesMod, MoviesLeech, AnimeFlix)
+       - Source 3: Vegamovies (vegamoviess.foo)
+       - Custom Admin Sources
+    2. Dynamic Domain Discovery & Mirror Routing
+    3. AI Metadata Normalization & Quality Categorization
+    4. 0s Intermediate Redirect Bypasser (HubCloud, HBLinks, ModPro, UnblockedGames, NexDrive, FastDL, V-Cloud)
+    5. Direct High-Speed Download Resolver (Cloudflare R2, Google CDN, Fast CDN, Pixeldrain)
     """
+
+    _ai_metadata_cache: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
     def _get_browser_headers(referer: Optional[str] = None) -> Dict[str, str]:
@@ -62,16 +72,13 @@ class CloudflareScraper:
 
     @classmethod
     async def get_active_domain(cls, impersonate: str = DEFAULT_IMPERSONATE, force_refresh: bool = False) -> str:
-        """
-        Step 1: Automatically discovers the current working HDHub4u domain from https://hdhub4u.bi/
-        """
+        """Dynamically discovers the current working HDHub4u domain."""
         global _cached_active_domain
         if _cached_active_domain and not force_refresh:
             return _cached_active_domain
 
         headers = cls._get_browser_headers()
         async with AsyncSession(impersonate=impersonate, verify=False) as session:
-            # 1. Try host discovery endpoints first
             for host_url in HOST_ENDPOINTS:
                 try:
                     res = await session.get(host_url, headers=headers, timeout=10)
@@ -86,7 +93,6 @@ class CloudflareScraper:
                 except Exception:
                     continue
 
-            # 2. Fallback: Parse landing page HTML at https://hdhub4u.bi/
             try:
                 res = await session.get(LANDING_PAGE_URL, headers=headers, timeout=15)
                 soup = BeautifulSoup(res.text, "html.parser")
@@ -104,10 +110,45 @@ class CloudflareScraper:
         return _cached_active_domain
 
     @classmethod
+    async def get_modlist_mirrors(cls, impersonate: str = DEFAULT_IMPERSONATE, force_refresh: bool = False) -> Dict[str, str]:
+        """Discovers active working domains from https://modlist.in."""
+        global _cached_modlist_mirrors
+        if _cached_modlist_mirrors and not force_refresh:
+            return _cached_modlist_mirrors
+
+        defaults = {
+            "uhdmovies": "https://uhdmovies.my",
+            "moviesmod": "https://moviesmod.ai.in",
+            "moviesleech": "https://moviesleech.club",
+            "animeflix": "https://animeflix.dad",
+        }
+        mirrors = dict(defaults)
+        headers = cls._get_browser_headers()
+
+        async with AsyncSession(impersonate=impersonate, verify=False) as session:
+            for portal_key, portal_type in [
+                ("uhdmovies", "uhdmovies"),
+                ("moviesmod", "hollywood"),
+                ("moviesleech", "bollywood"),
+                ("animeflix", "animeflix"),
+            ]:
+                try:
+                    url = f"{MODLIST_PORTAL_URL}/?type={portal_type}"
+                    res = await session.get(url, headers=headers, timeout=10)
+                    if res.status_code == 200:
+                        m_url = re.search(r'url=([^"\'\s>]+)', res.text, re.I)
+                        if m_url:
+                            target = m_url.group(1).rstrip('/')
+                            parsed = urllib.parse.urlsplit(target)
+                            mirrors[portal_key] = f"{parsed.scheme}://{parsed.netloc}"
+                except Exception:
+                    pass
+
+        _cached_modlist_mirrors = mirrors
+        return mirrors
+
+    @classmethod
     def replace_domain(cls, url: str, base_domain: str) -> str:
-        """
-        Replaces outdated domain (e.g. new1.hdhub4u.af) with the active working domain.
-        """
         if not url:
             return ""
         parsed_base = urllib.parse.urlsplit(base_domain)
@@ -121,28 +162,18 @@ class CloudflareScraper:
 
     @classmethod
     def extract_episode_number(cls, text: str) -> Optional[int]:
-        """
-        Extracts a clean episode number (1-300) from text while strictly excluding
-        common video resolutions (480, 720, 1080, 2160) and resolutions followed by 'p'.
-        """
         if not text:
             return None
         invalid_nums = {480, 720, 1080, 2160}
-        
-        # 1. Standard pattern: S01E02, S1.E2, S01 - E02
         m1 = re.search(r"\b[sS]\d{1,2}\s*[ ._-]?\s*[eE]([0-9]{1,3})\b", text)
         if m1:
             val = int(m1.group(1))
             if val not in invalid_nums and 0 < val <= 300:
                 return val
-
-        # 2. Standalone E01, E02, E1, E12 (e.g. "E01 - Drive", "Kota.Factory.E01")
         for m in re.finditer(r"\b[eE]([0-9]{1,3})\b", text):
             val = int(m.group(1))
             if val not in invalid_nums and 0 < val <= 300:
                 return val
-
-        # 3. Explicit episode notation: EP 01, Episode 1, Ep.02
         for m in re.finditer(r"\b(?:episode|ep)\s*[-._]?\s*([0-9]{1,3})\b", text, re.I):
             val = int(m.group(1))
             end_pos = m.end()
@@ -150,545 +181,643 @@ class CloudflareScraper:
                 continue
             if val not in invalid_nums and 0 < val <= 300:
                 return val
-
         return None
 
+    # ─────────────────────────────────────────────────────────────
+    # SOURCE 1: HDHub4u Search & Details
+    # ─────────────────────────────────────────────────────────────
+
+    # ─────────────────────────────────────────────────────────────
+    # SOURCE 1: HDHub4u Search & Details
+    # ─────────────────────────────────────────────────────────────
+
     @classmethod
-    async def search_movies(
-        cls, 
-        query: str, 
-        page: int = 1, 
+    async def search_hdhub4u(
+        cls,
+        query: str,
+        page: int = 1,
         fetch_all: bool = True,
         impersonate: str = DEFAULT_IMPERSONATE
-    ) -> Dict[str, Any]:
-        """
-        Step 2: Searches for movies/shows using the automatically discovered active working domain.
-        """
-        active_domain = await cls.get_active_domain(impersonate=impersonate)
-        target_search_url = f"{active_domain}/search.html?q={urllib.parse.quote(query)}&page={page}"
+    ) -> List[Dict[str, Any]]:
+        clean_q = (query or "").strip()
+        if not clean_q:
+            return []
 
-        api_headers = {
-            "Accept": "application/json, text/plain, */*",
+        base_domain = await cls.get_active_domain(impersonate=impersonate)
+        headers = {
+            "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.9",
-            "Referer": target_search_url,
-            "Origin": active_domain,
-            "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "cross-site",
+            "Origin": base_domain,
+            "Referer": f"{base_domain}/",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         }
 
-        items: List[Dict[str, Any]] = []
-        total_found = 0
-        total_pages = 1
-        per_page = 15
-
+        all_hits = []
         async with AsyncSession(impersonate=impersonate, verify=False) as session:
-            first_params = {
-                "q": query,
-                "query_by": "post_title,category,stars,director,imdb_id",
-                "query_by_weights": "4,2,2,2,4",
-                "sort_by": "sort_by_date:desc",
-                "limit": per_page,
-                "highlight_fields": "none",
-                "use_cache": "true",
-                "page": page if not fetch_all else 1,
-            }
-
+            # 1. Try active Pingora Typesense cluster
             try:
-                api_res = await session.get(
-                    SEARCH_BACKEND_URL, 
-                    params=first_params, 
-                    headers=api_headers, 
-                    timeout=DEFAULT_TIMEOUT
+                pingora_url = (
+                    "https://search.pingora.fyi/collections/post/documents/search"
+                    f"?q={urllib.parse.quote(clean_q)}"
+                    "&query_by=post_title,category,stars,director,imdb_id"
+                    "&query_by_weights=4,2,2,2,4&sort_by=sort_by_date:desc&limit=15"
+                    f"&highlight_fields=none&use_cache=true&page={page}"
                 )
-                if api_res.status_code == 200:
-                    data = api_res.json()
-                    total_found = data.get("found", 0)
-                    total_pages = max(1, (total_found + per_page - 1) // per_page)
-                    
-                    for hit in data.get("hits", []):
-                        doc = hit.get("document", {})
-                        raw_permalink = doc.get("permalink", "")
-                        updated_permalink = cls.replace_domain(raw_permalink, active_domain)
-                        
-                        items.append({
-                            "id": doc.get("id"),
-                            "title": doc.get("post_title"),
-                            "permalink": updated_permalink,
-                            "original_permalink": raw_permalink,
-                            "thumbnail": doc.get("post_thumbnail") or "https://upload.wikimedia.org/wikipedia/commons/6/65/No-Image-Placeholder.svg",
-                            "category": doc.get("category", []),
-                            "director": doc.get("director", []),
-                            "stars": doc.get("stars", []),
-                            "imdb_id": doc.get("imdb_id"),
-                            "post_date": doc.get("post_date"),
-                        })
+                res = await session.get(pingora_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                if res.status_code == 200:
+                    data = res.json()
+                    all_hits.extend(data.get("hits", []))
+            except Exception as e:
+                print(f"[HDHUB4U PINGORA SEARCH WARNING]: {e}")
 
-                    # Fetch remaining pages if multi-page requested
-                    if fetch_all and total_pages > 1:
-                        for p in range(2, min(total_pages + 1, 10)):
-                            next_params = dict(first_params)
-                            next_params["page"] = p
-                            next_res = await session.get(
-                                SEARCH_BACKEND_URL,
-                                params=next_params,
-                                headers=api_headers,
-                                timeout=DEFAULT_TIMEOUT
-                            )
-                            if next_res.status_code == 200:
-                                next_data = next_res.json()
-                                for hit in next_data.get("hits", []):
-                                    doc = hit.get("document", {})
-                                    raw_permalink = doc.get("permalink", "")
-                                    updated_permalink = cls.replace_domain(raw_permalink, active_domain)
-                                    items.append({
-                                        "id": doc.get("id"),
-                                        "title": doc.get("post_title"),
-                                        "permalink": updated_permalink,
-                                        "original_permalink": raw_permalink,
-                                        "thumbnail": doc.get("post_thumbnail") or "https://upload.wikimedia.org/wikipedia/commons/6/65/No-Image-Placeholder.svg",
-                                        "category": doc.get("category", []),
-                                        "director": doc.get("director", []),
-                                        "stars": doc.get("stars", []),
-                                        "imdb_id": doc.get("imdb_id"),
-                                        "post_date": doc.get("post_date"),
-                                    })
-            except Exception:
-                pass
+            # 2. Fallback to secondary workers cluster if needed
+            if not all_hits:
+                try:
+                    search_url = (
+                        f"{SEARCH_BACKEND_URL}?q={urllib.parse.quote(clean_q)}"
+                        f"&query_by=post_title,category,director,stars"
+                        f"&page={page}&per_page=20&sort_by=post_date:desc"
+                    )
+                    res = await session.get(search_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                    if res.status_code == 200:
+                        all_hits.extend(res.json().get("hits", []))
+                except Exception as e:
+                    print(f"[HDHUB4U WORKERS SEARCH WARNING]: {e}")
 
-        return {
-            "query": query,
-            "active_domain": active_domain,
-            "page": page,
-            "total_found": total_found,
-            "total_pages": total_pages,
-            "total_pages_fetched": total_pages if fetch_all else 1,
-            "items": items,
-        }
+        items = []
+        seen_urls = set()
+        for h in all_hits:
+            doc = h.get("document", {})
+            title = doc.get("post_title") or doc.get("name") or ""
+            raw_url = doc.get("permalink") or doc.get("url") or ""
+            if not raw_url and doc.get("post_name"):
+                raw_url = f"{base_domain.rstrip('/')}/{doc['post_name']}/"
+            url = cls.replace_domain(raw_url, base_domain)
 
-    search_hdhub4u = search_movies
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+
+            # Quality tag extraction
+            q_tags = []
+            for q in ["4K", "2160p", "1080p", "720p", "480p", "HEVC", "Dual Audio", "Hindi", "English"]:
+                if re.search(r'\b' + re.escape(q) + r'\b', title, re.I):
+                    q_tags.append(q)
+
+            thumb = doc.get("post_thumbnail") or doc.get("thumbnail") or ""
+
+            items.append({
+                "title": title,
+                "name": title,
+                "url": url,
+                "permalink": url,
+                "thumbnail": thumb,
+                "source": "HDHub4u",
+                "source_type": "hdhub4u",
+                "category": doc.get("category", []),
+                "categories": doc.get("category", []),
+                "quality_tags": q_tags,
+                "post_date": doc.get("post_date", ""),
+                "stars": doc.get("stars", []),
+            })
+
+        return items
+
+    # ─────────────────────────────────────────────────────────────
+    # SOURCE 2: Modlist.in (UHDMovies, MoviesMod, MoviesLeech)
+    # ─────────────────────────────────────────────────────────────
 
     @classmethod
-    async def bypass_intermediate_link(cls, url: str, impersonate: str = DEFAULT_IMPERSONATE) -> str:
-        """
-        Instantly decodes mediator / intermediate redirect pages (such as greenmountmotors.com)
-        bypassing countdown timers and ads in 0 seconds.
-        """
-        if not ("greenmount" in url or "id=" in url or "mediator" in url):
-            return url
+    async def search_modlist(
+        cls,
+        query: str,
+        impersonate: str = DEFAULT_IMPERSONATE
+    ) -> List[Dict[str, Any]]:
+        clean_q = (query or "").strip()
+        if not clean_q:
+            return []
 
+        q_words = [w.lower() for w in re.split(r'\s+', clean_q) if len(w) > 2]
+        mirrors = await cls.get_modlist_mirrors(impersonate=impersonate)
         headers = cls._get_browser_headers()
+        items = []
+        seen_urls = set()
+
+        async def search_single_mirror(name: str, domain: str, stype: str):
+            res_items = []
+            async with AsyncSession(impersonate=impersonate, verify=False) as session:
+                try:
+                    s_url = f"{domain.rstrip('/')}/?s={urllib.parse.quote(clean_q)}"
+                    res = await session.get(s_url, headers=headers, timeout=15)
+                    if res.status_code != 200:
+                        return []
+                    soup = BeautifulSoup(res.text, "html.parser")
+                    cards = soup.select("article, .post-item, .latest-post, div.blog-post, .entry-title a")
+                    for c in cards:
+                        a = c if c.name == "a" else c.find("a")
+                        if not a:
+                            continue
+                        href = a.get("href", "")
+                        if not href or any(k in href.lower() for k in ["/category/", "/tag/", "/author/", "/page/", "#", "/genre/", "/how-to", "?type="]):
+                            continue
+                        if href.startswith("/"):
+                            href = f"{domain.rstrip('/')}{href}"
+                        title = a.get("title") or a.get_text(strip=True) or (c.get_text(strip=True) if c.name != "a" else "")
+                        if len(title) < 5 or any(k in title.lower() for k in ["home", "bollywood", "hollywood", "dual audio", "search", "moviesmod team", "latest released", "imdb top"]):
+                            continue
+
+                        # Verify relevant match
+                        if q_words and not any(w in title.lower() or w in href.lower() for w in q_words):
+                            continue
+
+                        img = c.find("img") if c.name != "a" else None
+                        thumb = (img.get("src") or img.get("data-src")) if img else ""
+
+                        q_tags = []
+                        for q in ["4K", "2160p", "1080p", "720p", "480p", "HEVC", "Dual Audio", "Hindi", "English"]:
+                            if re.search(r'\b' + re.escape(q) + r'\b', title, re.I):
+                                q_tags.append(q)
+
+                        if href not in seen_urls:
+                            seen_urls.add(href)
+                            res_items.append({
+                                "title": title,
+                                "name": title,
+                                "url": href,
+                                "permalink": href,
+                                "thumbnail": thumb,
+                                "source": name,
+                                "source_type": stype,
+                                "quality_tags": q_tags,
+                                "categories": [name],
+                            })
+                except Exception as e:
+                    print(f"[MODLIST {name} ERROR]: {e}")
+            return res_items
+
+        tasks = [
+            search_single_mirror("UHDMovies", mirrors.get("uhdmovies", "https://uhdmovies.my"), "modlist"),
+            search_single_mirror("MoviesMod", mirrors.get("moviesmod", "https://moviesmod.ai.in"), "modlist"),
+            search_single_mirror("MoviesLeech", mirrors.get("moviesleech", "https://moviesleech.club"), "modlist"),
+        ]
+        results_nested = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results_nested:
+            if isinstance(r, list):
+                items.extend(r)
+
+        return items
+
+    # ─────────────────────────────────────────────────────────────
+    # SOURCE 3: Vegamovies Search & Details
+    # ─────────────────────────────────────────────────────────────
+
+    @classmethod
+    async def search_vegamovies(
+        cls,
+        query: str,
+        domain: str = VEGAMOVIES_BASE_DOMAIN,
+        impersonate: str = DEFAULT_IMPERSONATE
+    ) -> List[Dict[str, Any]]:
+        clean_q = (query or "").strip()
+        if not clean_q:
+            return []
+
+        q_words = [w.lower() for w in re.split(r'\s+', clean_q) if len(w) > 2]
+        headers = cls._get_browser_headers()
+        items = []
+        seen_urls = set()
+
         async with AsyncSession(impersonate=impersonate, verify=False) as session:
             try:
-                res = await session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
-                m = re.search(r"s\('o',\s*'([^']+)'", res.text)
-                if m:
-                    token_o = m.group(1)
-                    step1 = base64.b64decode(token_o).decode("utf-8")
-                    step2 = base64.b64decode(step1).decode("utf-8")
-                    step3 = codecs.decode(step2, "rot_13")
-                    step4 = base64.b64decode(step3).decode("utf-8")
-                    parsed = json.loads(step4)
-                    if "o" in parsed:
-                        dest_url = base64.b64decode(parsed["o"]).decode("utf-8")
-                        return dest_url
-            except Exception:
-                pass
-        return url
+                search_url = f"{domain.rstrip('/')}/?s={urllib.parse.quote(clean_q)}"
+                res = await session.get(search_url, headers=headers, timeout=15)
+                if res.status_code == 200:
+                    soup = BeautifulSoup(res.text, "html.parser")
+                    for card in soup.select("article, .post-item, .blog-entry"):
+                        a = card.find("a")
+                        if not a:
+                            continue
+                        href = a.get("href", "")
+                        if not href or not (href.endswith(".html") or "/5" in href or "/4" in href):
+                            continue
+                        if any(k in href.lower() for k in ["/category/", "/tag/", "/author/", "/page/", "#", "/genre/", "/how-to", "/report"]):
+                            continue
+                        if href.startswith("/"):
+                            href = f"{domain.rstrip('/')}{href}"
+                        title = a.get("title") or a.get_text(strip=True) or card.get_text(strip=True)
+                        if len(title) < 5 or any(k in title.lower() for k in ["home", "bollywood", "hollywood", "dual audio"]):
+                            continue
+
+                        # Verify relevant match
+                        if q_words and not any(w in title.lower() or w in href.lower() for w in q_words):
+                            continue
+
+                        img = card.find("img")
+                        thumb = (img.get("src") or img.get("data-src")) if img else ""
+
+                        q_tags = []
+                        for q in ["4K", "2160p", "1080p", "720p", "480p", "HEVC", "Dual Audio", "Hindi", "English"]:
+                            if re.search(r'\b' + re.escape(q) + r'\b', title, re.I):
+                                q_tags.append(q)
+
+                        if href not in seen_urls:
+                            seen_urls.add(href)
+                            items.append({
+                                "title": title,
+                                "name": title,
+                                "url": href,
+                                "permalink": href,
+                                "thumbnail": thumb,
+                                "source": "Vegamovies",
+                                "source_type": "vegamovies",
+                                "quality_tags": q_tags,
+                                "categories": ["Vegamovies"],
+                            })
+            except Exception as e:
+                print(f"[VEGAMOVIES SEARCH ERROR]: {e}")
+
+        return items
+
+    # ─────────────────────────────────────────────────────────────
+    # UNIFIED MULTI-SOURCE SEARCH ORCHESTRATOR
+    # ─────────────────────────────────────────────────────────────
+
+    @classmethod
+    async def search_multi_sources(
+        cls,
+        query: str,
+        sources: Optional[List[Dict[str, Any]]] = None,
+        impersonate: str = DEFAULT_IMPERSONATE
+    ) -> List[Dict[str, Any]]:
+        clean_q = (query or "").strip()
+        if not clean_q:
+            return []
+
+        enabled_types = set()
+        if sources:
+            for s in sources:
+                if s.get("enabled", True):
+                    stype = s.get("type", "").lower()
+                    if stype in ["hdhub4u", "modlist", "vegamovies"]:
+                        enabled_types.add(stype)
+        else:
+            enabled_types = {"hdhub4u", "modlist", "vegamovies"}
+
+        tasks = []
+        if "hdhub4u" in enabled_types:
+            tasks.append(cls.search_hdhub4u(clean_q, impersonate=impersonate))
+        if "modlist" in enabled_types:
+            tasks.append(cls.search_modlist(clean_q, impersonate=impersonate))
+        if "vegamovies" in enabled_types:
+            tasks.append(cls.search_vegamovies(clean_q, impersonate=impersonate))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        aggregated = []
+        for r in results:
+            if isinstance(r, list):
+                aggregated.extend(r)
+
+        return aggregated
+
+    # ─────────────────────────────────────────────────────────────
+    # MULTI-SOURCE MOVIE & SERIES DETAILS EXTRACTOR
+    # ─────────────────────────────────────────────────────────────
+
+    GATEWAY_DOMAINS = [
+        "hubcloud", "hubdrive", "hblinks", "greenmount", "greenmotors", "mediator", "search-recover",
+        "leechpro", "modpro", "links.", "techmny", "fastdl", "fast-dl", "vcloud", "hubcdn", "hdstream4u",
+        "nexdrive", "cloud.unblockedgames", "unblockedgames", "gdirect", "gdflix", "filepress", "pixeldrain", "drive"
+    ]
+
+    @classmethod
+    def _is_valid_download_gateway_url(cls, href: str) -> bool:
+        if not href:
+            return False
+        h = href.lower()
+        if any(bad in h for bad in ["/how-to-", "telegram", "t.me", "#", "report", "/category/", "/tag/", "/author/", "/page/", "/genre/", "google.com", "whatsapp"]):
+            return False
+        return any(gw in h for gw in cls.GATEWAY_DOMAINS)
+
+    @classmethod
+    def _find_nearest_heading_context(cls, element) -> str:
+        parent = element.parent
+        if parent:
+            prev_sib = parent.find_previous_sibling(["p", "h1", "h2", "h3", "h4", "h5", "h6", "div"])
+            if prev_sib:
+                t = prev_sib.get_text(" ", strip=True)
+                if any(q in t.lower() for q in ["480p", "720p", "1080p", "4k", "2160p", "episode", "pack", "batch", "zip", "download "]):
+                    return t
+
+        parent_text = parent.get_text(" ", strip=True) if parent else ""
+        if any(q in parent_text.lower() for q in ["480p", "720p", "1080p", "4k", "2160p", "episode", "pack", "batch", "zip", "season"]):
+            return parent_text
+
+        for prev in element.find_all_previous(["h1", "h2", "h3", "h4", "h5", "h6", "p", "strong"]):
+            t = prev.get_text(" ", strip=True)
+            if len(t) < 120 and any(q in t.lower() for q in ["480p", "720p", "1080p", "4k", "2160p", "episode", "pack", "batch", "zip", "download "]):
+                return t
+
+        return parent_text
+
+    @classmethod
+    def _find_nearest_episode_num(cls, element) -> Optional[int]:
+        invalid = {480, 720, 1080, 2160}
+        direct_text = element.get_text(" ", strip=True) + " " + (element.parent.get_text(" ", strip=True) if element.parent else "")
+        m = re.search(r'\b(?:episode|ep)\s*[-._]?\s*([0-9]{1,3})\b', direct_text, re.I)
+        if m and int(m.group(1)) not in invalid:
+            return int(m.group(1))
+
+        # Check previous siblings or headings, stopping at batch boundaries
+        for prev in element.find_all_previous(["h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "strong"]):
+            t = prev.get_text(" ", strip=True)
+            if any(k in t.lower() for k in ["zip", "batch", "pack", "full season", "download links", "sdr web-dl"]):
+                return None
+            m = re.search(r'\b(?:episode|ep)\s*[-._]?\s*([0-9]{1,3})\b', t, re.I)
+            if m and int(m.group(1)) not in invalid:
+                return int(m.group(1))
+        return None
+
+    @classmethod
+    def _extract_clean_size(cls, text: str) -> str:
+        m = re.search(r'\[([0-9.]+\s*(?:MB|GB|mb|gb|GD|gd)(?:/[a-zA-Z]+)?)\]|\b([0-9.]+\s*(?:MB|GB|mb|gb))\b', text or '', re.I)
+        if m:
+            val = (m.group(1) or m.group(2)).strip()
+            return val.replace('GD', 'GB').replace('gd', 'GB')
+        return ''
+
+    @classmethod
+    def _extract_clean_res(cls, text: str, fallback: str = "720p") -> str:
+        t = (text or '').lower()
+        if '4k' in t or '2160p' in t or 'uhd' in t:
+            return '4K'
+        if '1080p' in t or 'fhd' in t:
+            return '1080p'
+        if '720p' in t or 'hd' in t:
+            return '720p'
+        if '480p' in t or 'sd' in t:
+            return '480p'
+        return fallback
+
+    @classmethod
+    async def _parse_page_download_options(
+        cls, 
+        html: str, 
+        url: str, 
+        source_name: str,
+        session: Optional[AsyncSession] = None,
+        impersonate: str = DEFAULT_IMPERSONATE
+    ) -> Dict[str, Any]:
+        soup = BeautifulSoup(html, "html.parser")
+        raw_title = soup.title.string.strip() if soup.title else ""
+        for prefix in ["HDHub4u", "Vegamovies", "MoviesMod", "UHDMovies", "MoviesLeech", "– Official", "- Vegamovies", "| MoviesMod", "– HDHub4u Official", "Download"]:
+            raw_title = raw_title.replace(prefix, "").strip()
+
+        is_series = bool(re.search(r'season|\bS\d+\b|all episode|episodes', raw_title, re.I))
+
+        options = []
+        seen_hrefs = set()
+        archive_tasks = []
+
+        headers = cls._get_browser_headers(referer=url)
+
+        for a in soup.find_all("a"):
+            href = a.get("href", "").strip()
+            if not cls._is_valid_download_gateway_url(href) or href in seen_hrefs:
+                continue
+
+            seen_hrefs.add(href)
+
+            parent = a.parent
+            parent_text = parent.get_text(" ", strip=True) if parent else ""
+            a_text = a.get_text(" ", strip=True)
+            heading_context = cls._find_nearest_heading_context(a)
+
+            full_context = f"{heading_context} | {parent_text} | {a_text}".strip()
+
+            res = cls._extract_clean_res(a_text, "") or cls._extract_clean_res(parent_text, "") or cls._extract_clean_res(heading_context, "720p")
+            size = cls._extract_clean_size(a_text) or cls._extract_clean_size(parent_text) or cls._extract_clean_size(heading_context)
+
+            # Batch check: Check button text first, then parent/heading only if button is not specifically G-Drive/Episode
+            is_gdrive_hub = bool("g-drive" in a_text.lower() or "drive" in a_text.lower() or "episode" in a_text.lower())
+            is_batch_btn = bool("batch" in a_text.lower() or "zip" in a_text.lower() or "pack" in a_text.lower() or "complete" in a_text.lower() or "full season" in a_text.lower())
+            
+            if is_batch_btn:
+                is_batch = True
+            elif is_gdrive_hub:
+                is_batch = False
+            else:
+                is_batch = bool(
+                    any(k in parent_text.lower() for k in ["pack", "complete", "full season", "sdr web-dl"]) or
+                    any(k in heading_context.lower() for k in ["pack", "complete", "full season", "sdr web-dl", "download links"]) or
+                    ("hevc [" in parent_text.lower() and not re.search(r'\bepisode\b', parent_text, re.I))
+                )
+
+            # Deep Sub-Archive Page Expansion (LeechPro / ModPro / Archive Hubs)
+            if ("leechpro.blog/archives/" in href or "links.modpro.in/archives/" in href) and is_series and not is_batch:
+                archive_tasks.append((href, res, size, full_context))
+                continue
+
+            ep_num = None if is_batch else cls._find_nearest_episode_num(a)
+
+            if is_series and ep_num:
+                opt_label = f"Episode {ep_num:02d} [{res}]" + (f" [{size}]" if size else "")
+                cat_type = "episode"
+                ep_val = ep_num
+                is_batch_val = False
+            elif is_series and (is_batch or not ep_num):
+                codec = "[HEVC]" if "hevc" in full_context.lower() or "x265" in full_context.lower() else "[x264]"
+                opt_label = f"{res} - Full Season Batch {codec}" + (f" [{size}]" if size else "")
+                cat_type = "batch_pack"
+                ep_val = None
+                is_batch_val = True
+            else:
+                codec = "[HEVC]" if "hevc" in full_context.lower() or "x265" in full_context.lower() else ""
+                opt_label = f"{res} {codec}" + (f" [{size}]" if size else "").strip()
+                cat_type = "movie"
+                ep_val = None
+                is_batch_val = False
+
+            options.append({
+                "label": opt_label,
+                "quality": res,
+                "size": size,
+                "is_batch": is_batch_val,
+                "episode_num": ep_val,
+                "category_type": cat_type,
+                "link_url": href,
+                "server_name": "Direct Fast CDN",
+                "server_type": "💾 Fast Server"
+            })
+
+        # Process any sub-archive tasks concurrently
+        if archive_tasks and session:
+            async def fetch_archive(arch_url: str, arch_res: str, arch_sz: str, arch_ctx: str):
+                try:
+                    arch_res_obj = await session.get(arch_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                    arch_soup = BeautifulSoup(arch_res_obj.text, "html.parser")
+                    eps = []
+                    for arch_a in arch_soup.find_all("a"):
+                        h = arch_a.get("href", "").strip()
+                        t = arch_a.get_text(" ", strip=True)
+                        m_ep = re.search(r'\b(?:episode|ep)\s*([0-9]{1,3})\b', t, re.I)
+                        if m_ep and cls._is_valid_download_gateway_url(h):
+                            ep_n = int(m_ep.group(1))
+                            eps.append({
+                                "label": f"Episode {ep_n:02d} [{arch_res}]" + (f" [{arch_sz}]" if arch_sz else ""),
+                                "quality": arch_res,
+                                "size": arch_sz,
+                                "is_batch": False,
+                                "episode_num": ep_n,
+                                "category_type": "episode",
+                                "link_url": h,
+                                "server_name": "Direct Fast CDN",
+                                "server_type": "💾 Fast Server"
+                            })
+                    return eps
+                except Exception as e:
+                    print(f"[ARCHIVE FETCH ERROR] {arch_url}: {e}")
+                    return []
+
+            results = await asyncio.gather(*[fetch_archive(u, q, s, c) for u, q, s, c in archive_tasks])
+            for ep_list in results:
+                options.extend(ep_list)
+
+        # Backward compatible downloads dictionary
+        downloads_map = {}
+        for opt in options:
+            k = re.sub(r'[^a-zA-Z0-9_]+', '_', opt['label'].lower()).strip('_')
+            downloads_map.setdefault(k, []).append({
+                "server_name": opt["server_name"],
+                "server_type": opt["server_type"],
+                "download_url": opt["link_url"],
+                "file_size": opt["size"]
+            })
+
+        poster = ""
+        img = soup.find("img", class_=lambda c: c and any(k in c for k in ["attachment", "post", "thumb", "entry"]))
+        if img:
+            poster = img.get("src") or img.get("data-src") or ""
+
+        return {
+            "title": raw_title,
+            "name": raw_title,
+            "url": url,
+            "poster": poster,
+            "thumbnail": poster,
+            "is_tv_series": is_series,
+            "download_options": options,
+            "downloads": downloads_map,
+            "source": source_name
+        }
 
     @classmethod
     async def get_movie_details(
-        cls, 
-        movie_url: str, 
+        cls,
+        movie_url: str,
         impersonate: str = DEFAULT_IMPERSONATE
     ) -> Dict[str, Any]:
-        """
-        Step 3: Fetches movie detail page and extracts storyline, poster, screenshots,
-        categories, batch full-season packs, and episode-wise download options.
-        """
-        active_domain = await cls.get_active_domain(impersonate=impersonate)
-        target_url = cls.replace_domain(movie_url, active_domain)
-        headers = cls._get_browser_headers(referer=active_domain)
-        
+        """Scrapes movie/show detail page and returns all structured download options."""
+        url_lower = movie_url.lower()
+
+        if "vegamovies" in url_lower:
+            return await cls._get_vegamovies_details(movie_url, impersonate=impersonate)
+        if any(k in url_lower for k in ["moviesmod", "uhdmovies", "moviesleech", "animeflix"]):
+            return await cls._get_modlist_details(movie_url, impersonate=impersonate)
+
+        return await cls._get_hdhub4u_details(movie_url, impersonate=impersonate)
+
+    @classmethod
+    async def _get_vegamovies_details(cls, movie_url: str, impersonate: str = DEFAULT_IMPERSONATE) -> Dict[str, Any]:
+        headers = cls._get_browser_headers()
         async with AsyncSession(impersonate=impersonate, verify=False) as session:
-            response = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            title = ""
-            if soup.find("h1", class_="entry-title"):
-                title = soup.find("h1", class_="entry-title").get_text(strip=True)
-            elif soup.title:
-                title = soup.title.get_text(strip=True)
-                
-            entry = soup.find("div", class_="entry-content") or soup.find("article") or soup
-            
-            # Categories
-            categories = []
-            for meta in soup.find_all("meta", property=re.compile(r"article:(?:section|tag)", re.I)):
-                c = meta.get("content", "").strip()
-                c_clean = re.sub(r"[^\w\s-]", "", c).strip()
-                if c_clean and c_clean not in categories:
-                    categories.append(c_clean)
-            if not categories:
-                for cat_a in soup.find_all("a", rel="category tag"):
-                    c_text = cat_a.get_text(strip=True)
-                    c_clean = re.sub(r"[^\w\s-]", "", c_text).strip()
-                    if c_clean and c_clean not in categories:
-                        categories.append(c_clean)
-            if not categories:
-                for p in entry.find_all(["p", "span", "div"]):
-                    pt = p.get_text(" ", strip=True)
-                    if "genre" in pt.lower() or "category" in pt.lower():
-                        parts = re.split(r"[:,|/]", pt)
-                        if len(parts) > 1:
-                            for c in parts[1:]:
-                                cln = re.sub(r"[^\w\s-]", "", c).strip()
-                                if cln and len(cln) < 25 and cln not in categories:
-                                    categories.append(cln)
-                        break
+            try:
+                res = await session.get(movie_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                return await cls._parse_page_download_options(res.text, movie_url, "Vegamovies", session=session, impersonate=impersonate)
+            except Exception as e:
+                print(f"[VEGAMOVIES DETAILS ERROR]: {e}")
+                return {"name": "", "title": "", "url": movie_url, "downloads": {}, "download_options": []}
 
+    @classmethod
+    async def _get_modlist_details(cls, movie_url: str, impersonate: str = DEFAULT_IMPERSONATE) -> Dict[str, Any]:
+        headers = cls._get_browser_headers()
+        async with AsyncSession(impersonate=impersonate, verify=False) as session:
+            try:
+                res = await session.get(movie_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                return await cls._parse_page_download_options(res.text, movie_url, "Modlist", session=session, impersonate=impersonate)
+            except Exception as e:
+                print(f"[MODLIST DETAILS ERROR]: {e}")
+                return {"name": "", "title": "", "url": movie_url, "downloads": {}, "download_options": []}
 
-            # Is TV Series Check
-            is_tv_series = bool(re.search(r"season|series|episode|ep-\d+|all episodes|tv-shows|web-series", f"{title} {' '.join(categories)}", re.I))
+    @classmethod
+    async def _get_hdhub4u_details(cls, movie_url: str, impersonate: str = DEFAULT_IMPERSONATE) -> Dict[str, Any]:
+        headers = cls._get_browser_headers()
+        async with AsyncSession(impersonate=impersonate, verify=False) as session:
+            try:
+                res = await session.get(movie_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                return await cls._parse_page_download_options(res.text, movie_url, "HDHub4u", session=session, impersonate=impersonate)
+            except Exception as e:
+                print(f"[HDHUB4U DETAILS ERROR]: {e}")
+                return {"name": "", "title": "", "url": movie_url, "downloads": {}, "download_options": []}
 
-            # Synopsis / Storyline
-            synopsis = ""
-            for tag in entry.find_all(["p", "span", "div"]):
-                t = tag.get_text(strip=True)
-                if any(k in t.lower() for k in ["storyline", "synopsis", "about:", "plot:"]) and len(t) < 50:
-                    nxt = tag.find_next_sibling("p") or tag.find_next("p")
-                    if nxt:
-                        synopsis = nxt.get_text(strip=True)
-                        break
-                        
-            # Poster
-            poster = ""
-            og_img = soup.find("meta", property="og:image")
-            if og_img and og_img.get("content") and "logo" not in og_img.get("content").lower():
-                poster = og_img.get("content").strip()
+    # ─────────────────────────────────────────────────────────────
+    # 0s INTERMEDIATE REDIRECT BYPASSER & DIRECT LINK RESOLVER
+    # ─────────────────────────────────────────────────────────────
 
-            if not poster or "logo" in poster.lower():
-                for img in entry.find_all("img"):
-                    src = img.get("src") or img.get("data-src") or ""
-                    if not src:
-                        continue
-                    src_lower = src.lower()
-                    if "logo" in src_lower or "banner" in src_lower or "icon" in src_lower:
-                        continue
-                    if any(k in src_lower for k in ["imdb", "tmdb", "poster", "imagebam", "postimg", "catimages"]):
-                        poster = src
-                        break
-
-            if poster and poster.startswith("/"):
-                poster = f"{active_domain}{poster}"
-
-                
-            # Screenshots
-            screenshots = []
-            for img in entry.find_all("img"):
-                src = img.get("src") or img.get("data-src") or ""
-                if src and src != poster:
-                    if any(k in src.lower() for k in ["imdb", "tmdb", "extraimage", "imgextra", "imagebam", "postimg", "catimages"]):
-                        if "logo" not in src.lower() and "banner" not in src.lower():
-                            screenshots.append(src)
+    @classmethod
+    async def bypass_intermediate_link(cls, link_url: str, impersonate: str = DEFAULT_IMPERSONATE) -> str:
+        """Instant 0-second bypass of mediator redirect sites (greenmotors, unblockedgames, modpro, etc.)."""
+        headers = cls._get_browser_headers()
+        async with AsyncSession(impersonate=impersonate, verify=False) as session:
+            try:
+                # ModPro / UnblockedGames auto-bypass
+                if "unblockedgames" in link_url or "links.modpro" in link_url or "leechpro" in link_url:
+                    res1 = await session.get(link_url, headers=headers, timeout=15)
+                    soup1 = BeautifulSoup(res1.text, "html.parser")
+                    form1 = soup1.find("form", id="landing")
+                    if form1:
+                        data1 = {inp.get("name"): inp.get("value") for inp in form1.find_all("input")}
+                        res2 = await session.post("https://cloud.unblockedgames.world/", data=data1, headers={**headers, "Referer": link_url}, timeout=15)
+                        soup2 = BeautifulSoup(res2.text, "html.parser")
+                        form2 = soup2.find("form", id="landing")
+                        if form2:
+                            act2 = form2.get("action") or "https://cloud.unblockedgames.world/"
+                            act2_url = act2 if act2.startswith("http") else urllib.parse.urljoin("https://cloud.unblockedgames.world/", act2)
+                            data2 = {inp.get("name"): inp.get("value") for inp in form2.find_all("input")}
+                            res3 = await session.post(act2_url, data=data2, headers={**headers, "Referer": "https://cloud.unblockedgames.world/"}, timeout=15)
                             
-            # Download options extraction with DOM context tracking
-            download_options: List[Dict[str, Any]] = []
-            blacklist_keywords = [
-                "snvhost.com", "hdhub4u.download", "hdhub4u.tv", "disclaimer", 
-                "join-our-group", "request-a-movie", "how-to-download", 
-                "telegram", "whatsapp", "4khdhub.one", "catimages.co",
-                "imagebam.com", "postimg.cc", "imdb.com", "tmdb.org", "extraimage",
-                "imgextra", "instagram.com", "facebook.com", "twitter.com",
-                "youtube.com", "youtu.be", "tinyurl.com"
-            ]
+                            m_cookie = re.search(r"s_343\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]", res3.text)
+                            m_go = re.search(r"c\.setAttribute\s*\(\s*['\"]href['\"]\s*,\s*['\"]([^'\"]+)['\"]", res3.text)
+                            if m_cookie and m_go:
+                                c_name, c_val = m_cookie.group(1), m_cookie.group(2)
+                                res4 = await session.get(m_go.group(1), cookies={c_name: c_val}, headers={**headers, "Referer": act2_url}, timeout=15)
+                                m_ref = re.search(r'url=([^"\'\s>]+)', res4.text, re.I)
+                                if m_ref:
+                                    return m_ref.group(1)
 
-            valid_download_hints = [
-                "hubcloud", "hubdrive", "hblinks", "greenmount", "gamerxyt",
-                "drive.", "/drive/", "download", "archives", "id=", "dl.",
-                "pixeldrain", "r2.dev", "workers.dev"
-            ]
-
-            current_heading = ""
-            current_episode = ""
-
-            for elem in entry.descendants:
-                if elem.name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
-                    h_text = elem.get_text(" ", strip=True)
-                    if any(k in h_text.lower() for k in ["episode", "ep", "bonus", "zip", "pack", "batch", "season", "download links"]):
-                        current_heading = h_text
-                        ep_val = cls.extract_episode_number(h_text)
-                        if ep_val is not None:
-                            current_episode = f"EPISODE {ep_val:02d}"
-                        else:
-                            current_episode = ""
-
-                elif elem.name == "a":
-                    a = elem
-                    href = a.get("href", "")
-                    text = a.get_text(" ", strip=True)
-                    classes = " ".join(a.get("class", []))
-                    
-                    if not href or href.startswith("#"):
-                        continue
-
-                    href_lower = href.lower()
-                    if any(k in href_lower for k in blacklist_keywords) or any(k in text.lower() for k in ["how to download", "join our group", "disclaimer", "request", "telegram", "whatsapp"]):
-                        continue
-                    
-                    if not any(k in href_lower for k in valid_download_hints):
-                        continue
-
-                    parsed_href = urllib.parse.urlsplit(href)
-                    if ("hdhub4u" in parsed_href.netloc or not parsed_href.netloc):
-                        if not any(k in href for k in ["/drive/", "/archives/", "?id=", "search-recover"]):
-                            continue
-
-                    parent = a.find_parent(["p", "div", "h3", "h4", "li", "span", "tr", "figure", "figcaption"])
-                    if parent and parent.name in ["figure", "figcaption"]:
-                        continue
-                    parent_text = parent.get_text(" ", strip=True) if parent else ""
-
-                    # Category / Noise filter: ignore anchors that are just genre/category tags
-                    text_clean = text.strip().lower()
-                    genre_words = {"comedy", "drama", "action", "romance", "thriller", "horror", "sci-fi", "bollywood", "hollywood", "web-series", "hindi", "english", "300mb movies", "hd movies"}
-                    if (text_clean in genre_words or text_clean in [c.lower() for c in categories]) and not any(k in href_lower for k in ["hubcloud", "hubdrive", "pixeldrain"]):
-                        if not any(k in parent_text.lower() for k in ["mb", "gb", "pack", "episode", "ep", "e0", "e1", "720p", "1080p", "480p", "4k", "drive", "instant", "download"]):
-                            continue
-
-                    # Contextual label construction
-                    label = text
-                    if not label or label.lower() in ["drive", "instant", "watch", "download", "watch online", "link", "click here", "direct", "stream", "hubcloud", "gdrive"]:
-                        context_parts = []
-                        if current_episode and current_episode.lower() not in parent_text.lower():
-                            context_parts.append(current_episode)
-                        if parent_text and len(parent_text) < 80:
-                            context_parts.append(parent_text)
-                        elif text:
-                            context_parts.append(text)
-                        label = " - ".join(context_parts) if context_parts else (text or "Download Link")
-
-                    # Check quality
-                    quality = "Direct Download"
-                    combined_info = f"{label} {parent_text} {current_heading}".lower()
-                    if "4k" in combined_info or "2160p" in combined_info:
-                        quality = "4K / 2160p"
-                    elif "1080p" in combined_info:
-                        quality = "1080p"
-                    elif "720p" in combined_info:
-                        quality = "720p"
-                    elif "480p" in combined_info:
-                        quality = "480p"
-
-                    size_match = re.search(r"\[([0-9.]+\s*(?:MB|GB|mb|gb))\]", f"{label} {parent_text}")
-                    size = size_match.group(1) if size_match else ""
-
-                    # Determine Batch Pack vs Episode
-                    is_batch = False
-                    category_type = "movie"
-                    if is_tv_series:
-                        ep_val = cls.extract_episode_number(f"{label} {parent_text} {current_episode}")
-                        if any(k in combined_info for k in ["bonus"]):
-                            category_type = "bonus_episode"
-                        elif any(k in combined_info for k in ["pack", "zip", "all episode", "season pack", "full series", "complete season"]):
-                            is_batch = True
-                            category_type = "batch_pack"
-                        elif ep_val is not None:
-                            category_type = "episode"
-                        elif size or quality in ["480p", "720p", "1080p", "4K / 2160p"]:
-                            # Top level resolution links in series without episode numbers are full season batch packs!
-                            is_batch = True
-                            category_type = "batch_pack"
-
-                    is_hubcloud = "hubcloud." in href and "drive" in href
-                    is_hblinks = "hblinks." in href
-                    is_intermediate = "greenmount" in href or "id=" in href
-
-                    download_options.append({
-                        "label": label,
-                        "quality": quality,
-                        "size": size,
-                        "link_url": href,
-                        "type": "Stream" if "watch online" in text.lower() else ("Batch Pack" if is_batch else ("Episode" if category_type == "episode" else "Download")),
-                        "is_batch": is_batch,
-                        "category_type": category_type,
-                        "is_hubcloud": is_hubcloud,
-                        "is_hblinks": is_hblinks,
-                        "is_intermediate": is_intermediate,
-                    })
-
-            # Filter out duplicate URLs and generic site links
-            seen_urls = set()
-            unique_options = []
-            for opt in download_options:
-                u = opt["link_url"]
-                if u not in seen_urls and opt["label"].lower() not in ["hdhub4u", "hdhub4u.tv", "hdhub4u.download"]:
-                    seen_urls.add(u)
-                    unique_options.append(opt)
-
-            return {
-                "page_url": target_url,
-                "active_domain": active_domain,
-                "title": title,
-                "poster": poster,
-                "synopsis": synopsis,
-                "category": categories,
-                "is_tv_series": is_tv_series,
-                "screenshots": screenshots[:8],
-                "download_options": unique_options,
-                "download_links": unique_options,
-                "total_options": len(unique_options),
-            }
-
-    scrape_movie_page = get_movie_details
-
-    @classmethod
-    def normalize_direct_url(cls, url: str) -> str:
-        if not url:
-            return ""
-        # Convert pixeldrain /u/ID to /api/file/ID
-        m = re.search(r"pixeldrain\.(?:dev|com)/u/([a-zA-Z0-9_-]+)", url, re.I)
-        if m:
-            return f"https://pixeldrain.com/api/file/{m.group(1)}"
-        return url
-
-    @classmethod
-    async def resolve_pixel_or_gpdl(cls, url: str, referer: Optional[str], session: AsyncSession) -> Optional[str]:
-        headers = cls._get_browser_headers(referer=referer or "https://gamerxyt.com/")
-        try:
-            res = await session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
-            # 1. Check if redirect target URL has link=
-            parsed = urllib.parse.urlsplit(res.url)
-            qs = urllib.parse.parse_qs(parsed.query)
-            if "link" in qs:
-                raw_link = qs["link"][0]
-                if raw_link.startswith("http"):
-                    return raw_link
-            
-            # 2. Check HTML for downloadBtn or link parameter
-            soup = BeautifulSoup(res.text, "html.parser")
-            btn = soup.find("a", id="downloadBtn")
-            if btn and btn.get("href") and btn.get("href").startswith("http"):
-                return btn.get("href")
-                
-            orig_qs = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
-            if "link" in orig_qs and orig_qs["link"][0].startswith("http"):
-                return orig_qs["link"][0]
-                
-            m_reurl = re.search(r'reurl\s*=\s*["\']([^"\']+)["\']', res.text)
-            if m_reurl and "link=" in m_reurl.group(1):
-                p_re = urllib.parse.urlsplit(m_reurl.group(1))
-                qs_re = urllib.parse.parse_qs(p_re.query)
-                if "link" in qs_re:
-                    return qs_re["link"][0]
-        except Exception:
-            pass
-        return None
-
-    @classmethod
-    async def resolve_hubcdn_file(cls, url: str, referer: Optional[str], session: AsyncSession) -> Optional[str]:
-        headers = cls._get_browser_headers(referer=referer or "https://hblinks.co/")
-        try:
-            res = await session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
-            if "File is Deleted or UnAvailable" in res.text or "Something went wrong" in res.text:
-                return None
-
-            m = re.search(r'reurl\s*=\s*["\']([^"\']+)["\']', res.text)
-            if not m:
-                m = re.search(r'https?://(?:www\.)?inventoryidea\.com/\?r=([a-zA-Z0-9+/=]+)', res.text)
-                target = m.group(0) if m else None
-            else:
-                target = m.group(1)
-
-            dl_page_url = None
-            if target:
-                parsed = urllib.parse.urlsplit(target)
-                qs = urllib.parse.parse_qs(parsed.query)
-                if "r" in qs:
-                    decoded = base64.b64decode(qs["r"][0]).decode("utf-8", errors="ignore")
-                    dl_page_url = decoded
-            
-            if not dl_page_url and "/dl/?link=" in res.text:
-                m_dl = re.search(r'https?://[^\s"\']+/dl/\?link=[^\s"\']+', res.text)
-                if m_dl:
-                    dl_page_url = m_dl.group(0)
-
-            if dl_page_url:
-                res_dl = await session.get(dl_page_url, headers=headers, timeout=DEFAULT_TIMEOUT)
-                soup_dl = BeautifulSoup(res_dl.text, "html.parser")
-                for a in soup_dl.find_all("a"):
-                    h = a.get("href", "")
-                    if any(x in h for x in ["r2.dev", "cloudflarestorage", "googleapis.com", "workers.dev"]) or "download" in a.get_text(strip=True).lower():
-                        if h.startswith("http"):
-                            return h
-        except Exception:
-            pass
-        return None
-
-    @classmethod
-    async def resolve_to_direct_link(cls, url: str, referer: Optional[str], session: AsyncSession) -> Optional[str]:
-        if not url or not url.startswith("http"):
-            return None
-
-        url = cls.normalize_direct_url(url)
-        url_lower = url.lower()
-
-        # Filter out non-download blacklisted URLs
-        if any(b in url_lower for b in ["catimages", "imagebam", "postimg", "imdb.com", "tmdb.org", "snvhost", "telegram", "t.me"]):
-            return None
-
-        # Pixel / GPDL Hubcloud intermediate
-        if ("pixel.hubcloud." in url_lower or "gpdl.hubcloud." in url_lower) and "?id=" in url_lower:
-            resolved = await cls.resolve_pixel_or_gpdl(url, referer=referer, session=session)
-            if resolved:
-                return cls.normalize_direct_url(resolved)
-            return None
-
-        # HubCDN file intermediate
-        if "hubcdn." in url_lower and "/file/" in url_lower:
-            resolved = await cls.resolve_hubcdn_file(url, referer=referer, session=session)
-            if resolved:
-                return cls.normalize_direct_url(resolved)
-            return None
-
-        # Greenmount / mediator redirect
-        if "greenmount" in url_lower or "mediator" in url_lower:
-            bypassed = await cls.bypass_intermediate_link(url)
-            if bypassed and bypassed != url:
-                return await cls.resolve_to_direct_link(bypassed, referer=referer, session=session)
-
-        # Already direct CDN / storage links
-        if any(k in url_lower for k in ["r2.cloudflarestorage.com", "pub-", "r2.dev", "workers.dev", "video-downloads.googleusercontent.com", "/api/file/"]):
-            return url
-
-        if any(url_lower.endswith(ext) or f"{ext}?" in url_lower for ext in [".mkv", ".mp4", ".zip", ".rar", ".avi", ".tar"]):
-            return url
-
-        if "storage.googleapis.com" in url_lower:
-            return url
-
-        return url
+                # Greenmotors / Greenmount mediator bypass
+                res = await session.get(link_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                m_target = re.search(r'const\s+TARGET_URL\s*=\s*["\']([^"\']+)["\']', res.text)
+                if m_target:
+                    return m_target.group(1)
+                m_href = re.search(r'href=["\']([^"\']*(?:hubcloud|hubdrive|hblinks|hubcdn)[^"\']*)["\']', res.text, re.I)
+                if m_href:
+                    return m_href.group(1)
+            except Exception:
+                pass
+        return link_url
 
     @classmethod
     async def extract_final_download_links(cls, link_url: str, impersonate: str = DEFAULT_IMPERSONATE) -> Dict[str, Any]:
-        """
-        Step 4: Resolves any HubCloud, HBLinks, or intermediate URL to the FINAL DIRECT DOWNLOADING URLs (10Gbps, CDN .mkv/.zip file).
-        """
+        """Resolves intermediate URLs (HubCloud, HubDrive, HBLinks, NexDrive, FastDL, UnblockedGames) into direct streaming CDN URLs."""
         headers = cls._get_browser_headers()
+        target_url = link_url
 
-        # Check if URL is an intermediate redirect (e.g. greenmountmotors)
-        if "greenmount" in link_url or "id=" in link_url or "mediator" in link_url:
+        if any(k in link_url.lower() for k in ["greenmount", "greenmotors", "unblockedgames", "id=", "modpro", "leechpro"]):
             target_url = await cls.bypass_intermediate_link(link_url, impersonate=impersonate)
-        else:
-            target_url = link_url
 
         url_lower = target_url.lower()
 
-        # Direct CDN Stream Check (0ms fast path): If link is already a direct CDN URL, return immediately
+        # Direct CDN fast-path
         if any(k in url_lower for k in ["video-downloads.googleusercontent.com", "pixeldrain.com/api/file", "workers.dev", "r2.dev", "pub-", "r2.cloudflarestorage.com"]):
             return {
                 "source_url": target_url,
@@ -703,24 +832,40 @@ class CloudflareScraper:
                 "is_streamable": True
             }
 
-        # Case A: HubDrive file URL (e.g. hubdrive.tips/file/2230208894)
+        # NexDrive URL (Vegamovies)
+        if "nexdrive." in url_lower:
+            try:
+                async with AsyncSession(impersonate=impersonate, verify=False) as session:
+                    res = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                    soup = BeautifulSoup(res.text, "html.parser")
+                    filename = soup.title.string.strip() if soup.title else ""
+                    raw_links = []
+                    for a in soup.find_all("a"):
+                        h = a.get("href", "")
+                        t = a.get_text(" ", strip=True)
+                        if h and ("http" in h) and not any(k in h.lower() for k in ["telegram", "t.me", "report"]):
+                            raw_links.append({
+                                "server_name": t or "Direct Fast CDN",
+                                "server_type": "💾 Direct Fast CDN",
+                                "download_url": h
+                            })
+                    return {
+                        "source_url": target_url,
+                        "filename": filename,
+                        "final_downloads": raw_links,
+                        "total_servers": len(raw_links)
+                    }
+            except Exception:
+                pass
+
+        # HubDrive URL
         if "hubdrive." in url_lower and "/file/" in url_lower:
             try:
                 async with AsyncSession(impersonate=impersonate, verify=False) as session:
                     res = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
                     soup = BeautifulSoup(res.text, "html.parser")
-                    
                     filename = soup.title.string.replace("HubDrive | ", "").strip() if soup.title else ""
-                    file_size = ""
-                    for td in soup.find_all(["td", "div", "span"]):
-                        t = td.get_text(strip=True)
-                        m_sz = re.search(r"([0-9.]+\s*(?:MB|GB|mb|gb))", t)
-                        if m_sz and len(t) < 40:
-                            file_size = m_sz.group(1).strip()
-                            break
-                        elif m_sz and not file_size:
-                            file_size = m_sz.group(1).strip()
-
+                    
                     hubcloud_url = None
                     for a in soup.find_all("a"):
                         href = a.get("href", "")
@@ -729,22 +874,11 @@ class CloudflareScraper:
                             break
 
                     if hubcloud_url:
-                        try:
-                            resolved = await cls.extract_final_download_links(hubcloud_url, impersonate=impersonate)
-                            if filename and not resolved.get("filename"):
-                                resolved["filename"] = filename
-                            if file_size and not resolved.get("file_size"):
-                                resolved["file_size"] = file_size
-                            return resolved
-                        except Exception:
-                            pass
+                        return await cls.extract_final_download_links(hubcloud_url, impersonate=impersonate)
 
-                    # Direct links on HubDrive page
                     raw_links = []
                     for a in soup.find_all("a"):
                         h = a.get("href", "")
-                        if not h or any(k in h.lower() for k in ["telegram", "t.me", "tg/go", "privacy", "terms", "copyright", "sign"]):
-                            continue
                         if any(x in h for x in ["r2.cloudflarestorage.com", "storage.googleapis.com", "pixeldrain", "gpdl.", "workers.dev", "hubcdn."]):
                             stype = "💾 Direct Download File (Fast CDN)"
                             if "pixeldrain" in h:
@@ -754,1015 +888,132 @@ class CloudflareScraper:
                             raw_links.append({
                                 "server_name": a.get_text(strip=True) or stype,
                                 "server_type": stype,
-                                "download_url": h,
-                                "is_direct": True
+                                "download_url": h
                             })
-                    
-                    resolved_final = []
-                    seen_urls = set()
-                    for srv in raw_links:
-                        try:
-                            d_url = await cls.resolve_to_direct_link(srv["download_url"], referer=target_url, session=session)
-                            if d_url and d_url not in seen_urls:
-                                seen_urls.add(d_url)
-                                resolved_final.append({**srv, "download_url": d_url})
-                        except Exception:
-                            pass
-
                     return {
                         "source_url": target_url,
                         "filename": filename,
-                        "file_size": file_size,
-                        "final_downloads": resolved_final,
-                        "total_servers": len(resolved_final)
+                        "final_downloads": raw_links,
+                        "total_servers": len(raw_links)
                     }
             except Exception:
-                return {
-                    "source_url": target_url,
-                    "filename": "",
-                    "file_size": "",
-                    "final_downloads": [],
-                    "total_servers": 0
-                }
+                pass
 
-        # Case B: HBLinks archive URL (contains multiple qualities & direct servers)
-        if "hblinks." in url_lower:
-            try:
-                async with AsyncSession(impersonate=impersonate, verify=False) as session:
-                    res = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
-                    soup = BeautifulSoup(res.text, "html.parser")
-                    entry = soup.find("div", class_="entry-content") or soup.find("article") or soup
-                    
-                    raw_results = []
-                    current_heading = ""
-
-                    for el in entry.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "div"]):
-                        text = el.get_text(" ", strip=True)
-                        if el.name in ["h1", "h2", "h3", "h4", "h5", "h6"] or any(k in text.lower() for k in ["480p", "720p", "1080p", "4k", "2160p", "hevc", "pack"]):
-                            if any(k in text.lower() for k in ["480p", "720p", "1080p", "4k", "2160p", "hevc", "web-dl"]):
-                                current_heading = text
-
-                        for a in el.find_all("a"):
-                            href = a.get("href", "")
-                            if not href or any(k in href.lower() for k in ["telegram", "t.me", "tg/go", "how-to-download"]):
-                                continue
-
-                            a_text = a.get_text(strip=True)
-                            if "hubcloud" in href and "drive" in href:
-                                try:
-                                    resolved = await cls.extract_final_download_links(href, impersonate=impersonate)
-                                    for srv in resolved.get("final_downloads", []):
-                                        if current_heading and not srv.get("section_label"):
-                                            srv["section_label"] = current_heading
-                                        raw_results.append(srv)
-                                except Exception:
-                                    pass
-                            elif "hubdrive." in href and "/file/" in href:
-                                # Skip hubdrive if we already got good direct CDN or Pixeldrain links from hubcloud
-                                if not any(s.get("download_url") for s in raw_results):
-                                    try:
-                                        resolved = await cls.extract_final_download_links(href, impersonate=impersonate)
-                                        for srv in resolved.get("final_downloads", []):
-                                            if current_heading and not srv.get("section_label"):
-                                                srv["section_label"] = current_heading
-                                            raw_results.append(srv)
-                                    except Exception:
-                                        pass
-                            elif any(k in href for k in ["hubdrive", "gdrive", "drive", "hubcdn", "instant", "workers.dev"]):
-                                item_name = a_text if a_text not in ["Drive", "Instant", "Direct", "Download"] else current_heading
-                                stype = "☁️ Google Drive / HubDrive" if "hubdrive" in href or "gdrive" in href else "💾 Direct Fast CDN"
-                                raw_results.append({
-                                    "server_name": item_name or "Direct Server",
-                                    "server_type": stype,
-                                    "download_url": href,
-                                    "section_label": current_heading,
-                                    "is_direct": True
-                                })
-
-                    resolved_final = []
-                    seen_urls = set()
-                    for srv in raw_results:
-                        try:
-                            d_url = await cls.resolve_to_direct_link(srv["download_url"], referer=target_url, session=session)
-                            if d_url and d_url not in seen_urls:
-                                # Avoid returning intermediate pages
-                                if any(k in d_url.lower() for k in ["hubcdn.sbs/file/", "pixel.hubcloud.cx/?id=", "gpdl.hubcloud.cx/?id=", "inventoryidea.com"]):
-                                    continue
-                                seen_urls.add(d_url)
-                                resolved_final.append({**srv, "download_url": d_url})
-                        except Exception:
-                            pass
-
-                    return {
-                        "source_url": target_url,
-                        "final_downloads": resolved_final,
-                        "total_servers": len(resolved_final)
-                    }
-            except Exception:
-                return {
-                    "source_url": target_url,
-                    "final_downloads": [],
-                    "total_servers": 0
-                }
-
-        # Case B.2: HubCloud search-recover.php URL (HubCloud's dynamic search recovery for archived/migrated files)
-        if "search-recover.php" in url_lower:
-            parsed_sr = urllib.parse.urlsplit(target_url)
-            qs_sr = urllib.parse.parse_qs(parsed_sr.query)
-            from_ac = qs_sr.get("from_ac", [""])[0]
-            raw_q = qs_sr.get("q", [""])[0]
-
-            decoded_q = ""
-            if raw_q:
-                try:
-                    padded_q = raw_q + "=" * (-len(raw_q) % 4)
-                    decoded_q = base64.b64decode(padded_q).decode("utf-8")
-                except Exception:
-                    decoded_q = raw_q
-
+        # HubCloud URL (e.g. hubcloud.cx/drive/...)
+        try:
             async with AsyncSession(impersonate=impersonate, verify=False) as session:
-                if not decoded_q or not from_ac:
-                    res_sr = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
-                    m_q = re.search(r'const\s+Q_INITIAL\s*=\s*["\']([^"\']+)["\']', res_sr.text)
-                    if m_q:
-                        decoded_q = m_q.group(1)
-                    m_ac = re.search(r'const\s+FROM_AC_TOKEN\s*=\s*["\']([^"\']+)["\']', res_sr.text)
-                    if m_ac:
-                        from_ac = m_ac.group(1)
+                res1 = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                soup1 = BeautifulSoup(res1.text, "html.parser")
+                filename = soup1.title.string.strip() if soup1.title else "Movie Download File"
 
-                if decoded_q and from_ac:
-                    api_headers = {
-                        **headers,
-                        "Accept": "application/json",
-                        "Referer": target_url
-                    }
-                    search_api_url = f"{parsed_sr.scheme}://{parsed_sr.netloc}/drive/search-recover.php"
-                    try:
-                        api_res = await session.get(
-                            search_api_url,
-                            params={"api": "search", "q": decoded_q, "page": "1", "from_ac": from_ac},
-                            headers=api_headers,
-                            timeout=DEFAULT_TIMEOUT
-                        )
-                        data = api_res.json()
-                        hits = data.get("hits", [])
-                    except Exception:
-                        hits = []
-
-                    # If hits are few or empty, try a broader query (e.g. series + season)
-                    if not hits:
-                        clean_sr_q = re.sub(r"(?:Episode|\bEp\b|\bE\d+\b|720p|1080p|480p|4k|zip|pack).*", "", decoded_q, flags=re.I).strip()
-                        m_s = re.search(r"\bS(?:eason\s*)?0?(\d{1,2})\b", decoded_q, re.I)
-                        if clean_sr_q and m_s:
-                            clean_sr_q = f"{clean_sr_q} S{int(m_s.group(1)):02d}"
-                        if clean_sr_q and clean_sr_q != decoded_q:
-                            try:
-                                api_res2 = await session.get(
-                                    search_api_url,
-                                    params={"api": "search", "q": clean_sr_q, "page": "1", "from_ac": from_ac},
-                                    headers=api_headers,
-                                    timeout=DEFAULT_TIMEOUT
-                                )
-                                hits = api_res2.json().get("hits", [])
-                            except Exception:
-                                pass
-
-                    # Score hits to prioritize candidate matches for the requested query
-                    ep_target = cls.extract_episode_number(decoded_q)
-                    is_batch_target = any(k in decoded_q.lower() for k in ["pack", "zip", "all episode", "season pack"])
-                    res_target = ""
-                    for r in ["4k", "2160p", "1080p", "720p", "480p"]:
-                        if r in decoded_q.lower():
-                            res_target = r
-                            break
-
-                    def score_hit(hit: Dict[str, Any]) -> int:
-                        fn = (hit.get("file_name") or "").lower()
-                        score = 0
-                        hit_ep = cls.extract_episode_number(fn)
-                        if ep_target is not None:
-                            if hit_ep == ep_target:
-                                score += 100
-                            elif hit_ep is not None:
-                                score -= 50
-                        elif is_batch_target:
-                            if any(k in fn for k in [".zip", "pack", "season.pack", "complete"]):
-                                score += 50
-                            if hit_ep is not None:
-                                score -= 30
-                        
-                        if res_target and res_target in fn:
-                            score += 25
-                        if "hevc" in decoded_q.lower() and ("hevc" in fn or "x265" in fn):
-                            score += 15
-                        return score
-
-                    sorted_hits = sorted(hits, key=score_hit, reverse=True)
-
-                    for hit in sorted_hits[:15]:
-                        hit_url = hit.get("url")
-                        if not hit_url:
-                            continue
-                        try:
-                            resolved = await cls.extract_final_download_links(hit_url, impersonate=impersonate)
-                            if resolved and resolved.get("final_downloads"):
-                                if not resolved.get("filename") and hit.get("file_name"):
-                                    resolved["filename"] = hit["file_name"]
-                                if not resolved.get("file_size") and hit.get("size"):
-                                    resolved["file_size"] = hit["size"]
-                                return resolved
-                        except Exception:
-                            continue
-
-            return {
-                "source_url": target_url,
-                "final_downloads": [],
-                "total_servers": 0
-            }
-
-        # Case C: HubCloud Drive URL (e.g. hubcloud.cx/drive/...)
-        async with AsyncSession(impersonate=impersonate, verify=False) as session:
-            res1 = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
-            soup1 = BeautifulSoup(res1.text, "html.parser")
-            
-            filename = soup1.title.string.strip() if soup1.title else "Movie Download File"
-            file_size = ""
-            for td in soup1.find_all(["td", "p", "div", "span"]):
-                t = td.get_text(strip=True)
-                m_sz = re.search(r"([0-9.]+\s*(?:MB|GB|mb|gb))", t)
-                if m_sz and len(t) < 40:
-                    file_size = m_sz.group(1).strip()
-                    break
-                elif m_sz and not file_size:
-                    file_size = m_sz.group(1).strip()
-
-            # Find generator link (e.g. gamerxyt.com/hubcloud.php?...)
-            gen_link = None
-            for a in soup1.find_all("a"):
-                href = a.get("href", "")
-                if "hubcloud.php" in href or "token=" in href:
-                    gen_link = href
-                    break
-
-            raw_downloads = []
-
-            if not gen_link:
-                # Direct links on page
+                gen_link = None
                 for a in soup1.find_all("a"):
-                    h = a.get("href", "")
-                    if not h or "telegram" in h.lower() or "t.me" in h.lower() or "tg/go" in h:
-                        continue
-                    if any(x in h for x in ["r2.cloudflarestorage.com", "storage.googleapis.com", "pixeldrain", "gpdl.", "workers.dev", "pixel."]):
-                        server_type = "⚡ High-Speed Direct Server"
-                        if "workers.dev" in h or "r2." in h:
-                            server_type = "💾 Direct Download File (Fast CDN)"
-                        elif "pixeldrain" in h:
-                            server_type = "📦 Pixeldrain Fast Download"
-                        raw_downloads.append({
-                            "server_name": a.get_text(strip=True) or server_type,
-                            "server_type": server_type,
-                            "download_url": h,
-                            "is_direct": True
-                        })
-            else:
-                # 2. Fetch generator page (gamerxyt)
-                gen_headers = dict(headers)
-                gen_headers["Referer"] = target_url
-                res2 = await session.get(gen_link, headers=gen_headers, timeout=DEFAULT_TIMEOUT)
-                soup2 = BeautifulSoup(res2.text, "html.parser")
-
-                for a in soup2.find_all("a"):
                     href = a.get("href", "")
-                    text = a.get_text(" ", strip=True)
+                    if "hubcloud.php" in href or "token=" in href:
+                        gen_link = href
+                        break
 
-                    if (
-                        not href 
-                        or href.startswith("#") 
-                        or "admin" in href.lower() 
-                        or "telegram" in href.lower() 
-                        or "t.me" in href.lower() 
-                        or "tg/go" in href.lower() 
-                        or "tinyurl" in href.lower()
-                        or "telegram" in text.lower()
-                        or "how ? click here" in text.lower()
-                        or "snvhost" in href.lower()
-                    ):
-                        continue
-
-                    if any(k in href for k in ["gpdl.", "workers.dev", "r2.cloudflarestorage", "googleapis.com", "pixeldrain", "hubcloud", "drive", "download", "dl."]) or "download" in text.lower():
-                        server_type = "Direct Server"
-                        if "10gbps" in text.lower() or "gpdl" in href or "pixel" in href:
-                            server_type = "⚡ Server : 10Gbps High Speed"
-                        elif "download file" in text.lower() or "workers.dev" in href or "r2." in href:
-                            server_type = "💾 Direct Download File (Fast CDN)"
-                        elif "pixeldrain" in href:
-                            server_type = "📦 Pixeldrain Fast Download"
-                        elif "googleapis" in href:
-                            server_type = "☁️ Google Cloud Storage"
-                        elif "hubdrive" in href or "gdrive" in href:
-                            server_type = "☁️ Google Drive / HubDrive"
-
-                        sz_m = re.search(r"\[([0-9.]+\s*(?:MB|GB|mb|gb))\]", text)
-                        srv_size = sz_m.group(1).strip() if sz_m else ""
-
-                        raw_downloads.append({
-                            "server_name": text or server_type,
-                            "server_type": server_type,
-                            "download_url": href,
-                            "file_size": srv_size,
-                            "is_direct": True
-                        })
-
-            resolved_final = []
-            seen_urls = set()
-            for srv in raw_downloads:
-                d_url = await cls.resolve_to_direct_link(srv["download_url"], referer=gen_link or target_url, session=session)
-                if not d_url or d_url in seen_urls:
-                    continue
-                # Avoid returning intermediate pages
-                if any(k in d_url.lower() for k in ["hubcdn.sbs/file/", "pixel.hubcloud.cx/?id=", "gpdl.hubcloud.cx/?id=", "inventoryidea.com"]):
-                    continue
-
-                seen_urls.add(d_url)
-                stype = srv["server_type"]
-                if "video-downloads.googleusercontent.com" in d_url:
-                    stype = "⚡ Server : 10Gbps High Speed (Google CDN)"
-                elif "r2.dev" in d_url or "r2.cloudflarestorage" in d_url:
-                    stype = "💾 Cloudflare R2 Direct CDN"
-                elif "pixeldrain" in d_url:
-                    stype = "📦 Pixeldrain Fast Download"
-                elif "workers.dev" in d_url:
-                    stype = "⚡ Fast Workers CDN"
-
-                dl_size = srv.get("file_size") or file_size
-                if not dl_size and srv.get("server_name"):
-                    m = re.search(r"\[([0-9.]+\s*(?:MB|GB|mb|gb))\]", srv["server_name"])
-                    if m:
-                        dl_size = m.group(1).strip()
-                if not file_size and dl_size:
-                    file_size = dl_size
-
-                resolved_final.append({
-                    "server_name": srv["server_name"],
-                    "server_type": stype,
-                    "download_url": d_url,
-                    "file_size": dl_size,
-                    "is_direct": True
-                })
-
-            return {
-                "source_url": target_url,
-                "filename": filename,
-                "file_size": file_size,
-                "final_downloads": resolved_final,
-                "total_servers": len(resolved_final)
-            }
-
-    resolve_any_link = extract_final_download_links
-
-    @classmethod
-    def _parse_link_metadata(
-        cls, 
-        opt: Dict[str, Any], 
-        dl: Dict[str, Any], 
-        res_filename: str = "", 
-        is_tv_series: bool = False
-    ) -> Tuple[str, str, str, bool]:
-        """
-        Parses episode tag, resolution, codec, and is_batch status from link metadata.
-        """
-        opt_label = (opt.get("label") or "").strip()
-        opt_quality = (opt.get("quality") or "").strip()
-        opt_type = opt.get("category_type") or ""
-        opt_is_batch = bool(opt.get("is_batch"))
-        
-        srv_name = (dl.get("server_name") or "").strip()
-        srv_type = (dl.get("server_type") or "").strip()
-        section_label = (dl.get("section_label") or "").strip()
-        dl_url = dl.get("download_url") or ""
-        
-        full_url_decoded = urllib.parse.unquote(dl_url)
-        
-        opt_lower = opt_label.lower()
-        url_lower = full_url_decoded.lower()
-        srv_lower = srv_name.lower()
-        section_lower = section_label.lower()
-        combined = f"{opt_label} {opt_quality} {section_label} {srv_name} {srv_type} {res_filename} {full_url_decoded}".lower()
-
-        # 1. Detect Episode Number
-        ep_search_text = f"{opt_label} {section_label} {srv_name} {res_filename} {full_url_decoded}"
-        ep_num = cls.extract_episode_number(ep_search_text)
-
-        # 2. Detect Batch / Season Pack
-        is_batch = False
-        if "bonus" in combined:
-            is_batch = False
-        elif ep_num is not None:
-            is_batch = False
-        elif opt_is_batch or (opt_type == "batch_pack"):
-            is_batch = True
-        elif any(k in opt_lower for k in ["pack", "all episode", "season pack", "full series", "complete season", "zip [all"]):
-            is_batch = True
-        elif any(k in url_lower or k in srv_lower for k in ["season.pack", "complete.season", "all.episodes", "complete.s0"]):
-            is_batch = True
-        elif is_tv_series:
-            if re.search(r"\[[0-9.]+\s*(?:mb|gb)\]", opt_lower) or any(k in opt_lower for k in ["480p", "720p", "1080p", "2160p", "4k"]):
-                is_batch = True
-
-        # 3. Detect Episode (Episode 1, Ep 02, Bonus Ep 1, Bonus Clip of Ep 04, etc.)
-        episode_tag = ""
-        if "bonus" in combined:
-            b_num_match = re.search(r"bonus.*?(?:ep|episode|e)?\s*([0-9]{1,3})", combined)
-            num = f"{int(b_num_match.group(1)):02d}" if b_num_match else ""
-            episode_tag = f"bonus_ep_{num}" if num else "bonus_episode"
-        elif not is_batch and ep_num is not None:
-            episode_tag = f"episode_{ep_num:02d}"
-
-        # 3. Detect Resolution
-        resolution = "direct"
-        clean_text_for_res = f"{res_filename} {section_label} {srv_name}"
-        if re.search(r"\b(?:4k|2160p|ds4k|uhd)\b", clean_text_for_res, re.I):
-            resolution = "4k"
-        elif re.search(r"\b(?:1080p|1080)\b", clean_text_for_res, re.I):
-            resolution = "1080p"
-        elif re.search(r"\b(?:720p|720)\b", clean_text_for_res, re.I):
-            resolution = "720p"
-        elif re.search(r"\b(?:480p|480)\b", clean_text_for_res, re.I):
-            resolution = "480p"
-        else:
-            opt_text = f"{opt_label} {opt_quality}"
-            if re.search(r"\b(?:4k|2160p|ds4k|uhd)\b", opt_text, re.I):
-                resolution = "4k"
-            elif re.search(r"\b(?:1080p|1080)\b", opt_text, re.I):
-                resolution = "1080p"
-            elif re.search(r"\b(?:720p|720)\b", opt_text, re.I):
-                resolution = "720p"
-            elif re.search(r"\b(?:480p|480)\b", opt_text, re.I):
-                resolution = "480p"
-
-        # 4. Detect Codec
-        codec = ""
-        if any(k in section_lower or k in srv_lower or k in url_lower for k in ["hevc", "x265", "10bit"]):
-            codec = "hevc"
-        elif any(k in section_lower or k in srv_lower or k in url_lower for k in ["x264", "h264", "avc"]):
-            codec = "x264"
-        elif any(k in opt_lower for k in ["hevc", "x265", "10bit"]):
-            codec = "hevc"
-        elif any(k in opt_lower for k in ["x264", "h264", "avc"]):
-            codec = "x264"
-
-        return episode_tag, resolution, codec, is_batch
-
-    @classmethod
-    def _generate_format_key(cls, episode_tag: str, resolution: str, codec: str, is_batch: bool) -> str:
-        """
-        Constructs standardized, descriptive format keys.
-        """
-        if is_batch:
-            parts = ["batch_season_pack"]
-            if resolution != "direct":
-                parts.append(resolution)
-            if codec == "hevc":
-                parts.append(codec)
-            return "_".join(parts)
-
-        if episode_tag:
-            parts = [episode_tag]
-            if resolution != "direct":
-                parts.append(resolution)
-            if codec == "hevc":
-                parts.append(codec)
-            return "_".join(parts)
-
-        # Standard movie format key
-        parts = ["format"]
-        if resolution == "4k":
-            parts.append("4k_2160p")
-        elif resolution != "direct":
-            parts.append(resolution)
-        if codec == "hevc":
-            parts.append(codec)
-        if len(parts) == 1:
-            parts.append("direct")
-        return "_".join(parts)
-
-    @classmethod
-    def _sort_download_keys(cls, key: str) -> Tuple[int, int, int, str]:
-        """
-        Sorting comparator:
-        Priority 1: Batch Season Packs (4K -> 1080p -> 720p HEVC -> 720p -> 480p)
-        Priority 2: Episode-wise links (Ep 01 -> Ep 02 -> ..., with qualities 4K -> 1080p -> 720p -> 480p)
-        Priority 3: Bonus Episodes (Bonus 01 -> Bonus 02...)
-        Priority 4: Movies (4K -> 1080p -> 720p -> 480p)
-        """
-        cat_rank = 4
-        ep_num = 0
-        res_rank = 10
-        
-        if key.startswith("batch_season_pack"):
-            cat_rank = 0
-        elif key.startswith("episode_"):
-            cat_rank = 1
-            m = re.search(r"episode_(\d+)", key)
-            if m:
-                ep_num = int(m.group(1))
-        elif key.startswith("bonus_ep"):
-            cat_rank = 2
-            m = re.search(r"bonus_ep_?(\d+)?", key)
-            if m and m.group(1):
-                ep_num = int(m.group(1))
-        elif key.startswith("format_"):
-            cat_rank = 3
-
-        if "4k" in key or "2160" in key:
-            res_rank = 0
-        elif "1080" in key:
-            res_rank = 1
-        elif "720" in key and "hevc" in key:
-            res_rank = 2
-        elif "720" in key:
-            res_rank = 3
-        elif "480" in key:
-            res_rank = 4
-
-        return (cat_rank, ep_num, res_rank, key)
-
-    @classmethod
-    async def fetch_url(
-        cls,
-        url: str,
-        impersonate: str = DEFAULT_IMPERSONATE,
-        fetch_all_pages: bool = True,
-        target_domain: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Generic fetcher and search router for direct URL queries.
-        """
-        active_domain = target_domain or (await cls.get_active_domain(impersonate=impersonate))
-        parsed = urllib.parse.urlsplit(url)
-        params = urllib.parse.parse_qs(parsed.query)
-
-        if "search" in parsed.path or "q" in params:
-            query = params.get("q", [""])[0]
-            page = int(params.get("page", ["1"])[0])
-            search_res = await cls.search_movies(
-                query=query, 
-                page=page, 
-                fetch_all=fetch_all_pages, 
-                impersonate=impersonate
-            )
-            return {
-                "url": url,
-                "status_code": 200,
-                "content_type": "application/json",
-                "title": f"Search Results for: {query}",
-                "total_found": search_res.get("total_found", 0),
-                "total_pages": search_res.get("total_pages", 1),
-                "total_pages_fetched": search_res.get("total_pages_fetched", 1),
-                "items": search_res.get("items", []),
-                "active_domain": active_domain,
-            }
-
-        headers = cls._get_browser_headers()
-        async with AsyncSession(impersonate=impersonate, verify=False) as session:
-            res = await session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
-            soup = BeautifulSoup(res.text, "html.parser")
-            return {
-                "url": url,
-                "status_code": res.status_code,
-                "content_type": res.headers.get("content-type", "text/html"),
-                "title": soup.title.string if soup.title else "",
-                "html": res.text,
-            }
-
-    @classmethod
-    async def search_and_resolve_downloads(
-        cls,
-        query: str,
-        limit: Optional[int] = None,
-        impersonate: str = DEFAULT_IMPERSONATE
-    ) -> List[Dict[str, Any]]:
-        """
-        Special Automated Endpoint Method:
-        Executes search, scrapes details for all matching movies/shows, and resolves all download
-        options into direct download links formatted with episode & batch pack priorities.
-        """
-        search_res = await cls.search_movies(query=query, page=1, fetch_all=True, impersonate=impersonate)
-        items = search_res.get("items", [])
-        if limit is not None:
-            items = items[:limit]
-
-        sem = asyncio.Semaphore(3)
-
-        async def process_single_movie(item: Dict[str, Any]) -> Dict[str, Any]:
-            permalink = item.get("permalink", "")
-            if not permalink:
-                return {}
-
-            details = await cls.get_movie_details(movie_url=permalink, impersonate=impersonate)
-            options = details.get("download_options", [])
-            is_tv = details.get("is_tv_series", False)
-
-            async def resolve_opt(opt: Dict[str, Any]):
-                async with sem:
-                    try:
-                        resolved = await cls.extract_final_download_links(opt["link_url"], impersonate=impersonate)
-                        return opt, resolved
-                    except Exception:
-                        return opt, None
-
-            resolved_tuples = await asyncio.gather(*(resolve_opt(opt) for opt in options))
-
-            raw_downloads_map: Dict[str, List[Dict[str, Any]]] = {}
-            for opt, res in resolved_tuples:
-                if not res:
-                    continue
-                final_downloads = res.get("final_downloads", [])
-                for dl in final_downloads:
-                    ep_tag, res_label, codec, is_batch = cls._parse_link_metadata(
-                        opt=opt, 
-                        dl=dl, 
-                        res_filename=res.get("filename", ""), 
-                        is_tv_series=is_tv
-                    )
-                    format_key = cls._generate_format_key(ep_tag, res_label, codec, is_batch)
-                    
-                    if format_key not in raw_downloads_map:
-                        raw_downloads_map[format_key] = []
-
-                    dl_url = dl.get("download_url")
-                    if dl_url and not any(existing.get("download_url") == dl_url for existing in raw_downloads_map[format_key]):
-                        srv_size = dl.get("file_size") or res.get("file_size") or opt.get("size") or ""
-                        if not srv_size and dl.get("server_name"):
-                            m_sz = re.search(r"\[([0-9.]+\s*(?:MB|GB|mb|gb))\]", dl["server_name"])
-                            if m_sz:
-                                srv_size = m_sz.group(1).strip()
-
-                        raw_downloads_map[format_key].append({
-                            "server_name": dl.get("server_name"),
-                            "server_type": dl.get("server_type"),
-                            "download_url": dl_url,
-                            "file_size": srv_size,
-                        })
-
-            # Sort keys by batch pack priority -> Episode order -> Movie quality
-            sorted_downloads_map = {
-                k: raw_downloads_map[k] for k in sorted(raw_downloads_map.keys(), key=cls._sort_download_keys)
-            }
-
-            return {
-                "name": details.get("title") or item.get("title"),
-                "url": permalink,
-                "thumbnail": details.get("poster") or item.get("thumbnail"),
-                "synopsis": details.get("synopsis", ""),
-                "category": details.get("category") or item.get("category", []),
-                "downloads": sorted_downloads_map,
-            }
-
-        tasks = [process_single_movie(it) for it in items]
-        movie_results = await asyncio.gather(*tasks)
-        return [m for m in movie_results if m and m.get("name")]
-
-    @classmethod
-    async def resolve_movie_direct_downloads(
-        cls,
-        movie_url: str,
-        quality_key: Optional[str] = None,
-        target_link_url: Optional[str] = None,
-        impersonate: str = DEFAULT_IMPERSONATE
-    ) -> Dict[str, Any]:
-        """
-        Takes a specific movie / series page URL, scrapes its details,
-        and resolves all qualities / episodes / batch packs to final direct download links.
-        If quality_key or target_link_url is specified, resolves ONLY that specific item.
-        """
-        active_domain = await cls.get_active_domain(impersonate=impersonate)
-        target_url = cls.replace_domain(movie_url, active_domain)
-
-        details = await cls.get_movie_details(movie_url=target_url, impersonate=impersonate)
-        options = details.get("download_options", [])
-        is_tv = details.get("is_tv_series", False)
-
-        # Targeted single-format resolution optimization
-        if target_link_url:
-            matched_opts = [opt for opt in options if opt.get("link_url") == target_link_url]
-            if not matched_opts:
-                matched_opts = [{
-                    "link_url": target_link_url,
-                    "label": quality_key or "Download",
-                    "quality": "Direct",
-                    "size": "",
-                    "is_batch": False,
-                    "category_type": "movie"
-                }]
-            options = matched_opts
-        elif quality_key:
-            qk_lower = quality_key.lower().strip()
-            matched_opts = []
-            for opt in options:
-                opt_label = opt.get("label", "").lower()
-                opt_qual = opt.get("quality", "").lower()
-                opt_combined = f"{opt_label} {opt_qual}"
-                
-                if qk_lower.startswith("batch_"):
-                    if opt.get("is_batch") or "pack" in opt_combined or "zip" in opt_combined:
-                        if ("1080p" in qk_lower and "1080p" in opt_combined) or \
-                           ("720p" in qk_lower and "720p" in opt_combined) or \
-                           ("480p" in qk_lower and "480p" in opt_combined) or \
-                           ("4k" in qk_lower and ("4k" in opt_combined or "2160p" in opt_combined)):
-                            matched_opts.append(opt)
-                elif qk_lower.startswith("episode_"):
-                    m_ep = re.search(r"episode_(\d+)", qk_lower)
-                    if m_ep:
-                        target_ep = int(m_ep.group(1))
-                        ep_val = cls.extract_episode_number(opt_combined)
-                        if ep_val == target_ep:
-                            if ("1080p" in qk_lower and "1080p" in opt_combined) or \
-                               ("720p" in qk_lower and "720p" in opt_combined) or \
-                               ("480p" in qk_lower and "480p" in opt_combined) or \
-                               ("4k" in qk_lower and ("4k" in opt_combined or "2160p" in opt_combined)):
-                                matched_opts.append(opt)
-                            elif not any(r in qk_lower for r in ["1080p", "720p", "480p", "4k"]):
-                                matched_opts.append(opt)
+                raw_downloads = []
+                if gen_link:
+                    gen_headers = {**headers, "Referer": target_url}
+                    res2 = await session.get(gen_link, headers=gen_headers, timeout=DEFAULT_TIMEOUT)
+                    soup2 = BeautifulSoup(res2.text, "html.parser")
+                    for a in soup2.find_all("a"):
+                        href = a.get("href", "")
+                        text = a.get_text(" ", strip=True)
+                        if href and ("http" in href) and not any(k in href.lower() for k in ["telegram", "t.me", "report", "#"]):
+                            stype = "💾 Direct Fast CDN"
+                            if "pixeldrain" in href:
+                                stype = "📦 Pixeldrain Fast Download"
+                            elif "10gbps" in href or "fsl" in text.lower():
+                                stype = "⚡ Server : 10Gbps High Speed"
+                            raw_downloads.append({
+                                "server_name": text or stype,
+                                "server_type": stype,
+                                "download_url": href
+                            })
                 else:
-                    if ("1080p" in qk_lower and "1080p" in opt_combined) or \
-                       ("720p" in qk_lower and "720p" in opt_combined) or \
-                       ("480p" in qk_lower and "480p" in opt_combined) or \
-                       ("4k" in qk_lower and ("4k" in opt_combined or "2160p" in opt_combined)):
-                        if "hevc" in qk_lower:
-                            if "hevc" in opt_combined or "x265" in opt_combined:
-                                matched_opts.append(opt)
-                        else:
-                            matched_opts.append(opt)
+                    for a in soup1.find_all("a"):
+                        h = a.get("href", "")
+                        if any(x in h for x in ["r2.cloudflarestorage.com", "storage.googleapis.com", "pixeldrain", "gpdl.", "workers.dev", "hubcdn."]):
+                            stype = "💾 Direct Fast CDN"
+                            if "pixeldrain" in h:
+                                stype = "📦 Pixeldrain Fast Download"
+                            raw_downloads.append({
+                                "server_name": a.get_text(strip=True) or stype,
+                                "server_type": stype,
+                                "download_url": h
+                            })
 
-            if matched_opts:
-                options = matched_opts
-
-        sem = asyncio.Semaphore(3)
-
-        async def resolve_opt(opt: Dict[str, Any]):
-            async with sem:
-                try:
-                    resolved = await cls.extract_final_download_links(opt["link_url"], impersonate=impersonate)
-                    return opt, resolved
-                except Exception:
-                    return opt, None
-
-        resolved_tuples = await asyncio.gather(*(resolve_opt(opt) for opt in options))
-
-        raw_downloads_map: Dict[str, List[Dict[str, Any]]] = {}
-        for opt, res in resolved_tuples:
-            if not res:
-                continue
-            final_downloads = res.get("final_downloads", [])
-            for dl in final_downloads:
-                ep_tag, res_label, codec, is_batch = cls._parse_link_metadata(
-                    opt=opt, 
-                    dl=dl, 
-                    res_filename=res.get("filename", ""), 
-                    is_tv_series=is_tv
-                )
-                format_key = cls._generate_format_key(ep_tag, res_label, codec, is_batch)
-                
-                if format_key not in raw_downloads_map:
-                    raw_downloads_map[format_key] = []
-
-                dl_url = dl.get("download_url")
-                if dl_url and not any(existing.get("download_url") == dl_url for existing in raw_downloads_map[format_key]):
-                    srv_size = dl.get("file_size") or res.get("file_size") or opt.get("size") or ""
-                    if not srv_size and dl.get("server_name"):
-                        m_sz = re.search(r"\[([0-9.]+\s*(?:MB|GB|mb|gb))\]", dl["server_name"])
-                        if m_sz:
-                            srv_size = m_sz.group(1).strip()
-
-                    raw_downloads_map[format_key].append({
-                        "server_name": dl.get("server_name"),
-                        "server_type": dl.get("server_type"),
-                        "download_url": dl_url,
-                        "file_size": srv_size,
-                    })
-
-        # Multi-Format TV Series Expansion (only when doing full resolution):
-        if is_tv and not quality_key and not target_link_url:
-            sr_opt = next((opt for opt in options if "search-recover.php" in opt.get("link_url", "").lower()), None)
-            if sr_opt:
-                await cls._expand_series_from_search_recover(
-                    sr_url=sr_opt["link_url"],
-                    title=details.get("title", ""),
-                    raw_downloads_map=raw_downloads_map,
-                    impersonate=impersonate
-                )
-
-        # Sort keys by batch pack priority -> Episode order -> Movie quality
-        sorted_downloads_map = {
-            k: raw_downloads_map[k] for k in sorted(raw_downloads_map.keys(), key=cls._sort_download_keys)
-        }
+                return {
+                    "source_url": target_url,
+                    "filename": filename,
+                    "final_downloads": raw_downloads,
+                    "total_servers": len(raw_downloads)
+                }
+        except Exception as e:
+            print(f"[EXTRACT FINAL DOWNLOADS ERROR]: {e}")
 
         return {
-            "name": details.get("title", ""),
-            "url": target_url,
-            "thumbnail": details.get("poster", ""),
-            "synopsis": details.get("synopsis", ""),
-            "category": details.get("category", []),
-            "screenshots": details.get("screenshots", []),
-            "downloads": sorted_downloads_map,
+            "source_url": target_url,
+            "filename": "",
+            "final_downloads": [],
+            "total_servers": 0
         }
 
-    _ai_metadata_cache: Dict[str, Dict[str, Any]] = {}
+    # ─────────────────────────────────────────────────────────────
+    # CONNECTIVITY & SOURCE TESTER
+    # ─────────────────────────────────────────────────────────────
 
     @classmethod
-    async def extract_media_metadata_ai(cls, raw_title: str) -> Dict[str, Any]:
-        """
-        Uses AI to intelligently parse complex media titles without brittle regex breaking points.
-        Extracts clean title, type (movie/series), release year, season number, episode number,
-        and clean search queries for search engines / search-recover.
-        """
-        if not raw_title:
-            return {
-                "title": "",
-                "type": "movie",
-                "year": "",
-                "season": None,
-                "episode": None,
-                "search_query": ""
-            }
-
-        if raw_title in cls._ai_metadata_cache:
-            return cls._ai_metadata_cache[raw_title]
-
-        api_key = os.getenv("AI_API_KEY", "")
-        base_url = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-        model = os.getenv("AI_MODEL", "gpt-4o-mini")
-
-        # Resilient fallback if AI is slow or unreachable
-        m_s = re.search(r"season\s*(\d{1,2})|\bS(\d{1,2})\b", raw_title, re.I)
-        season_num = int(m_s.group(1) or m_s.group(2)) if m_s else None
-        c_title = re.split(r"\(|\bseason\b|\bS\d\b|\[", raw_title, flags=re.I)[0].strip()
-        c_query = f"{c_title} S{season_num:02d}" if season_num else c_title
-
-        fallback = {
-            "title": c_title or raw_title,
-            "type": "series" if season_num or re.search(r"season|series|episode|\bS\d|\bEP\b", raw_title, re.I) else "movie",
-            "year": "",
-            "season": season_num,
-            "episode": None,
-            "search_query": c_query
-        }
-
-        if not api_key:
-            return fallback
-
-        prompt = f"""You are a media metadata extraction engine.
-Given the messy release name, torrent title, post title, or filename below:
-"{raw_title}"
-
-Analyze the text and return a clean JSON object with:
-- "title": Clean canonical title of the movie or TV show (e.g. "The Family Man"). Remove all codecs, resolutions, audio formats, and websites.
-- "type": "movie" or "series".
-- "year": Exact 4-digit release year if known or found (e.g. "2021").
-- "season": Integer season number if TV series (e.g. 2), or null if movie.
-- "episode": Integer episode number if single episode, or null if batch or movie.
-- "search_query": Most effective concise search query for file engines (e.g. "The Family Man S02" for a season, or "Movie Name 2021" for a movie).
-
-Respond ONLY with valid JSON."""
-
-        try:
-            url = f"{base_url}/chat/completions"
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": "You are a media metadata parser. Return only valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                "response_format": {"type": "json_object"}
-            }
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            async with AsyncSession(timeout=35) as session:
-                res = await session.post(url, json=payload, headers=headers)
-                if res.status_code == 200:
-                    data = res.json()
-                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                    parsed = json.loads(content)
-                    cls._ai_metadata_cache[raw_title] = parsed
-                    return parsed
-        except Exception as e:
-            print(f"[AI-SCRAPE-METADATA-ERROR]: {e}")
-
-        return fallback
-
-    @classmethod
-    async def _expand_series_from_search_recover(
+    async def test_source_connectivity(
         cls,
-        sr_url: str,
-        title: str,
-        raw_downloads_map: Dict[str, List[Dict[str, Any]]],
+        url: str,
+        source_type: str = "generic",
         impersonate: str = DEFAULT_IMPERSONATE
-    ) -> None:
-        """
-        Discovers all available season batches (480p, 720p, 1080p, 4K) and individual episodes
-        from HubCloud's search-recover endpoint so TV series never miss any format or episode-wise links.
-        """
-        try:
-            parsed_sr = urllib.parse.urlsplit(sr_url)
-            qs_sr = urllib.parse.parse_qs(parsed_sr.query)
-            from_ac = qs_sr.get("from_ac", [""])[0]
-
-            headers = cls._get_browser_headers()
-            if not from_ac:
-                async with AsyncSession(impersonate=impersonate, verify=False) as session:
-                    res_sr = await session.get(sr_url, headers=headers, timeout=DEFAULT_TIMEOUT)
-                    m_ac = re.search(r'const\s+FROM_AC_TOKEN\s*=\s*["\']([^"\']+)["\']', res_sr.text)
-                    if m_ac:
-                        from_ac = m_ac.group(1)
-
-            if not from_ac:
-                return
-
-            # Leverage AI to extract clean canonical query for search-recover without brittle regex
-            ai_meta = await cls.extract_media_metadata_ai(title)
-            search_query = ai_meta.get("search_query")
-            if not search_query:
-                clean_title = ai_meta.get("title") or title
-                s_num = ai_meta.get("season")
-                if s_num is not None:
-                    search_query = f"{clean_title} S{int(s_num):02d}"
+    ) -> Dict[str, Any]:
+        """Tests live HTTP connectivity, response latency, and active working domain for any source."""
+        start = time.time()
+        headers = cls._get_browser_headers()
+        async with AsyncSession(impersonate=impersonate, verify=False) as session:
+            try:
+                res = await session.get(url, headers=headers, timeout=12)
+                elapsed_ms = int((time.time() - start) * 1000)
+                if res.status_code == 200:
+                    return {
+                        "ok": True,
+                        "success": True,
+                        "status": "online",
+                        "statusCode": res.status_code,
+                        "latencyMs": elapsed_ms,
+                        "latency_ms": elapsed_ms,
+                        "finalUrl": str(res.url),
+                        "message": f"Source responsive ({elapsed_ms}ms)"
+                    }
                 else:
-                    m_s = re.search(r"season\s*(\d{1,2})|\bS(\d{1,2})\b", title, re.I)
-                    season_num = int(m_s.group(1) or m_s.group(2)) if m_s else 1
-                    search_query = f"{clean_title} S{season_num:02d}"
+                    return {
+                        "ok": False,
+                        "success": False,
+                        "status": "warning",
+                        "statusCode": res.status_code,
+                        "latencyMs": elapsed_ms,
+                        "latency_ms": elapsed_ms,
+                        "finalUrl": str(res.url),
+                        "message": f"HTTP {res.status_code}"
+                    }
+            except Exception as e:
+                elapsed_ms = int((time.time() - start) * 1000)
+                return {
+                    "ok": False,
+                    "success": False,
+                    "status": "offline",
+                    "latencyMs": elapsed_ms,
+                    "latency_ms": elapsed_ms,
+                    "message": str(e)
+                }
 
-            search_api_url = f"{parsed_sr.scheme}://{parsed_sr.netloc}/drive/search-recover.php"
-            api_headers = {**headers, "Accept": "application/json", "Referer": sr_url}
-
-            async with AsyncSession(impersonate=impersonate, verify=False) as session:
-                res = await session.get(
-                    search_api_url,
-                    params={"api": "search", "q": search_query, "page": "1", "from_ac": from_ac},
-                    headers=api_headers,
-                    timeout=DEFAULT_TIMEOUT
-                )
-                hits = res.json().get("hits", [])
-                if not hits:
-                    return
-
-                sem = asyncio.Semaphore(10)
-
-                async def resolve_one_hit(hit: Dict[str, Any]):
-                    hit_url = hit.get("url")
-                    fn = hit.get("file_name", "")
-                    if not hit_url:
-                        return None
-                    async with sem:
-                        try:
-                            resolved = await cls.extract_final_download_links(hit_url, impersonate=impersonate)
-                            if resolved and resolved.get("final_downloads"):
-                                if not resolved.get("filename"):
-                                    resolved["filename"] = fn
-                                if not resolved.get("file_size") and hit.get("size"):
-                                    resolved["file_size"] = hit["size"]
-                                return hit, resolved
-                        except Exception:
-                            return None
-                    return None
-
-                resolved_hits = await asyncio.gather(*(resolve_one_hit(h) for h in hits))
-
-                for item in resolved_hits:
-                    if not item:
-                        continue
-                    hit, res = item
-                    fn = res.get("filename") or hit.get("file_name", "")
-                    ep_num = cls.extract_episode_number(fn)
-                    is_batch_hit = bool(".zip" in fn.lower() or "pack" in fn.lower() or "complete" in fn.lower() or ep_num is None)
-                    final_downloads = res.get("final_downloads", [])
-                    for dl in final_downloads:
-                        ep_tag, res_label, codec, is_batch_detected = cls._parse_link_metadata(
-                            opt={"label": fn, "quality": "", "category_type": "batch_pack" if is_batch_hit else "episode", "is_batch": is_batch_hit},
-                            dl=dl,
-                            res_filename=fn,
-                            is_tv_series=True
-                        )
-                        format_key = cls._generate_format_key(ep_tag, res_label, codec, is_batch_detected)
-                        if format_key not in raw_downloads_map:
-                            raw_downloads_map[format_key] = []
-
-                        dl_url = dl.get("download_url")
-                        if dl_url and not any(existing.get("download_url") == dl_url for existing in raw_downloads_map[format_key]):
-                            srv_size = dl.get("file_size") or res.get("file_size") or hit.get("size") or ""
-                            if not srv_size and dl.get("server_name"):
-                                m_sz = re.search(r"\[([0-9.]+\s*(?:MB|GB|mb|gb))\]", dl["server_name"])
-                                if m_sz:
-                                    srv_size = m_sz.group(1).strip()
-
-                            raw_downloads_map[format_key].append({
-                                "server_name": dl.get("server_name"),
-                                "server_type": dl.get("server_type"),
-                                "download_url": dl_url,
-                                "file_size": srv_size,
-                            })
-        except Exception as e:
-            print(f"[SEARCH-RECOVER EXPANSION ERROR]: {e}")
-
+    # Legacy method aliases for backward compatibility
+    get_movie_page_details = get_movie_details
+    scrape_movie_page = get_movie_details
+    search_movies = search_hdhub4u
+    resolve_movie_direct_downloads = extract_final_download_links

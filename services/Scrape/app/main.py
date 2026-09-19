@@ -1,6 +1,6 @@
 from pathlib import Path
-from typing import Optional
-from fastapi import FastAPI, HTTPException, Query, Request
+from typing import Any, Dict, List, Optional
+from fastapi import FastAPI, HTTPException, Query, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -12,12 +12,11 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(
-    title="HDHub4u Multi-Scraper & Direct Download Resolver",
-    description="Multi-stage scraper: Dynamic domain discovery from hdhub4u.bi, Pingora search engine, movie details scraper, and 10Gbps final direct download link extractor.",
-    version="2.0.0",
+    title="CineGrab Multi-Source AI Scraper & Direct Download Resolver",
+    description="Intelligent multi-source movie & web series scraping engine (HDHub4u, Modlist/UHDMovies/MoviesMod, Vegamovies).",
+    version="3.0.0",
 )
 
-# Ensure static & templates directory exist
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -27,24 +26,18 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 @app.get("/", response_class=HTMLResponse)
 async def home_page(request: Request):
-    """Clean, focused Search-First Homepage."""
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={
-            "default_domain": DEFAULT_BASE_DOMAIN,
-        },
+        context={"default_domain": DEFAULT_BASE_DOMAIN},
     )
 
 
 @app.get("/api/domain")
 async def api_get_domain(
-    force_refresh: bool = Query(False, description="Force re-query of hdhub4u.bi"),
+    force_refresh: bool = Query(False, description="Force re-query of active domain"),
     impersonate: str = Query("chrome124", description="Browser TLS profile"),
 ):
-    """
-    Step 1: Returns the live active working domain dynamically discovered from https://hdhub4u.bi/
-    """
     try:
         domain = await CloudflareScraper.get_active_domain(
             impersonate=impersonate, 
@@ -59,50 +52,61 @@ async def api_get_domain(
 @app.get("/api/search")
 @app.get("/api/scrape/search")
 async def api_search(
-    param: Optional[str] = Query(None, description="Movie/show search term, e.g. param=bahubali"),
+    param: Optional[str] = Query(None, description="Movie/show search term"),
     q: Optional[str] = Query(None, description="Movie, series title or search term"),
     query: Optional[str] = Query(None, description="Movie, series title or search term"),
     search: Optional[str] = Query(None, description="Movie, series title or search term"),
-    page: int = Query(1, ge=1, description="Page number", examples=[1]),
-    fetch_all: bool = Query(True, description="Automatically fetch and aggregate all pages"),
-    impersonate: str = Query("chrome124", description="Browser TLS profile to impersonate"),
+    source: Optional[str] = Query(None, description="Target specific source (hdhub4u, modlist, vegamovies, all)"),
+    page: int = Query(1, ge=1, description="Page number"),
+    fetch_all: bool = Query(True, description="Fetch all pages"),
+    impersonate: str = Query("chrome124", description="Browser TLS profile"),
 ):
     """
-    Endpoint 1: /search?param={name}
-    Returns all search results with image/thumbnail, permalink, cast, and categories (without download links).
+    Search across enabled sources (HDHub4u, Modlist.in / UHDMovies / MoviesMod, Vegamovies).
     """
     search_term = param or q or query or search
     if not search_term:
         raise HTTPException(status_code=400, detail="Search term is required. Example: /search?param=bahubali")
 
     try:
-        results = await CloudflareScraper.search_movies(
-            query=search_term, 
-            page=page, 
-            fetch_all=fetch_all,
+        sources_filter = None
+        if source and source.lower() != "all":
+            sources_filter = [{"type": source.lower(), "enabled": True}]
+
+        items_list = await CloudflareScraper.search_multi_sources(
+            query=search_term,
+            sources=sources_filter,
             impersonate=impersonate
         )
-
-        items_list = []
-        for it in results.get("items", []):
-            title = it.get("title") or it.get("name") or ""
-            link = it.get("permalink") or it.get("url") or ""
-            items_list.append({
-                "name": title,
-                "title": title,
-                "url": link,
-                "permalink": link,
-                "thumbnail": it.get("thumbnail"),
-                "category": it.get("category", []),
-                "director": it.get("director", []),
-                "stars": it.get("stars", []),
-                "imdb_id": it.get("imdb_id"),
-                "post_date": it.get("post_date"),
-            })
 
         return JSONResponse(content=items_list)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(exc)}")
+
+
+@app.post("/api/scrape/multi-search")
+async def api_multi_search(
+    body: Dict[str, Any] = Body(...),
+    impersonate: str = Query("chrome124", description="Browser TLS profile"),
+):
+    """
+    Multi-source search endpoint accepting a query and a dynamic list of enabled sources.
+    """
+    query = body.get("query") or body.get("q") or body.get("param") or ""
+    sources = body.get("sources")
+
+    if not query:
+        raise HTTPException(status_code=400, detail="Query string is required")
+
+    try:
+        items = await CloudflareScraper.search_multi_sources(
+            query=query,
+            sources=sources,
+            impersonate=impersonate
+        )
+        return JSONResponse(content=items)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Multi-source search failed: {str(exc)}")
 
 
 @app.get("/details")
@@ -111,12 +115,8 @@ async def api_search(
 async def api_movie_details(
     url: Optional[str] = Query(None, description="Movie page URL"),
     param: Optional[str] = Query(None, description="Movie page URL"),
-    impersonate: str = Query("chrome124", description="Browser TLS profile to impersonate"),
+    impersonate: str = Query("chrome124", description="Browser TLS profile"),
 ):
-    """
-    Returns movie page details with all download options in ~1 second,
-    without resolving each download option to a final CDN server link.
-    """
     target_url = url or param
     if not target_url:
         raise HTTPException(status_code=400, detail="URL or param is required")
@@ -132,115 +132,44 @@ async def api_movie_details(
 
 @app.get("/download")
 @app.get("/api/download")
-@app.get("/download/search={search_query:path}")
-@app.get("/download/search/{search_query:path}")
 async def api_download_endpoint(
-    url: Optional[str] = Query(None, description="Movie page URL / permalink to extract downloads for"),
-    swap_url: Optional[str] = Query(None, description="Movie page URL / permalink (swap URL)"),
-    link: Optional[str] = Query(None, description="Movie page URL / permalink"),
+    url: Optional[str] = Query(None, description="Movie page URL / permalink"),
+    swap_url: Optional[str] = Query(None, description="Movie page URL"),
+    link: Optional[str] = Query(None, description="Movie page URL"),
     param: Optional[str] = Query(None, description="Movie URL or search term"),
-    search: Optional[str] = Query(None, description="Movie title if searching"),
-    q: Optional[str] = Query(None, description="Movie title if searching"),
-    search_query: Optional[str] = None,
-    limit: Optional[int] = Query(None, ge=1, description="Max number of matching movies to resolve"),
-    quality_key: Optional[str] = Query(None, description="Target specific quality key to resolve selectively (e.g. format_720p)"),
     link_url: Optional[str] = Query(None, description="Target intermediate or final link URL to resolve"),
-    impersonate: str = Query("chrome124", description="Browser TLS profile to impersonate"),
+    impersonate: str = Query("chrome124", description="Browser TLS profile"),
 ):
-    """
-    Endpoint 2: /download?param={movie_url} or /download?param={hubdrive_url}
-    Takes a specific movie page URL or HubDrive/HubCloud link and returns all final direct download links (10Gbps, Fast CDN, etc.).
-    """
-    target_url = url or swap_url or link
-    
-    # Case A: If user passed a movie page URL or file URL (via param, url, swap_url, or link)
-    if not target_url and param and ("http://" in param or "https://" in param or "/" in param):
-        target_url = param
+    target_url = url or swap_url or link or param
+    if not target_url:
+        raise HTTPException(status_code=400, detail="URL parameter is required")
 
-    if target_url:
-        try:
-            if link_url and any(k in link_url.lower() for k in ["hubdrive.", "hubcloud.", "hblinks.", "greenmount"]):
-                result = await CloudflareScraper.extract_final_download_links(
-                    link_url=link_url,
-                    impersonate=impersonate
-                )
-                return JSONResponse(content=result)
-            elif any(k in target_url.lower() for k in ["hubdrive.", "hubcloud.", "hblinks.", "greenmount"]):
-                result = await CloudflareScraper.extract_final_download_links(
-                    link_url=target_url,
-                    impersonate=impersonate
-                )
-                return JSONResponse(content=result)
-            else:
-                result = await CloudflareScraper.resolve_movie_direct_downloads(
-                    movie_url=target_url,
-                    quality_key=quality_key,
-                    target_link_url=link_url,
-                    impersonate=impersonate
-                )
-                return JSONResponse(content=result)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Download extraction failed: {str(exc)}")
-
-
-    # Case B: If user passed a search term to /download (e.g. /download?param=bahubali or /download/search=bahubali)
-    search_term = search_query or search or q or param
-    if search_term:
-        if search_term.startswith("search="):
-            search_term = search_term[len("search="):]
-
-        try:
-            results = await CloudflareScraper.search_and_resolve_downloads(
-                query=search_term,
-                limit=limit,
+    try:
+        # If link_url is provided, or target_url is an intermediate download service
+        eval_url = link_url or target_url
+        if any(k in eval_url.lower() for k in ["hubdrive.", "hubcloud.", "hblinks.", "greenmount", "nexdrive", "vgmlinks", "unblockedgames", "links.modpro", "fast-dl", "vcloud"]):
+            result = await CloudflareScraper.extract_final_download_links(
+                link_url=eval_url,
                 impersonate=impersonate
             )
-            return JSONResponse(content=results)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Download extraction failed: {str(exc)}")
-
-    raise HTTPException(
-        status_code=400, 
-        detail="Movie URL or search parameter is required. Example: /download?param=https://new5.hdhub4u.cl/movie-page/ or /download?url=..."
-    )
-
-
-@app.get("/api/movie")
-@app.get("/api/scrape/movie")
-async def api_scrape_movie(
-    url: str = Query(
-        ...,
-        description="Movie detail page URL to extract download links from",
-        examples=["https://new5.hdhub4u.cl/bahubali-2-the-conclusion-2017-hindi-bluray-full-movie/"],
-    ),
-    impersonate: str = Query("chrome124", description="Browser TLS profile to impersonate"),
-):
-    """
-    Scrapes the movie detail page and extracts storyline, screenshots, and all available download options & qualities.
-    """
-    try:
-        movie_data = await CloudflareScraper.get_movie_details(
-            movie_url=url,
-            impersonate=impersonate
-        )
-        return JSONResponse(content=movie_data)
+            return JSONResponse(content=result)
+        else:
+            # Otherwise, extract all options from the movie detail page
+            details = await CloudflareScraper.get_movie_details(
+                movie_url=target_url,
+                impersonate=impersonate
+            )
+            return JSONResponse(content=details)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Movie scraping failed: {str(exc)}")
+        raise HTTPException(status_code=500, detail=f"Download extraction failed: {str(exc)}")
 
 
 @app.get("/api/resolve")
 @app.get("/api/scrape/resolve")
 async def api_resolve_link(
-    url: str = Query(
-        ...,
-        description="HubCloud, HBLinks, or intermediate URL to resolve to final 10Gbps/CDN direct download link",
-        examples=["https://hubcloud.cx/drive/sghe8tiglsgw8sl", "https://hblinks.co/archives/70461"],
-    ),
-    impersonate: str = Query("chrome124", description="Browser TLS profile to impersonate"),
+    url: str = Query(..., description="Intermediate URL to resolve to final 10Gbps/CDN direct download link"),
+    impersonate: str = Query("chrome124", description="Browser TLS profile"),
 ):
-    """
-    Resolves any HubCloud, HBLinks, or intermediate redirect URL directly to final 10Gbps High-Speed Server & Fast CDN (.mkv) URLs.
-    """
     try:
         resolved_data = await CloudflareScraper.extract_final_download_links(
             link_url=url, 
@@ -251,27 +180,43 @@ async def api_resolve_link(
         raise HTTPException(status_code=500, detail=f"Link resolution failed: {str(exc)}")
 
 
-@app.get("/api/scrape/url")
-async def api_fetch_url(
-    url: str = Query(..., description="Full URL to fetch directly"),
-    fetch_all: bool = Query(True, description="If URL is a search URL, fetch all pages"),
-    impersonate: str = Query("chrome124", description="Browser TLS profile to impersonate"),
+@app.post("/api/sources/test")
+@app.get("/api/sources/test")
+async def api_test_source(
+    url: Optional[str] = Query(None),
+    baseUrl: Optional[str] = Query(None),
+    base_url: Optional[str] = Query(None),
+    type: Optional[str] = Query(None),
+    source_type: Optional[str] = Query(None),
+    body: Optional[Dict[str, Any]] = Body(None),
+    impersonate: str = Query("chrome124", description="Browser TLS profile"),
 ):
-    """Legacy endpoint for direct URL fetching."""
-    try:
-        data = await CloudflareScraper.fetch_url(
-            url=url, 
-            impersonate=impersonate,
-            fetch_all_pages=fetch_all
-        )
-        return JSONResponse(content=data)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Fetch failed: {str(exc)}")
+    target_url = url or baseUrl or base_url
+    if not target_url and body:
+        target_url = body.get("url") or body.get("baseUrl") or body.get("base_url")
+    
+    stype = type or source_type
+    if not stype and body:
+        stype = body.get("source_type") or body.get("type") or "generic"
+    if not stype:
+        stype = "generic"
+
+    if not target_url:
+        raise HTTPException(status_code=400, detail="Target URL is required for testing")
+
+    result = await CloudflareScraper.test_source_connectivity(
+        url=target_url,
+        source_type=stype,
+        impersonate=impersonate
+    )
+    return JSONResponse(content=result)
 
 
 @app.get("/api/health")
 async def health_check():
-    """Health status endpoint."""
-    return {"status": "ok", "service": "hdhub4u-multi-scraper", "engine": "curl_cffi"}
-
-
+    return {
+        "status": "ok", 
+        "service": "cinegrab-multi-scraper", 
+        "sources": ["HDHub4u", "Modlist (UHDMovies/MoviesMod)", "Vegamovies"], 
+        "engine": "curl_cffi"
+    }

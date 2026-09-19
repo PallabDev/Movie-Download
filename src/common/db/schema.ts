@@ -104,3 +104,18 @@ export const ottReleases = pgTable("ott_releases", {
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Scraper Sources table
+export const scraperSources = pgTable("scraper_sources", {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 100 }).notNull(),
+    type: varchar("type", { length: 50 }).notNull().default("custom"), // "hdhub4u" | "modlist" | "vegamovies" | "custom"
+    baseUrl: text("base_url").notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    priority: integer("priority").default(1).notNull(),
+    headers: jsonb("headers"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+
