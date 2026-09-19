@@ -1804,7 +1804,12 @@ function formatDownloadDisplayTitle(title, type) {
                     </td>
                     <td style="color: var(--text-secondary); font-size: 11.5px;">${new Date(item.createdAt).toLocaleDateString()} ${new Date(item.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</td>
                     <td style="text-align: right; white-space: nowrap;">
-                        <div style="display: inline-flex; gap: 4px;">${actionButtons}</div>
+                        <div style="display: inline-flex; gap: 4px;">
+                            <button class="btn-header" style="color: var(--accent-cyan); padding: 3px 7px;" onclick="openStreamInspector('${item.requestId}')" title="Inspect Stream Link Hops & Endpoints">
+                                🔍 Inspect
+                            </button>
+                            ${actionButtons}
+                        </div>
                     </td>
                 </tr>
             `;
@@ -4063,6 +4068,7 @@ async function addReleaseToWatchlist(title, year) {
 // ==========================================================================
 const downloadPickerState = {
     title: '',
+    searchQuery: '',
     year: '',
     tmdbId: null,
     mediaType: 'movie',
@@ -4077,9 +4083,10 @@ const downloadPickerState = {
 
 function openDownloadPicker(media) {
     closePickerFormatsModal();
-    if (!media || !media.title) return;
+    if (!media || (!media.title && !media.searchQuery)) return;
     
-    downloadPickerState.title = media.title;
+    downloadPickerState.title = media.title || media.searchQuery || 'Media';
+    downloadPickerState.searchQuery = media.searchQuery || media.title || '';
     downloadPickerState.year = media.year || '';
     downloadPickerState.tmdbId = media.tmdbId || null;
     downloadPickerState.mediaType = media.mediaType === 'series' ? 'series' : 'movie';
@@ -4109,7 +4116,7 @@ function openDownloadPicker(media) {
     }
     if (overviewEl) overviewEl.textContent = downloadPickerState.overview || 'No synopsis available.';
     if (crumbTitle) crumbTitle.textContent = `${downloadPickerState.title} ${downloadPickerState.year ? '(' + downloadPickerState.year + ')' : ''}`;
-    if (customInput) customInput.value = downloadPickerState.title;
+    if (customInput) customInput.value = downloadPickerState.searchQuery || downloadPickerState.title;
     if (statusNote) statusNote.textContent = 'Searching scraper index for HD/OTT releases...';
 
     if (trailerBtn) {
@@ -4141,6 +4148,9 @@ function openDownloadPicker(media) {
     const url = new URL(window.location.href);
     url.pathname = '/download/select';
     url.searchParams.set('title', downloadPickerState.title);
+    if (downloadPickerState.searchQuery && downloadPickerState.searchQuery !== downloadPickerState.title) {
+        url.searchParams.set('search', downloadPickerState.searchQuery);
+    }
     if (downloadPickerState.year) url.searchParams.set('year', downloadPickerState.year);
     if (downloadPickerState.tmdbId) url.searchParams.set('tmdbId', String(downloadPickerState.tmdbId));
     if (downloadPickerState.mediaType) url.searchParams.set('type', downloadPickerState.mediaType);
@@ -4149,14 +4159,17 @@ function openDownloadPicker(media) {
     }
     history.pushState({ view: 'download-picker', title: downloadPickerState.title }, '', url.toString());
 
-    // Auto-search scraper service
-    searchScraperForPicker(downloadPickerState.title, downloadPickerState.year, downloadPickerState.mediaType);
+    // Auto-search scraper service with clean query
+    const targetSearch = downloadPickerState.searchQuery || downloadPickerState.title;
+    searchScraperForPicker(targetSearch, downloadPickerState.year, downloadPickerState.mediaType);
 }
 
 function initDownloadPickerFromUrl() {
     closePickerFormatsModal();
     const params = new URLSearchParams(window.location.search);
-    const title = params.get('title');
+    const searchParam = params.get('search');
+    const titleParam = params.get('title');
+    const title = titleParam || searchParam;
     if (!title) {
         switchView('releases', true);
         return;
@@ -4167,8 +4180,12 @@ function initDownloadPickerFromUrl() {
     const posterUrl = params.get('poster') || '';
     const overview = params.get('overview') || '';
 
+    // Prefer search query if passed specifically
+    const searchQuery = searchParam || title;
+
     openDownloadPicker({
         title,
+        searchQuery,
         year,
         tmdbId,
         mediaType,
@@ -4198,11 +4215,14 @@ async function searchScraperForPicker(searchTitle, year, type) {
     const badge = document.getElementById('pickerResultsCountBadge');
     const statusNote = document.getElementById('pickerHeroStatusNote');
 
+    const cleanSearch = (searchTitle || '').trim();
+    if (!cleanSearch) return;
+
     if (!grid) return;
     grid.innerHTML = `
         <div class="picker-loading-state" style="grid-column: 1 / -1; text-align: center; padding: 45px 20px; color: var(--text-muted);">
             <div class="spinner" style="margin: 0 auto 12px;"></div>
-            <div>Searching scraper service (dl.pallabdev.in) for <strong>${escapeHtml(searchTitle)}</strong>...</div>
+            <div>Searching scraper service (dl.pallabdev.in) for <strong>${escapeHtml(cleanSearch)}</strong>...</div>
         </div>
     `;
     if (badge) badge.textContent = 'Searching...';
@@ -4213,7 +4233,7 @@ async function searchScraperForPicker(searchTitle, year, type) {
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({
-                title: searchTitle,
+                title: cleanSearch,
                 type: type || 'all',
                 year: year || ''
             })
@@ -4235,9 +4255,9 @@ async function searchScraperForPicker(searchTitle, year, type) {
             grid.innerHTML = `
                 <div class="picker-empty-state" style="grid-column: 1 / -1; text-align: center; padding: 45px 20px; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.1); border-radius: 12px;">
                     <div style="font-size: 32px; margin-bottom: 10px;">🔍</div>
-                    <h4 style="color: #fff; margin-bottom: 6px;">No Scraper Releases Found for "${escapeHtml(searchTitle)}"</h4>
+                    <h4 style="color: #fff; margin-bottom: 6px;">No Scraper Releases Found for "${escapeHtml(cleanSearch)}"</h4>
                     <p style="color: var(--text-muted); font-size: 13px; max-width: 450px; margin: 0 auto 16px;">
-                        The title could not be matched automatically. Try entering an alternate spelling or omitting subtitles in the box above.
+                        The title could not be matched automatically. Try entering an alternate spelling (e.g. without apostrophes) in the search box above.
                     </p>
                 </div>
             `;
@@ -4412,6 +4432,239 @@ function closePickerFormatsModal() {
 }
 
 // ==========================================================================
+// STREAM LINK INSPECTOR & HOP DIAGNOSTICS MODAL
+// ==========================================================================
+async function openStreamInspector(requestId) {
+    if (!requestId) return;
+    const modal = document.getElementById('streamInspectorModal');
+    const titleEl = document.getElementById('streamInspectorTitle');
+    const subEl = document.getElementById('streamInspectorSubtitle');
+    const bodyEl = document.getElementById('streamInspectorBody');
+    if (!modal || !bodyEl) return;
+
+    modal.classList.remove('hidden');
+    if (titleEl) titleEl.textContent = 'Stream Link Inspector';
+    if (subEl) subEl.textContent = `Inspecting download session: ${requestId}`;
+
+    bodyEl.innerHTML = `
+        <div style="text-align: center; padding: 40px 20px; color: var(--text-muted);">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            <div>Loading stream hops & server connections...</div>
+        </div>
+    `;
+
+    try {
+        const res = await fetch(`/api/download/inspect/${encodeURIComponent(requestId)}`, { credentials: 'include' });
+        const data = await res.json();
+        if (!data.success) {
+            bodyEl.innerHTML = `
+                <div style="text-align: center; padding: 30px; color: var(--accent-rose);">
+                    <div style="font-size: 24px; margin-bottom: 8px;">⚠️</div>
+                    <div>${escapeHtml(data.error || 'Failed to inspect stream')}</div>
+                </div>
+            `;
+            return;
+        }
+
+        const trace = data.trace || {};
+        const dl = data.download || {};
+        const title = trace.title || dl.title || 'Media Stream';
+        const servers = trace.servers || [];
+        const targetUrl = trace.targetUrl || dl.url || '';
+        const linkUrl = trace.linkUrl || '';
+        const fileSize = trace.fileSize || dl.fileSize || 'Direct Stream';
+        const fileName = trace.fileName || dl.downloadPath || '';
+
+        if (titleEl) titleEl.textContent = `Inspector: ${title}`;
+        if (subEl) subEl.textContent = `Job ID: ${requestId} · Status: ${dl.status || 'active'} · Size: ${fileSize}`;
+
+        bodyEl.innerHTML = `
+            <div class="inspector-summary-box" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 14px; margin-bottom: 16px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; font-size: 12px;">
+                    <div><span style="color: var(--text-muted);">Media File:</span> <strong style="color: #fff; word-break: break-all;">${escapeHtml(fileName || title)}</strong></div>
+                    <div><span style="color: var(--text-muted);">Active Status:</span> <span class="status-badge ${dl.status || 'active'}">${escapeHtml(dl.status || 'queued')}</span></div>
+                    <div><span style="color: var(--text-muted);">Total CDN Endpoints:</span> <strong style="color: var(--accent-cyan);">${servers.length} Servers</strong></div>
+                    <div><span style="color: var(--text-muted);">Resolved At:</span> <span style="color: var(--text-secondary);">${trace.resolvedAt ? new Date(trace.resolvedAt).toLocaleTimeString() : 'Recent'}</span></div>
+                </div>
+            </div>
+
+            <!-- Hop 1: Scraper Target / Gateway Link -->
+            <div class="stage-step-card completed" style="margin-bottom: 12px;">
+                <div class="stage-step-header">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="stage-step-num">1</span>
+                        <strong style="font-size: 13.5px; color: #fff;">Initial Gateway / Portal Source</strong>
+                    </div>
+                    <span class="stage-status-badge completed">Bypassed (0s)</span>
+                </div>
+                <div class="inspector-url-box">
+                    <code>${escapeHtml(targetUrl || linkUrl || 'Direct scraper resolution')}</code>
+                    ${(targetUrl || linkUrl) ? `<button class="btn-copy-url" onclick="copyInspectorLink('${escapeHtml(targetUrl || linkUrl).replace(/'/g, "\\'")}', this)">Copy</button>` : ''}
+                </div>
+            </div>
+
+            <!-- Hop 2: Direct High-Speed CDN Servers (HubCloud, Google, Pixeldrain, CF) -->
+            <div class="stage-step-card active" style="margin-bottom: 12px;">
+                <div class="stage-step-header">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="stage-step-num">2</span>
+                        <strong style="font-size: 13.5px; color: #fff;">Direct Download Streams & CDN Endpoints (${servers.length})</strong>
+                    </div>
+                    <span class="stage-status-badge active">Active CDN</span>
+                </div>
+                <div class="inspector-servers-list" style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+                    ${servers.length === 0 ? `
+                        <div style="color: var(--text-muted); font-size: 12px; padding: 10px;">Direct stream handled via automated worker bypass.</div>
+                    ` : servers.map((srv, sIdx) => `
+                        <div class="inspector-server-item" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 10px 12px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span class="chip ${sIdx === 0 ? 'best' : 'quality'}" style="font-size: 9px;">Server #${sIdx + 1}</span>
+                                    <strong style="font-size: 12px; color: #fff;">${escapeHtml(srv.server_name || srv.server_type || 'Direct Stream')}</strong>
+                                </div>
+                                <span style="font-size: 11px; color: var(--accent-emerald); font-weight: 600;">${escapeHtml(srv.file_size || fileSize)}</span>
+                            </div>
+                            <div class="inspector-url-box">
+                                <code>${escapeHtml(srv.download_url)}</code>
+                                <button class="btn-copy-url" onclick="copyInspectorLink('${escapeHtml(srv.download_url).replace(/'/g, "\\'")}', this)">Copy Stream Link</button>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    } catch (err) {
+        bodyEl.innerHTML = `
+            <div style="text-align: center; padding: 30px; color: var(--accent-rose);">
+                Failed to inspect: ${escapeHtml(err.message)}
+            </div>
+        `;
+    }
+}
+
+function closeStreamInspector() {
+    const modal = document.getElementById('streamInspectorModal');
+    if (modal) modal.classList.add('hidden');
+}
+
+function copyInspectorLink(text, btnElement) {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+        if (btnElement) {
+            const orig = btnElement.textContent;
+            btnElement.textContent = '✓ Copied!';
+            btnElement.style.color = 'var(--accent-emerald)';
+            setTimeout(() => {
+                btnElement.textContent = orig;
+                btnElement.style.color = '';
+            }, 1800);
+        }
+        showToast('Link copied to clipboard', 'success');
+    }).catch(() => {
+        showToast('Could not copy link to clipboard', 'error');
+    });
+}
+
+// ==========================================================================
+// REAL-TIME SCRAPER STAGE-BY-STAGE PREVIEW MONITOR
+// ==========================================================================
+let scraperMonitorStartTime = 0;
+let scraperMonitorTimerInterval = null;
+
+const SCRAPER_STAGES = [
+    { num: 1, title: 'Multi-Source Search & Query Normalization', desc: 'Stripping noise, generating search variants across HDHub4u, Vegamovies & Modlist' },
+    { num: 2, title: 'Portal Mirror Discovery & Pingora Index', desc: 'Querying high-speed cluster with automated failover routing' },
+    { num: 3, title: '0s Mediator & Fast Gateway Bypass', desc: 'Instant 0ms base64/rot13 extraction across GreenMotors, HBLinks & HubCloud' },
+    { num: 4, title: 'Quality Packaging & Format Matrix', desc: 'Categorizing 4K UHD, 1080p FHD, 720p HD streams and batch season episodes' },
+    { num: 5, title: 'Direct 10Gbps CDN Stream Readiness', desc: 'Verifying Google Video CDN, Pixeldrain API, and Cloudflare Workers endpoints' },
+];
+
+function openScraperLiveMonitor(queryTitle) {
+    const modal = document.getElementById('scraperLiveMonitorModal');
+    const titleEl = document.getElementById('scraperLiveMonitorTitle');
+    const subEl = document.getElementById('scraperLiveMonitorSubtitle');
+    const bodyEl = document.getElementById('scraperLiveMonitorBody');
+    const timerEl = document.getElementById('scraperLiveMonitorTotalTimer');
+    if (!modal || !bodyEl) return;
+
+    modal.classList.remove('hidden');
+    scraperMonitorStartTime = Date.now();
+    const qTitle = queryTitle || downloadPickerState.searchQuery || downloadPickerState.title || 'Media';
+    if (titleEl) titleEl.textContent = `Scraper Pipeline: ${qTitle}`;
+    if (subEl) subEl.textContent = 'Live stage-by-stage measurement across scraper search, bypass, and direct streams';
+
+    if (timerEl) {
+        timerEl.textContent = '0 ms';
+        if (scraperMonitorTimerInterval) clearInterval(scraperMonitorTimerInterval);
+        scraperMonitorTimerInterval = setInterval(() => {
+            const elapsed = Date.now() - scraperMonitorStartTime;
+            timerEl.textContent = `${elapsed} ms`;
+        }, 100);
+    }
+
+    bodyEl.innerHTML = SCRAPER_STAGES.map(stg => `
+        <div class="stage-step-card ${stg.num === 1 ? 'active' : 'pending'}" id="scraperStageCard-${stg.num}">
+            <div class="stage-step-header">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="stage-step-num" id="scraperStageNum-${stg.num}">${stg.num}</span>
+                    <div>
+                        <strong style="font-size: 13px; color: #fff;">${escapeHtml(stg.title)}</strong>
+                        <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 1px;" id="scraperStageDesc-${stg.num}">${escapeHtml(stg.desc)}</div>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="stage-timer-badge" id="scraperStageTimer-${stg.num}">--</span>
+                    <span class="stage-status-badge ${stg.num === 1 ? 'active' : 'pending'}" id="scraperStageBadge-${stg.num}">${stg.num === 1 ? 'Processing...' : 'Waiting'}</span>
+                </div>
+            </div>
+            <div class="stage-preview-details hidden" id="scraperStageDetails-${stg.num}" style="margin-top: 8px; font-size: 12px; color: var(--text-secondary); background: rgba(0,0,0,0.25); border-radius: 6px; padding: 8px 10px; font-family: monospace;"></div>
+        </div>
+    `).join('');
+}
+
+function updateScraperStage(stageNum, status, details = '', latencyMs = null) {
+    const card = document.getElementById(`scraperStageCard-${stageNum}`);
+    const badge = document.getElementById(`scraperStageBadge-${stageNum}`);
+    const timer = document.getElementById(`scraperStageTimer-${stageNum}`);
+    const detailsEl = document.getElementById(`scraperStageDetails-${stageNum}`);
+
+    if (card) {
+        card.className = `stage-step-card ${status}`;
+    }
+    if (badge) {
+        badge.className = `stage-status-badge ${status}`;
+        badge.textContent = status === 'completed' ? '✓ Ready' : (status === 'active' ? '⚡ Active' : (status === 'failed' ? '✕ Failed' : 'Waiting'));
+    }
+    if (timer && latencyMs !== null) {
+        timer.textContent = `${latencyMs} ms`;
+    }
+    if (detailsEl) {
+        if (details) {
+            detailsEl.textContent = details;
+            detailsEl.classList.remove('hidden');
+        } else {
+            detailsEl.classList.add('hidden');
+        }
+    }
+
+    if (status === 'completed' && stageNum === 5) {
+        if (scraperMonitorTimerInterval) {
+            clearInterval(scraperMonitorTimerInterval);
+            scraperMonitorTimerInterval = null;
+        }
+    }
+}
+
+function closeScraperLiveMonitor() {
+    const modal = document.getElementById('scraperLiveMonitorModal');
+    if (modal) modal.classList.add('hidden');
+    if (scraperMonitorTimerInterval) {
+        clearInterval(scraperMonitorTimerInterval);
+        scraperMonitorTimerInterval = null;
+    }
+}
+
+// ==========================================================================
 // AUTH & LOGOUT
 // ==========================================================================
 async function logoutUser() {
@@ -4547,6 +4800,8 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         closeTrailerModal();
         closePickerFormatsModal();
+        closeStreamInspector();
+        closeScraperLiveMonitor();
     }
 });
 
@@ -4569,6 +4824,13 @@ window.handleDrawerFormatClick = handleDrawerFormatClick;
 window.retrySelectScraperRelease = retrySelectScraperRelease;
 window.closePickerFormatsModal = closePickerFormatsModal;
 window.playPickerTrailer = playPickerTrailer;
+window.openStreamInspector = openStreamInspector;
+window.closeStreamInspector = closeStreamInspector;
+window.copyInspectorLink = copyInspectorLink;
+window.openScraperLiveMonitor = openScraperLiveMonitor;
+window.updateScraperStage = updateScraperStage;
+window.closeScraperLiveMonitor = closeScraperLiveMonitor;
+
 
 // ==========================================================================
 // TRENDING & POPULAR OTT MEDIA MODULE

@@ -476,19 +476,51 @@ class CloudflareScraper:
         else:
             enabled_types = {"hdhub4u", "modlist", "vegamovies"}
 
-        tasks = []
-        if "hdhub4u" in enabled_types:
-            tasks.append(cls.search_hdhub4u(clean_q, impersonate=impersonate))
-        if "modlist" in enabled_types:
-            tasks.append(cls.search_modlist(clean_q, impersonate=impersonate))
-        if "vegamovies" in enabled_types:
-            tasks.append(cls.search_vegamovies(clean_q, impersonate=impersonate))
+        # Generate query variants (e.g. O'Romeo -> O Romeo, oromeo -> O Romeo)
+        variants = [clean_q]
+        v1 = re.sub(r"['’`:\-_.]+", " ", clean_q).strip()
+        v1 = re.sub(r"\s+", " ", v1)
+        if v1 and v1.lower() not in [v.lower() for v in variants]:
+            variants.append(v1)
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        if re.match(r"^[oO][a-zA-Z]{3,}", clean_q):
+            v2 = clean_q[0] + " " + clean_q[1:]
+            if v2.lower() not in [v.lower() for v in variants]:
+                variants.append(v2)
+
+        v3 = re.sub(r"['’`]+", "", clean_q).strip()
+        if v3 and v3.lower() not in [v.lower() for v in variants]:
+            variants.append(v3)
+
+        seen_urls = set()
         aggregated = []
-        for r in results:
-            if isinstance(r, list):
-                aggregated.extend(r)
+
+        async def run_search_for_query(q_term: str):
+            tasks = []
+            if "hdhub4u" in enabled_types:
+                tasks.append(cls.search_hdhub4u(q_term, impersonate=impersonate))
+            if "modlist" in enabled_types:
+                tasks.append(cls.search_modlist(q_term, impersonate=impersonate))
+            if "vegamovies" in enabled_types:
+                tasks.append(cls.search_vegamovies(q_term, impersonate=impersonate))
+
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            batch_items = []
+            for r in batch_results:
+                if isinstance(r, list):
+                    batch_items.extend(r)
+            return batch_items
+
+        # Execute searches across variants
+        for q_variant in variants:
+            items = await run_search_for_query(q_variant)
+            for item in items:
+                u = item.get("url")
+                if u and u not in seen_urls:
+                    seen_urls.add(u)
+                    aggregated.append(item)
+            if len(aggregated) >= 3:
+                break
 
         return aggregated
 

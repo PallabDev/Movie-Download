@@ -45,6 +45,7 @@ app.use(express.static("public", { maxAge: 0, etag: false }));
 
 // In-memory search sessions: searchId -> { botUsername, sentId, btnMsgId, buttons, title, type, year }
 const searchSessions = new Map<string, any>();
+const downloadTraceLogs = new Map<string, any>();
 
 // ─── AUTH MIDDLEWARE ───
 
@@ -888,6 +889,9 @@ app.post("/api/search", requireMod, async (req: any, res) => {
         }
 
         const query = cleanTitle;
+        // Generate alternate query variant by stripping punctuation/apostrophes
+        const altQuery = cleanTitle.replace(/['’`:\-_.]+/g, " ").replace(/\s+/g, " ").trim();
+
         // Fetch enabled scraper sources from DB
         let activeSources: any[] = [];
         try {
@@ -901,7 +905,11 @@ app.post("/api/search", requireMod, async (req: any, res) => {
             console.warn(`[SEARCH] DB scraper sources lookup warning: ${dbErr.message}`);
         }
 
-        const results = await searchMedia(query, activeSources);
+        let results = await searchMedia(query, activeSources);
+        if ((!results || results.length === 0) && altQuery && altQuery.toLowerCase() !== query.toLowerCase()) {
+            console.log(`[SEARCH] Primary search returned 0 results. Retrying with cleaned variant: "${altQuery}"`);
+            results = await searchMedia(altQuery, activeSources);
+        }
 
         if (!results || results.length === 0) {
             return res.json({ searchId, status: "no_results", message: "No releases found", results: [], mediaMetadata });
@@ -1177,6 +1185,20 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             linkUrl,
         });
 
+        downloadTraceLogs.set(requestId, {
+            requestId,
+            title: jobTitle,
+            targetUrl,
+            linkUrl,
+            qualityKey,
+            servers,
+            primaryServer: servers[0] || null,
+            totalServers: servers.length,
+            fileSize: actualFileSize,
+            fileName: jobFileName,
+            resolvedAt: new Date().toISOString()
+        });
+
         broadcastNewDownload({
             jobId: requestId,
             title: jobTitle,
@@ -1189,13 +1211,31 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             requestId,
             message: `Download started for "${jobTitle}" (${actualFileSize}).`,
             fileSize: actualFileSize,
-            qualityKey
+            qualityKey,
+            trace: downloadTraceLogs.get(requestId)
         });
 
     } catch (err: any) {
         console.error(`[DOWNLOAD-SPECIFIC] Error:`, err.message);
         return res.status(500).json({ error: err.message });
     }
+});
+
+// ─── DOWNLOAD LINK & STAGE INSPECTOR ───
+
+app.get("/api/download/inspect/:requestId", requireMod, async (req: any, res) => {
+    const { requestId } = req.params;
+    const trace = downloadTraceLogs.get(requestId);
+    const [row] = await db.select().from(schema.downloads).where(eq(schema.downloads.requestId, requestId)).limit(1);
+    if (!row && !trace) {
+        return res.status(404).json({ success: false, error: "Download record not found" });
+    }
+    return res.json({
+        success: true,
+        requestId,
+        download: row || null,
+        trace: trace || null
+    });
 });
 
 // ─── SELECT & DOWNLOAD ───
@@ -2418,6 +2458,9 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                                     <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M6 4v16a1 1 0 0 0 1.524 .852l13 -8a1 1 0 0 0 0 -1.704l-13 -8a1 1 0 0 0 -1.524 .852z"/></svg>
                                     <span>Watch Trailer</span>
                                 </button>
+                                <button class="btn-header" style="color: var(--accent-cyan); display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 6px 12px;" onclick="openScraperLiveMonitor(downloadPickerState.title)" title="Open Real-time Scraper Pipeline Tracer">
+                                    <span>⚡ Scraper Tracer</span>
+                                </button>
                                 <span class="picker-hero-status-note" id="pickerHeroStatusNote">Searching scraper service for HD/OTT releases...</span>
                             </div>
                         </div>
@@ -3233,6 +3276,61 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             </div>
             <div class="picker-formats-body" id="pickerFormatsBody">
                 <!-- Populated dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Stream Link Inspector & Diagnostic Modal (Root Level) -->
+    <div class="stream-inspector-modal hidden" id="streamInspectorModal">
+        <div class="stream-inspector-backdrop" onclick="closeStreamInspector()"></div>
+        <div class="stream-inspector-content">
+            <div class="stream-inspector-header">
+                <div class="stream-inspector-header-info">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="font-size:20px;">🔍</span>
+                        <h3 id="streamInspectorTitle" style="font-size:16px; font-weight:700; color:#fff; margin:0;">Stream Link Inspector</h3>
+                    </div>
+                    <div class="stream-inspector-subtitle" id="streamInspectorSubtitle" style="font-size:12px; color:var(--text-muted); margin-top:3px;">
+                        Live gateway hops, bypassed mediators, and final direct CDN streams
+                    </div>
+                </div>
+                <button class="stream-inspector-close" onclick="closeStreamInspector()" title="Close (Esc)" aria-label="Close">
+                    <svg class="tabler-icon" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
+                        <path d="M18 6l-12 12" /><path d="M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="stream-inspector-body" id="streamInspectorBody">
+                <!-- Dynamically injected -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Real-Time Scraper Stage-by-Stage Live Preview Modal -->
+    <div class="scraper-live-monitor-modal hidden" id="scraperLiveMonitorModal">
+        <div class="scraper-live-monitor-backdrop" onclick="closeScraperLiveMonitor()"></div>
+        <div class="scraper-live-monitor-content">
+            <div class="scraper-live-monitor-header">
+                <div class="scraper-live-monitor-header-info">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="display:inline-block; animation:pulse 1.5s infinite; font-size:18px;">⚡</span>
+                        <h3 id="scraperLiveMonitorTitle" style="font-size:16px; font-weight:700; color:#fff; margin:0;">Live Scraper Pipeline Tracer</h3>
+                    </div>
+                    <div class="scraper-live-monitor-subtitle" id="scraperLiveMonitorSubtitle" style="font-size:12px; color:var(--text-muted); margin-top:3px;">
+                        Real-time 5-stage measurement across scraper search, bypass, and direct streams
+                    </div>
+                </div>
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span id="scraperLiveMonitorTotalTimer" class="stage-timer-badge">0 ms</span>
+                    <button class="scraper-live-monitor-close" onclick="closeScraperLiveMonitor()" title="Close (Esc)" aria-label="Close">
+                        <svg class="tabler-icon" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none">
+                            <path d="M18 6l-12 12" /><path d="M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="scraper-live-monitor-body" id="scraperLiveMonitorBody">
+                <!-- Live stage cards populated here -->
             </div>
         </div>
     </div>
