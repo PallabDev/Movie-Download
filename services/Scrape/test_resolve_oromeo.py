@@ -42,11 +42,10 @@ async def main():
             print("Links on Homelander:")
             for a in soup_hl.find_all('a'):
                 print(" - Link:", a.get('href'), "| Text:", a.get_text(strip=True))
-            print("Scripts on Homelander:")
-            for s in soup_hl.find_all('script'):
-                if s.string and len(s.string.strip()) > 0:
-                    print("Script:\n", s.string[:600])
-            soup2 = BeautifulSoup(r2.text, 'html.parser')
+            print("--- ALL SCRIPTS ON HOMELANDER ---")
+            for i, s in enumerate(soup_hl.find_all('script')):
+                if s.string:
+                    print(f"\n[Script {i}]:\n", s.string)
             print("Hub page title:", soup2.title.string if soup2.title else "None")
             
             print("\nAll <a> tags on Hub page:")
