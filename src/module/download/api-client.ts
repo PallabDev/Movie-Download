@@ -391,6 +391,14 @@ export async function resolveSpecificFormatLink(
  */
 export function normalizeDirectStreamUrl(url: string): string {
     if (!url) return url;
+    // Extract direct Google link if wrapped in gamerxyt.com/dl.php?link=
+    if (url.includes("dl.php?link=")) {
+        const parts = url.split("link=");
+        if (parts.length > 1) {
+            const inner = decodeURIComponent(parts.slice(1).join("link="));
+            if (inner.startsWith("http")) return inner;
+        }
+    }
     // Convert pixeldrain /u/ID to direct streamable API endpoint /api/file/ID
     const pdMatch = url.match(/pixeldrain\.(?:dev|com)\/u\/([a-zA-Z0-9_-]+)/i);
     if (pdMatch) {

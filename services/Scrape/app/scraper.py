@@ -759,6 +759,23 @@ class CloudflareScraper:
                 print(f"[HDHUB4U DETAILS ERROR]: {e}")
                 return {"name": "", "title": "", "url": movie_url, "downloads": {}, "download_options": []}
 
+def _rot13(s: str) -> str:
+    return codecs.decode(s, "rot_13")
+
+def _decode_greenmotors_payload(payload: str) -> Optional[str]:
+    try:
+        d1 = base64.b64decode(payload).decode("utf-8")
+        d2 = base64.b64decode(d1).decode("utf-8")
+        d3 = _rot13(d2)
+        d4 = base64.b64decode(d3).decode("utf-8")
+        data = json.loads(d4)
+        if isinstance(data, dict) and "o" in data:
+            return base64.b64decode(data["o"]).decode("utf-8")
+    except Exception as e:
+        print(f"[GREENMOTORS DECODE ERROR]: {e}")
+    return None
+
+
     # ─────────────────────────────────────────────────────────────
     # 0s INTERMEDIATE REDIRECT BYPASSER & DIRECT LINK RESOLVER
     # ─────────────────────────────────────────────────────────────
@@ -794,16 +811,30 @@ class CloudflareScraper:
                                 if m_ref:
                                     return m_ref.group(1)
 
-                # Greenmotors / Greenmount mediator bypass
+                # Greenmotors / Greenmount / Homelander mediator bypass
                 res = await session.get(link_url, headers=headers, timeout=DEFAULT_TIMEOUT)
+                
+                # Check s('o', '...')
+                m_s = re.search(r"s\s*\(\s*['\"]o['\"]\s*,\s*['\"]([A-Za-z0-9+/=]{30,})['\"]", res.text)
+                if m_s:
+                    target = _decode_greenmotors_payload(m_s.group(1))
+                    if target:
+                        return target
+
+                # Check large base64 strings in scripts
+                for m_str in re.finditer(r"['\"]([A-Za-z0-9+/=]{60,})['\"]", res.text):
+                    target = _decode_greenmotors_payload(m_str.group(1))
+                    if target and target.startswith("http"):
+                        return target
+
                 m_target = re.search(r'const\s+TARGET_URL\s*=\s*["\']([^"\']+)["\']', res.text)
                 if m_target:
                     return m_target.group(1)
                 m_href = re.search(r'href=["\']([^"\']*(?:hubcloud|hubdrive|hblinks|hubcdn)[^"\']*)["\']', res.text, re.I)
                 if m_href:
                     return m_href.group(1)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[BYPASS ERROR] {link_url}: {e}")
         return link_url
 
     @classmethod
@@ -832,6 +863,24 @@ class CloudflareScraper:
                 "is_streamable": True
             }
 
+        # HBLinks URL (e.g. hblinks.lol/archives/...)
+        if "hblinks." in url_lower:
+            try:
+                async with AsyncSession(impersonate=impersonate, verify=False) as session:
+                    hb_res = await session.get(target_url, headers={**headers, "Referer": link_url}, timeout=DEFAULT_TIMEOUT)
+                    hb_soup = BeautifulSoup(hb_res.text, "html.parser")
+                    inner_links = []
+                    for a in hb_soup.find_all("a"):
+                        h = a.get("href", "")
+                        if any(k in h.lower() for k in ["hubcloud", "hubdrive", "hubcdn", "pixeldrain", "workers.dev", "drive"]) and not ("hblinks.lol/" in h.lower() and "/archives/" not in h.lower()):
+                            inner_links.append(h)
+                    
+                    if inner_links:
+                        # Follow the first valid hubcloud/hubdrive link
+                        return await cls.extract_final_download_links(inner_links[0], impersonate=impersonate)
+            except Exception as e:
+                print(f"[HBLINKS EXTRACT ERROR] {target_url}: {e}")
+
         # NexDrive URL (Vegamovies)
         if "nexdrive." in url_lower:
             try:
@@ -858,13 +907,13 @@ class CloudflareScraper:
             except Exception:
                 pass
 
-        # HubDrive URL
-        if "hubdrive." in url_lower and "/file/" in url_lower:
+        # HubDrive / HubCDN URL
+        if any(k in url_lower for k in ["hubdrive.", "hubcdn."]):
             try:
                 async with AsyncSession(impersonate=impersonate, verify=False) as session:
                     res = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
                     soup = BeautifulSoup(res.text, "html.parser")
-                    filename = soup.title.string.replace("HubDrive | ", "").strip() if soup.title else ""
+                    filename = soup.title.string.replace("HubDrive | ", "").replace("HubCDN | ", "").strip() if soup.title else ""
                     
                     hubcloud_url = None
                     for a in soup.find_all("a"):
@@ -879,27 +928,30 @@ class CloudflareScraper:
                     raw_links = []
                     for a in soup.find_all("a"):
                         h = a.get("href", "")
-                        if any(x in h for x in ["r2.cloudflarestorage.com", "storage.googleapis.com", "pixeldrain", "gpdl.", "workers.dev", "hubcdn."]):
+                        if any(x in h for x in ["r2.cloudflarestorage.com", "storage.googleapis.com", "pixeldrain", "gpdl.", "workers.dev"]):
                             stype = "💾 Direct Download File (Fast CDN)"
+                            sname = a.get_text(strip=True) or stype
                             if "pixeldrain" in h:
                                 stype = "📦 Pixeldrain Fast Download"
-                            elif "10gbps" in h:
-                                stype = "⚡ Server : 10Gbps High Speed"
+                                pd_m = re.search(r"pixeldrain\.(?:dev|com)/u/([a-zA-Z0-9_-]+)", h)
+                                if pd_m:
+                                    h = f"https://pixeldrain.com/api/file/{pd_m.group(1)}"
                             raw_links.append({
-                                "server_name": a.get_text(strip=True) or stype,
+                                "server_name": sname,
                                 "server_type": stype,
                                 "download_url": h
                             })
-                    return {
-                        "source_url": target_url,
-                        "filename": filename,
-                        "final_downloads": raw_links,
-                        "total_servers": len(raw_links)
-                    }
+                    if raw_links:
+                        return {
+                            "source_url": target_url,
+                            "filename": filename,
+                            "final_downloads": raw_links,
+                            "total_servers": len(raw_links)
+                        }
             except Exception:
                 pass
 
-        # HubCloud URL (e.g. hubcloud.cx/drive/...)
+        # HubCloud URL (e.g. hubcloud.cx/drive/..., hubcloud.ist/drive/...)
         try:
             async with AsyncSession(impersonate=impersonate, verify=False) as session:
                 res1 = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
@@ -915,30 +967,64 @@ class CloudflareScraper:
 
                 raw_downloads = []
                 if gen_link:
+                    if not gen_link.startswith("http"):
+                        gen_link = urllib.parse.urljoin(str(res1.url), gen_link)
                     gen_headers = {**headers, "Referer": target_url}
                     res2 = await session.get(gen_link, headers=gen_headers, timeout=DEFAULT_TIMEOUT)
                     soup2 = BeautifulSoup(res2.text, "html.parser")
                     for a in soup2.find_all("a"):
                         href = a.get("href", "")
                         text = a.get_text(" ", strip=True)
-                        if href and ("http" in href) and not any(k in href.lower() for k in ["telegram", "t.me", "report", "#"]):
-                            stype = "💾 Direct Fast CDN"
-                            if "pixeldrain" in href:
-                                stype = "📦 Pixeldrain Fast Download"
-                            elif "10gbps" in href or "fsl" in text.lower():
-                                stype = "⚡ Server : 10Gbps High Speed"
+                        if not href or not href.startswith("http"):
+                            continue
+                        if any(k in href.lower() for k in ["telegram", "t.me", "report", "#", "snvhost.com", "google.com/search", "tinyurl.com", "/admin"]):
+                            continue
+
+                        # Handle Pixel HubCloud Google 10Gbps CDN redirect
+                        if "pixel.hubcloud.ist/?id=" in href:
+                            try:
+                                r_pixel = await session.get(href, headers={**headers, "Referer": str(res2.url)}, timeout=10)
+                                if "link=" in str(r_pixel.url):
+                                    g_link = urllib.parse.unquote(str(r_pixel.url).split("link=")[1])
+                                    if g_link.startswith("http"):
+                                        raw_downloads.append({
+                                            "server_name": "Download [Server : 10Gbps High Speed]",
+                                            "server_type": "⚡ Server : 10Gbps High Speed (Google CDN)",
+                                            "download_url": g_link
+                                        })
+                                        continue
+                            except Exception as pe:
+                                print(f"[PIXEL RESOLVE ERROR]: {pe}")
+
+                        # Handle Pixeldrain /u/ID -> /api/file/ID
+                        if "pixeldrain" in href.lower():
+                            pd_m = re.search(r"pixeldrain\.(?:dev|com)/u/([a-zA-Z0-9_-]+)", href)
+                            pd_url = f"https://pixeldrain.com/api/file/{pd_m.group(1)}" if pd_m else href
                             raw_downloads.append({
-                                "server_name": text or stype,
+                                "server_name": "Download [Pixeldrain Fast Download]",
+                                "server_type": "📦 Pixeldrain Fast Download",
+                                "download_url": pd_url
+                            })
+                            continue
+
+                        # Handle Workers / R2 / Direct CDN streams
+                        if any(k in href.lower() for k in ["workers.dev", "r2.cloudflarestorage.com", "storage.googleapis.com", "r2.dev"]):
+                            stype = "💾 Direct Fast CDN"
+                            raw_downloads.append({
+                                "server_name": text or "Download [Direct Fast CDN]",
                                 "server_type": stype,
                                 "download_url": href
                             })
                 else:
                     for a in soup1.find_all("a"):
                         h = a.get("href", "")
-                        if any(x in h for x in ["r2.cloudflarestorage.com", "storage.googleapis.com", "pixeldrain", "gpdl.", "workers.dev", "hubcdn."]):
+                        if any(x in h for x in ["r2.cloudflarestorage.com", "storage.googleapis.com", "pixeldrain", "gpdl.", "workers.dev"]):
                             stype = "💾 Direct Fast CDN"
                             if "pixeldrain" in h:
                                 stype = "📦 Pixeldrain Fast Download"
+                                pd_m = re.search(r"pixeldrain\.(?:dev|com)/u/([a-zA-Z0-9_-]+)", h)
+                                if pd_m:
+                                    h = f"https://pixeldrain.com/api/file/{pd_m.group(1)}"
                             raw_downloads.append({
                                 "server_name": a.get_text(strip=True) or stype,
                                 "server_type": stype,
