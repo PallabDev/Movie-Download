@@ -297,6 +297,9 @@ function getViewForPath(pathname) {
 }
 
 function switchView(viewName, updateHistory = true) {
+    if (typeof closePickerFormatsModal === 'function') {
+        closePickerFormatsModal();
+    }
     const userRole = state.user?.role || 'user';
 
     // Role protection on client view switching:
@@ -4017,6 +4020,7 @@ const downloadPickerState = {
 };
 
 function openDownloadPicker(media) {
+    closePickerFormatsModal();
     if (!media || !media.title) return;
     
     downloadPickerState.title = media.title;
@@ -4094,6 +4098,7 @@ function openDownloadPicker(media) {
 }
 
 function initDownloadPickerFromUrl() {
+    closePickerFormatsModal();
     const params = new URLSearchParams(window.location.search);
     const title = params.get('title');
     if (!title) {
@@ -4117,6 +4122,7 @@ function initDownloadPickerFromUrl() {
 }
 
 function closeDownloadPicker() {
+    closePickerFormatsModal();
     if (window.history.length > 1 && window.history.state && window.history.state.view === 'download-picker') {
         window.history.back();
     } else {
@@ -4131,6 +4137,7 @@ function playPickerTrailer() {
 }
 
 async function searchScraperForPicker(searchTitle, year, type) {
+    closePickerFormatsModal();
     const grid = document.getElementById('pickerReleasesGrid');
     const badge = document.getElementById('pickerResultsCountBadge');
     const statusNote = document.getElementById('pickerHeroStatusNote');
@@ -4248,6 +4255,7 @@ async function searchScraperForPicker(searchTitle, year, type) {
 }
 
 function triggerPickerCustomSearch() {
+    closePickerFormatsModal();
     const input = document.getElementById('pickerCustomSearchInput');
     const query = input ? input.value.trim() : '';
     if (!query) return;
@@ -4311,6 +4319,8 @@ async function selectScraperRelease(targetUrl, releaseName) {
 function closePickerFormatsModal() {
     const modal = document.getElementById('pickerFormatsModal');
     if (modal) modal.classList.add('hidden');
+    const bodyEl = document.getElementById('pickerFormatsBody');
+    if (bodyEl) bodyEl.innerHTML = '';
 }
 
 // ==========================================================================
@@ -4448,6 +4458,7 @@ function handleTrailerBackdropClick(e) {
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         closeTrailerModal();
+        closePickerFormatsModal();
     }
 });
 
@@ -4461,6 +4472,12 @@ window.setReleasesIndustryFilter = setReleasesIndustryFilter;
 window.openTrailerModal = openTrailerModal;
 window.closeTrailerModal = closeTrailerModal;
 window.handleTrailerBackdropClick = handleTrailerBackdropClick;
+window.openDownloadPicker = openDownloadPicker;
+window.closeDownloadPicker = closeDownloadPicker;
+window.triggerPickerCustomSearch = triggerPickerCustomSearch;
+window.selectScraperRelease = selectScraperRelease;
+window.closePickerFormatsModal = closePickerFormatsModal;
+window.playPickerTrailer = playPickerTrailer;
 
 // ==========================================================================
 // TRENDING & POPULAR OTT MEDIA MODULE
