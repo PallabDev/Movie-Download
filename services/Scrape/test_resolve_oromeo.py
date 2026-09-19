@@ -42,9 +42,19 @@ async def main():
             print("Links on Homelander:")
             for a in soup_hl.find_all('a'):
                 print(" - Link:", a.get('href'), "| Text:", a.get_text(strip=True))
-            print("--- ALL SCRIPTS ON HOMELANDER ---")
             for i, s in enumerate(soup_hl.find_all('script')):
-                if s.string:
-                    print(f"\n================ [Script {i}] ================\n{s.string}\n")
+                if s.string and "function" in s.string:
+                    # Look for URLs or base64 or tokens in the script
+                    print(f"\n[Script {i} length]:", len(s.string))
+                    tokens = re.findall(r'["\']([a-zA-Z0-9_\-]{8,})["\']', s.string)
+                    print("Long string tokens:", tokens[:20])
+                    urls = re.findall(r'https?://[^\s"\'<>]+', s.string)
+                    print("Direct URLs in script:", urls)
+                    
+            # Check all links on the Homelander page again
+            print("\nAll elements with id or class on Homelander:")
+            for tag in soup_hl.find_all(True):
+                if tag.get('id') or tag.get('data-url') or tag.get('data-href'):
+                    print(" - Tag:", tag.name, "id:", tag.get('id'), "data-url:", tag.get('data-url'), "data-href:", tag.get('data-href'))
 
 asyncio.run(main())
