@@ -872,8 +872,12 @@ class CloudflareScraper:
                             inner_links.append(h)
                     
                     if inner_links:
-                        # Follow the first valid hubcloud/hubdrive link
-                        return await cls.extract_final_download_links(inner_links[0], impersonate=impersonate)
+                        hubcloud_links = [h for h in inner_links if "hubcloud." in h.lower()]
+                        other_links = [h for h in inner_links if "hubcloud." not in h.lower()]
+                        for candidate in (hubcloud_links + other_links):
+                            candidate_res = await cls.extract_final_download_links(candidate, impersonate=impersonate)
+                            if candidate_res.get("total_servers", 0) > 0:
+                                return candidate_res
             except Exception as e:
                 print(f"[HBLINKS EXTRACT ERROR] {target_url}: {e}")
 
