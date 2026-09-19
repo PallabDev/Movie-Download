@@ -575,10 +575,10 @@ class CloudflareScraper:
         if m and int(m.group(1)) not in invalid:
             return int(m.group(1))
 
-        # Check previous siblings or headings, stopping at batch boundaries
-        for prev in element.find_all_previous(["h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "strong"]):
+        # Check previous siblings or headings, stopping at batch boundaries (NEVER check ancestor 'div' tags)
+        for prev in element.find_all_previous(["h1", "h2", "h3", "h4", "h5", "h6", "p", "strong", "b"]):
             t = prev.get_text(" ", strip=True)
-            if any(k in t.lower() for k in ["zip", "batch", "pack", "full season", "download links", "sdr web-dl"]):
+            if any(k in t.lower() for k in ["zip", "batch", "pack", "full season", "download links", "sdr web-dl", "complete series", "complete season"]):
                 return None
             m = re.search(r'\b(?:episode|ep)\s*[-._]?\s*([0-9]{1,3})\b', t, re.I)
             if m and int(m.group(1)) not in invalid:
@@ -645,18 +645,30 @@ class CloudflareScraper:
             res = cls._extract_clean_res(a_text, "") or cls._extract_clean_res(parent_text, "") or cls._extract_clean_res(heading_context, "720p")
             size = cls._extract_clean_size(a_text) or cls._extract_clean_size(parent_text) or cls._extract_clean_size(heading_context)
 
-            # Batch check: Check button text first, then parent/heading only if button is not specifically G-Drive/Episode
+            # Check if this link in a series post is positioned before the single episode section
+            prev_headings = [h.get_text(" ", strip=True).lower() for h in a.find_all_previous(["h1", "h2", "h3", "h4"])]
+            is_before_single_eps = False
+            for h in prev_headings:
+                if any(k in h for k in ["single episode", "episode links", "episodes links"]):
+                    break
+                if any(k in h for k in ["download links", "zip", "batch", "pack", "full season", "full series", "complete", "season 1", "season 2", "season 3", "season 4"]):
+                    is_before_single_eps = True
+                    break
+
+            has_ep_in_link = bool(re.search(r'\b(?:episode|ep)\s*[-._]?\s*([0-9]{1,3})\b', a_text + " " + parent_text, re.I))
             is_gdrive_hub = bool("g-drive" in a_text.lower() or "drive" in a_text.lower() or "episode" in a_text.lower())
             is_batch_btn = bool("batch" in a_text.lower() or "zip" in a_text.lower() or "pack" in a_text.lower() or "complete" in a_text.lower() or "full season" in a_text.lower())
             
-            if is_batch_btn:
+            if is_series and is_before_single_eps and not has_ep_in_link:
+                is_batch = True
+            elif is_batch_btn:
                 is_batch = True
             elif is_gdrive_hub:
                 is_batch = False
             else:
                 is_batch = bool(
                     any(k in parent_text.lower() for k in ["pack", "complete", "full season", "sdr web-dl"]) or
-                    any(k in heading_context.lower() for k in ["pack", "complete", "full season", "sdr web-dl", "download links"]) or
+                    any(k in heading_context.lower() for k in ["pack", "complete", "full season", "sdr web-dl"]) or
                     ("hevc [" in parent_text.lower() and not re.search(r'\bepisode\b', parent_text, re.I))
                 )
 
@@ -674,7 +686,7 @@ class CloudflareScraper:
                 is_batch_val = False
             elif is_series and (is_batch or not ep_num):
                 codec = "[HEVC]" if "hevc" in full_context.lower() or "x265" in full_context.lower() else "[x264]"
-                opt_label = f"{res} - Full Season Batch {codec}" + (f" [{size}]" if size else "")
+                opt_label = f"Full Season Batch {res} {codec}" + (f" [{size}]" if size else "")
                 cat_type = "batch_pack"
                 ep_val = None
                 is_batch_val = True
@@ -730,10 +742,20 @@ class CloudflareScraper:
             for ep_list in results:
                 options.extend(ep_list)
 
-        # Backward compatible downloads dictionary
+        # Backward compatible downloads dictionary with standardized batch_ and episode_ keys
         downloads_map = {}
         for opt in options:
-            k = re.sub(r'[^a-zA-Z0-9_]+', '_', opt['label'].lower()).strip('_')
+            if opt.get("category_type") == "batch_pack" or opt.get("is_batch"):
+                base_k = re.sub(r'[^a-zA-Z0-9_]+', '_', opt['label'].lower()).strip('_')
+                k = f"batch_{base_k}" if not base_k.startswith("batch_") else base_k
+            elif opt.get("episode_num"):
+                ep_n = opt["episode_num"]
+                q = (opt.get("quality") or "720p").lower()
+                sz = re.sub(r'[^a-zA-Z0-9]+', '_', opt.get("size") or "").strip('_').lower()
+                k = f"episode_{ep_n:02d}_{q}" + (f"_{sz}" if sz else "")
+            else:
+                k = re.sub(r'[^a-zA-Z0-9_]+', '_', opt['label'].lower()).strip('_')
+
             downloads_map.setdefault(k, []).append({
                 "server_name": opt["server_name"],
                 "server_type": opt["server_type"],

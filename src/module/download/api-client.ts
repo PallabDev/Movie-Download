@@ -687,11 +687,11 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
     const downloadKeys = Object.keys(details.downloads);
     if (downloadKeys.length === 0) return null;
 
-    const isSeries = downloadKeys.some(k => k.startsWith("batch_") || k.startsWith("episode_") || k.startsWith("bonus_"));
+    const isSeries = downloadKeys.some(k => k.startsWith("batch_") || k.includes("_batch") || k.includes("season_pack") || k.includes("full_season") || k.startsWith("episode_") || k.startsWith("bonus_"));
 
     if (isSeries) {
-        // Parse batches
-        const batchKeys = downloadKeys.filter(k => k.startsWith("batch_"));
+        // Parse batches: check keys starting with batch_ or containing batch/season_pack/full_season
+        const batchKeys = downloadKeys.filter(k => k.startsWith("batch_") || k.includes("_batch") || k.includes("batch_") || k.includes("season_pack") || k.includes("full_season"));
         const seriesBatches: ParsedSeriesBatch[] = batchKeys.map(k => {
             const srvs = details.downloads[k] || [];
             let fileSize = "";
@@ -702,12 +702,16 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
                     break;
                 }
             }
+            if (!fileSize) {
+                fileSize = cleanFileSize(k);
+            }
+
             let res = "720p";
             if (k.includes("4k") || k.includes("2160p")) res = "4K";
             else if (k.includes("1080p")) res = "1080p";
             else if (k.includes("480p")) res = "480p";
 
-            let label = k.replace(/^batch_(?:season_pack_)?/, "").replace(/_/g, " ").toUpperCase() + " Batch Pack";
+            let label = `${res} Season Batch`;
             if (k.includes("720p_hevc") || k.includes("720p_x265")) label = "720p HEVC Season Batch (Compact)";
             else if (k.includes("720p")) label = "720p Season Batch";
             else if (k.includes("1080p_hevc") || k.includes("1080p_x265")) label = "1080p HEVC Season Batch";
@@ -725,6 +729,9 @@ export function parseAvailableMediaFormats(details: DownloadDetails): ParsedMedi
                 linkUrl: srvs[0]?.download_url || (srvs[0] as any)?.link_url || ""
             };
         });
+
+        const resOrder: Record<string, number> = { "4K": 4, "1080p": 3, "720p": 2, "480p": 1 };
+        seriesBatches.sort((a, b) => (resOrder[b.resolution] || 0) - (resOrder[a.resolution] || 0));
 
         // Parse episodes
         const epKeys = downloadKeys.filter(k => k.startsWith("episode_"));
