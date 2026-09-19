@@ -4287,7 +4287,7 @@ async function searchScraperForPicker(searchTitle, year, type) {
                             </div>
                         ` : ''}
                         <div class="picker-release-actions">
-                            <button class="btn-picker-select" onclick="handlePickerReleaseClick(${idx})">
+                            <button class="btn-picker-select" onclick="handlePickerReleaseClick(${idx}, this)">
                                 <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                 <span>Inspect Download Options</span>
                             </button>
@@ -4308,10 +4308,17 @@ async function searchScraperForPicker(searchTitle, year, type) {
     }
 }
 
-function handlePickerReleaseClick(idx) {
+function handlePickerReleaseClick(idx, btnElement) {
     const rel = downloadPickerState.scraperResults && downloadPickerState.scraperResults[idx];
-    if (!rel) return;
-    selectScraperRelease(rel.url, rel.name);
+    if (!rel) {
+        console.warn('Scraper release not found at index:', idx);
+        return;
+    }
+    if (btnElement) {
+        btnElement.dataset.origHtml = btnElement.innerHTML;
+        btnElement.innerHTML = `<span style="display:inline-block;animation:spin 0.8s linear infinite;">⏳</span> Loading Options...`;
+    }
+    selectScraperRelease(rel.url, rel.name, btnElement);
 }
 
 function triggerPickerCustomSearch() {
@@ -4322,7 +4329,7 @@ function triggerPickerCustomSearch() {
     searchScraperForPicker(query, downloadPickerState.year, downloadPickerState.mediaType);
 }
 
-async function selectScraperRelease(targetUrl, releaseName) {
+async function selectScraperRelease(targetUrl, releaseName, btnElement) {
     downloadPickerState.currentTargetUrl = targetUrl;
     downloadPickerState.currentReleaseName = releaseName;
     const modal = document.getElementById('pickerFormatsModal');
@@ -4330,8 +4337,9 @@ async function selectScraperRelease(targetUrl, releaseName) {
     const subEl = document.getElementById('pickerFormatsSubtitle');
     const bodyEl = document.getElementById('pickerFormatsBody');
 
-    if (!modal || !bodyEl) return;
-    modal.classList.remove('hidden');
+    if (modal) {
+        modal.classList.remove('hidden');
+    }
 
     if (titleEl) {
         const fullTitle = releaseName || downloadPickerState.title;
@@ -4340,12 +4348,14 @@ async function selectScraperRelease(targetUrl, releaseName) {
     }
     if (subEl) subEl.textContent = 'Inspecting available download streams & server links...';
 
-    bodyEl.innerHTML = `
-        <div style="text-align: center; padding: 40px 20px; color: var(--text-secondary);">
-            <div class="spinner" style="margin: 0 auto 12px;"></div>
-            <div>Resolving direct download links & quality packages...</div>
-        </div>
-    `;
+    if (bodyEl) {
+        bodyEl.innerHTML = `
+            <div style="text-align: center; padding: 40px 20px; color: var(--text-secondary);">
+                <div class="spinner" style="margin: 0 auto 12px;"></div>
+                <div>Resolving direct download links & quality packages...</div>
+            </div>
+        `;
+    }
 
     try {
         const res = await fetch('/api/media/details', {
@@ -4355,26 +4365,36 @@ async function selectScraperRelease(targetUrl, releaseName) {
             body: JSON.stringify({ targetUrl })
         });
         const data = await res.json();
+        if (btnElement && btnElement.dataset.origHtml) {
+            btnElement.innerHTML = btnElement.dataset.origHtml;
+        }
         if (data.success && data.details) {
             if (subEl) subEl.textContent = data.details.isSeries ? 'Available Season Batches & Episodes' : 'Select your desired quality';
-            renderDrawerContent(bodyEl, data.details, targetUrl, releaseName);
+            if (bodyEl) renderDrawerContent(bodyEl, data.details, targetUrl, releaseName);
         } else {
+            if (bodyEl) {
+                bodyEl.innerHTML = `
+                    <div style="color: var(--accent-rose); padding: 30px 20px; text-align: center;">
+                        <div style="font-size: 24px; margin-bottom: 8px;">⚠️</div>
+                        <div>${escapeHtml(data.error || 'No download formats found for this release')}</div>
+                        <button class="btn-primary" style="margin-top: 16px;" onclick="retrySelectScraperRelease()">Retry Inspection</button>
+                    </div>
+                `;
+            }
+        }
+    } catch (err) {
+        if (btnElement && btnElement.dataset.origHtml) {
+            btnElement.innerHTML = btnElement.dataset.origHtml;
+        }
+        if (bodyEl) {
             bodyEl.innerHTML = `
                 <div style="color: var(--accent-rose); padding: 30px 20px; text-align: center;">
                     <div style="font-size: 24px; margin-bottom: 8px;">⚠️</div>
-                    <div>${escapeHtml(data.error || 'No download formats found for this release')}</div>
-                    <button class="btn-primary" style="margin-top: 16px;" onclick="retrySelectScraperRelease()">Retry Inspection</button>
+                    <div>Failed to retrieve formats: ${escapeHtml(err.message)}</div>
+                    <button class="btn-primary" style="margin-top: 16px;" onclick="retrySelectScraperRelease()">Retry</button>
                 </div>
             `;
         }
-    } catch (err) {
-        bodyEl.innerHTML = `
-            <div style="color: var(--accent-rose); padding: 30px 20px; text-align: center;">
-                <div style="font-size: 24px; margin-bottom: 8px;">⚠️</div>
-                <div>Failed to retrieve formats: ${escapeHtml(err.message)}</div>
-                <button class="btn-primary" style="margin-top: 16px;" onclick="retrySelectScraperRelease()">Retry</button>
-            </div>
-        `;
     }
 }
 

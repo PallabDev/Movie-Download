@@ -2444,28 +2444,6 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                             </div>
                         </div>
                     </div>
-
-                    <!-- Format & Quality Options Drawer Modal -->
-                    <div class="picker-formats-modal hidden" id="pickerFormatsModal">
-                        <div class="picker-formats-backdrop" onclick="closePickerFormatsModal()"></div>
-                        <div class="picker-formats-content">
-                            <div class="picker-formats-header">
-                                <div class="picker-formats-header-info">
-                                    <h3 id="pickerFormatsTitle">Select Quality to Download</h3>
-                                    <div class="picker-formats-subtitle" id="pickerFormatsSubtitle">Direct CDN links</div>
-                                </div>
-                                <button class="picker-formats-close" onclick="closePickerFormatsModal()" title="Close" aria-label="Close">
-                                    <svg class="tabler-icon" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-                                        <path d="M18 6l-12 12" />
-                                        <path d="M6 6l12 12" />
-                                    </svg>
-                                </button>
-                            </div>
-                            <div class="picker-formats-body" id="pickerFormatsBody">
-                                <!-- Populated dynamically -->
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </section>
 
@@ -3233,6 +3211,28 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
             </div>
             <div class="trailer-player-box" id="trailerPlayerBox">
                 <!-- Video iframe dynamically inserted -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Format & Quality Options Drawer Modal (Root Level) -->
+    <div class="picker-formats-modal hidden" id="pickerFormatsModal">
+        <div class="picker-formats-backdrop" onclick="closePickerFormatsModal()"></div>
+        <div class="picker-formats-content">
+            <div class="picker-formats-header">
+                <div class="picker-formats-header-info">
+                    <h3 id="pickerFormatsTitle">Select Quality to Download</h3>
+                    <div class="picker-formats-subtitle" id="pickerFormatsSubtitle">Direct CDN links</div>
+                </div>
+                <button class="picker-formats-close" onclick="closePickerFormatsModal()" title="Close (Esc)" aria-label="Close">
+                    <svg class="tabler-icon" viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 6l-12 12" />
+                        <path d="M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="picker-formats-body" id="pickerFormatsBody">
+                <!-- Populated dynamically -->
             </div>
         </div>
     </div>
