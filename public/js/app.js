@@ -1420,10 +1420,33 @@ async function toggleStudioFormatSelector(optionIndex, targetUrl, rawTitle) {
     }
 }
 
+const drawerFormatsRegistry = new Map();
+let drawerFormatCounter = 0;
+
+function registerDrawerFormatAction(actionData) {
+    drawerFormatCounter++;
+    const key = `df_${drawerFormatCounter}`;
+    drawerFormatsRegistry.set(key, actionData);
+    return key;
+}
+
+function handleDrawerFormatClick(key, btnElement) {
+    const data = drawerFormatsRegistry.get(key);
+    if (!data) return;
+    triggerSpecificFormatDownload(
+        data.targetUrl,
+        data.qualityKey,
+        data.customTitle,
+        data.isBatch,
+        data.episodeNum,
+        data.fileSize,
+        btnElement,
+        data.linkUrl
+    );
+}
+
 function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
     const title = details.name || rawTitle || 'Media';
-    const safeUrl = escapeHtml(targetUrl).replace(/'/g, "\\'");
-    const safeTitle = escapeHtml(title).replace(/'/g, "\\'");
 
     if (details.isSeries) {
         const batches = details.seriesBatches || [];
@@ -1435,7 +1458,17 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                     <div class="formats-section">
                         <div class="formats-section-title">📦 Complete Season Batch Packs (Full Download)</div>
                         <div class="formats-grid">
-                            ${batches.map(b => `
+                            ${batches.map(b => {
+                                const actionKey = registerDrawerFormatAction({
+                                    targetUrl,
+                                    qualityKey: b.qualityKey,
+                                    customTitle: title,
+                                    isBatch: true,
+                                    episodeNum: undefined,
+                                    fileSize: b.fileSize,
+                                    linkUrl: b.linkUrl
+                                });
+                                return `
                                 <div class="format-card ${b.isRecommended ? 'recommended' : ''}">
                                     <div class="format-card-info">
                                         <div class="format-card-label">${escapeHtml(b.label)}</div>
@@ -1445,12 +1478,13 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                                             ${b.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
                                         </div>
                                     </div>
-                                    <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(b.qualityKey)}', '${safeTitle}', true, undefined, '${escapeHtml(b.fileSize)}', this, '${b.linkUrl ? escapeHtml(b.linkUrl).replace(/'/g, "\\'") : ''}')">
+                                    <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="handleDrawerFormatClick('${actionKey}', this)">
                                         <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                         Download Batch
                                     </button>
                                 </div>
-                            `).join('')}
+                                `;
+                            }).join('')}
                         </div>
                     </div>
                 ` : ''}
@@ -1465,12 +1499,23 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                                         <strong>${escapeHtml(ep.title)}</strong>
                                     </div>
                                     <div class="episode-qualities-row">
-                                        ${ep.qualities.map(q => `
-                                            <button class="btn-ep-download" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(q.qualityKey)}', '${safeTitle}', false, ${ep.episodeNum}, '${escapeHtml(q.fileSize)}', this, '${q.linkUrl ? escapeHtml(q.linkUrl).replace(/'/g, "\\'") : ''}')">
+                                        ${ep.qualities.map(q => {
+                                            const actionKey = registerDrawerFormatAction({
+                                                targetUrl,
+                                                qualityKey: q.qualityKey,
+                                                customTitle: title,
+                                                isBatch: false,
+                                                episodeNum: ep.episodeNum,
+                                                fileSize: q.fileSize,
+                                                linkUrl: q.linkUrl
+                                            });
+                                            return `
+                                            <button class="btn-ep-download" onclick="handleDrawerFormatClick('${actionKey}', this)">
                                                 <span>${escapeHtml(q.label || q.resolution)}</span>
                                                 ${q.fileSize ? `<small>(${escapeHtml(q.fileSize)})</small>` : ''}
                                             </button>
-                                        `).join('')}
+                                            `;
+                                        }).join('')}
                                     </div>
                                 </div>
                             `).join('')}
@@ -1484,7 +1529,17 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
             <div class="chat-formats-panel" style="margin-top: 0; background: transparent; border: none; padding: 0;">
                 <div class="formats-section-title">⚡ Available Movie Qualities (Direct 10Gbps CDN)</div>
                 <div class="formats-grid">
-                    ${details.movieFormats.map(f => `
+                    ${details.movieFormats.map(f => {
+                        const actionKey = registerDrawerFormatAction({
+                            targetUrl,
+                            qualityKey: f.qualityKey,
+                            customTitle: title,
+                            isBatch: false,
+                            episodeNum: undefined,
+                            fileSize: f.fileSize,
+                            linkUrl: f.linkUrl
+                        });
+                        return `
                         <div class="format-card ${f.isRecommended ? 'recommended' : ''}">
                             <div class="format-card-info">
                                 <div class="format-card-label">${escapeHtml(f.label)}</div>
@@ -1494,12 +1549,13 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                                     ${f.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
                                 </div>
                             </div>
-                            <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${safeUrl}', '${escapeHtml(f.qualityKey)}', '${safeTitle}', false, undefined, '${escapeHtml(f.fileSize)}', this, '${f.linkUrl ? escapeHtml(f.linkUrl).replace(/'/g, "\\'") : ''}')">
+                            <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="handleDrawerFormatClick('${actionKey}', this)">
                                 <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                 Download ${escapeHtml(f.resolution)}
                             </button>
                         </div>
-                    `).join('')}
+                        `;
+                    }).join('')}
                 </div>
             </div>
         `;
@@ -4189,8 +4245,6 @@ async function searchScraperForPicker(searchTitle, year, type) {
         }
 
         grid.innerHTML = results.map((rel, idx) => {
-            const safeUrl = escapeHtml(rel.url).replace(/'/g, "\\'");
-            const safeName = escapeHtml(rel.name).replace(/'/g, "\\'");
             const fallbackThumb = downloadPickerState.posterUrl || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=80';
             let thumb = (rel.thumbnail || '').trim();
             thumb = thumb.replace(/^https?:\/\/i\d+\.wp\.com\//i, 'https://');
@@ -4233,7 +4287,7 @@ async function searchScraperForPicker(searchTitle, year, type) {
                             </div>
                         ` : ''}
                         <div class="picker-release-actions">
-                            <button class="btn-picker-select" onclick="selectScraperRelease('${safeUrl}', '${safeName}')">
+                            <button class="btn-picker-select" onclick="handlePickerReleaseClick(${idx})">
                                 <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                 <span>Inspect Download Options</span>
                             </button>
@@ -4254,6 +4308,12 @@ async function searchScraperForPicker(searchTitle, year, type) {
     }
 }
 
+function handlePickerReleaseClick(idx) {
+    const rel = downloadPickerState.scraperResults && downloadPickerState.scraperResults[idx];
+    if (!rel) return;
+    selectScraperRelease(rel.url, rel.name);
+}
+
 function triggerPickerCustomSearch() {
     closePickerFormatsModal();
     const input = document.getElementById('pickerCustomSearchInput');
@@ -4263,6 +4323,8 @@ function triggerPickerCustomSearch() {
 }
 
 async function selectScraperRelease(targetUrl, releaseName) {
+    downloadPickerState.currentTargetUrl = targetUrl;
+    downloadPickerState.currentReleaseName = releaseName;
     const modal = document.getElementById('pickerFormatsModal');
     const titleEl = document.getElementById('pickerFormatsTitle');
     const subEl = document.getElementById('pickerFormatsSubtitle');
@@ -4301,7 +4363,7 @@ async function selectScraperRelease(targetUrl, releaseName) {
                 <div style="color: var(--accent-rose); padding: 30px 20px; text-align: center;">
                     <div style="font-size: 24px; margin-bottom: 8px;">⚠️</div>
                     <div>${escapeHtml(data.error || 'No download formats found for this release')}</div>
-                    <button class="btn-primary" style="margin-top: 16px;" onclick="selectScraperRelease('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(releaseName).replace(/'/g, "\\'")}')">Retry Inspection</button>
+                    <button class="btn-primary" style="margin-top: 16px;" onclick="retrySelectScraperRelease()">Retry Inspection</button>
                 </div>
             `;
         }
@@ -4310,9 +4372,15 @@ async function selectScraperRelease(targetUrl, releaseName) {
             <div style="color: var(--accent-rose); padding: 30px 20px; text-align: center;">
                 <div style="font-size: 24px; margin-bottom: 8px;">⚠️</div>
                 <div>Failed to retrieve formats: ${escapeHtml(err.message)}</div>
-                <button class="btn-primary" style="margin-top: 16px;" onclick="selectScraperRelease('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(releaseName).replace(/'/g, "\\'")}')">Retry</button>
+                <button class="btn-primary" style="margin-top: 16px;" onclick="retrySelectScraperRelease()">Retry</button>
             </div>
         `;
+    }
+}
+
+function retrySelectScraperRelease() {
+    if (downloadPickerState.currentTargetUrl) {
+        selectScraperRelease(downloadPickerState.currentTargetUrl, downloadPickerState.currentReleaseName);
     }
 }
 
@@ -4476,6 +4544,9 @@ window.openDownloadPicker = openDownloadPicker;
 window.closeDownloadPicker = closeDownloadPicker;
 window.triggerPickerCustomSearch = triggerPickerCustomSearch;
 window.selectScraperRelease = selectScraperRelease;
+window.handlePickerReleaseClick = handlePickerReleaseClick;
+window.handleDrawerFormatClick = handleDrawerFormatClick;
+window.retrySelectScraperRelease = retrySelectScraperRelease;
 window.closePickerFormatsModal = closePickerFormatsModal;
 window.playPickerTrailer = playPickerTrailer;
 
