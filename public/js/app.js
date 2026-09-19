@@ -845,22 +845,31 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                                 <span>Complete Season Batch Packs (1-Click Full Download)</span>
                             </div>
                             <div class="formats-grid">
-                                ${batches.map(b => `
-                                    <div class="format-card ${b.isRecommended ? 'recommended' : ''}">
+                                ${batches.map(b => {
+                                    const isInLib = Boolean(b.inLibrary);
+                                    return `
+                                    <div class="format-card ${b.isRecommended ? 'recommended' : ''} ${isInLib ? 'in-library' : ''}">
                                         <div class="format-card-top">
                                             <div class="format-badges-row">
                                                 <span class="badge ${b.resolution === '4K' ? 'codec' : 'res'}">${escapeHtml(b.resolution)}</span>
                                                 ${b.fileSize ? `<span class="badge size">${escapeHtml(b.fileSize)}</span>` : ''}
-                                                ${b.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                                ${isInLib ? `<span class="badge" style="background:rgba(234,179,8,0.15);color:#facc15;border:1px solid rgba(234,179,8,0.35);">⚠️ In Library</span>` : (b.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : '')}
                                             </div>
                                         </div>
                                         <div class="format-card-label">${escapeHtml(b.label)}</div>
+                                        ${isInLib ? `
+                                        <button class="btn-download-format" disabled style="opacity:0.65;cursor:not-allowed;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:var(--text-muted);" title="Already in your Jellyfin Library">
+                                            ⚠️ In Library
+                                        </button>
+                                        ` : `
                                         <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(b.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', true, undefined, '${escapeHtml(b.fileSize)}', this, '${b.linkUrl ? escapeHtml(b.linkUrl).replace(/'/g, "\\'") : ''}')">
                                             <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                             Download Batch
                                         </button>
+                                        `}
                                     </div>
-                                `).join('')}
+                                    `;
+                                }).join('')}
                             </div>
                         </div>
                     ` : ''}
@@ -1470,20 +1479,27 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                                     linkUrl: b.linkUrl,
                                     type: 'series'
                                 });
+                                const isInLib = Boolean(b.inLibrary);
                                 return `
-                                <div class="format-card ${b.isRecommended ? 'recommended' : ''}">
+                                <div class="format-card ${b.isRecommended ? 'recommended' : ''} ${isInLib ? 'in-library' : ''}">
                                     <div class="format-card-info">
                                         <div class="format-card-label">${escapeHtml(b.label)}</div>
                                         <div class="format-card-sub">
                                             <span class="badge ${b.resolution === '4K' ? 'codec' : 'res'}">${escapeHtml(b.resolution)}</span>
                                             ${b.fileSize ? `<span class="badge size">${escapeHtml(b.fileSize)}</span>` : ''}
-                                            ${b.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                            ${isInLib ? `<span class="badge" style="background:rgba(234,179,8,0.15);color:#facc15;border:1px solid rgba(234,179,8,0.35);">⚠️ In Library</span>` : (b.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : '')}
                                         </div>
                                     </div>
+                                    ${isInLib ? `
+                                    <button class="btn-download-format" disabled style="opacity:0.65;cursor:not-allowed;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:var(--text-muted);" title="Already in your Jellyfin Library">
+                                        ⚠️ In Library
+                                    </button>
+                                    ` : `
                                     <button class="btn-download-format ${b.isRecommended ? 'primary' : ''}" onclick="handleDrawerFormatClick('${actionKey}', this)">
                                         <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                         Download Batch
                                     </button>
+                                    `}
                                 </div>
                                 `;
                             }).join('')}
@@ -1496,9 +1512,10 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                         <div class="formats-section-title">📺 Single Episodes (${episodes.length} Episodes Available)</div>
                         <div class="episodes-grid">
                             ${episodes.map(ep => `
-                                <div class="episode-row-card">
+                                <div class="episode-row-card ${ep.inLibrary ? 'in-library' : ''}">
                                     <div class="episode-row-header">
                                         <strong>${escapeHtml(ep.title)}</strong>
+                                        ${ep.inLibrary ? `<span class="badge" style="font-size:10px;padding:2px 6px;background:rgba(234,179,8,0.15);color:#facc15;border:1px solid rgba(234,179,8,0.35);border-radius:4px;margin-left:6px;">In Library</span>` : ''}
                                     </div>
                                     <div class="episode-qualities-row">
                                         ${ep.qualities.map(q => {
@@ -1512,10 +1529,11 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                                                 linkUrl: q.linkUrl,
                                                 type: 'series'
                                             });
+                                            const isQInLib = Boolean(q.inLibrary || ep.inLibrary);
                                             return `
-                                            <button class="btn-ep-download" onclick="handleDrawerFormatClick('${actionKey}', this)">
+                                            <button class="btn-ep-download ${isQInLib ? 'in-library' : ''}" ${isQInLib ? 'disabled style="opacity:0.6;cursor:not-allowed;border-color:rgba(234,179,8,0.35);color:#facc15;" title="Already in Jellyfin Library"' : `onclick="handleDrawerFormatClick('${actionKey}', this)"`}>
                                                 <span>${escapeHtml(q.label || q.resolution)}</span>
-                                                ${q.fileSize ? `<small>(${escapeHtml(q.fileSize)})</small>` : ''}
+                                                ${isQInLib ? `<small>(In Lib)</small>` : (q.fileSize ? `<small>(${escapeHtml(q.fileSize)})</small>` : '')}
                                             </button>
                                             `;
                                         }).join('')}

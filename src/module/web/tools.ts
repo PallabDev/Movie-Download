@@ -648,20 +648,28 @@ export async function toolDownloadEpisode(args: Record<string, any>, sessionId: 
  * 4. CHECK JELLYFIN LIBRARY
  */
 export async function toolCheckJellyfin(args: Record<string, any>, sessionId: string): Promise<ToolResult> {
-    const { title, type, year } = args;
+    const { title, type, year, season, episode } = args;
     if (!title) return { success: false, message: "Title is required" };
 
     const harness = safeHarness();
-    harness.logActivity(`[TOOL check_jellyfin] Checking Jellyfin for "${title}"`);
+    harness.logActivity(`[TOOL check_jellyfin] Checking Jellyfin for "${title}"${season ? ` (Season ${season})` : ""}${episode ? ` (Episode ${episode})` : ""}`);
 
     try {
-        const res = await checkMediaExists(title, type, year);
+        const res = await checkMediaExists(title, type, year, season, episode);
+        let nameDesc = res.item?.Name || title;
+        if (res.type === "series") {
+            if (res.season !== undefined && res.episode !== undefined) {
+                nameDesc = `${title} - S${String(res.season).padStart(2, "0")}E${String(res.episode).padStart(2, "0")}`;
+            } else if (res.season !== undefined) {
+                nameDesc = `${title} (Season ${res.season})`;
+            }
+        }
         return {
             success: true,
             message: res.exists
-                ? `EXISTS: "${res.item?.Name || title}" is already in your Jellyfin ${res.type || "media"} library! You can stream it directly.`
-                : `NOT_IN_LIBRARY: "${title}" is not in your Jellyfin media library.`,
-            data: { exists: res.exists, title: res.item?.Name || title, type: res.type, item: res.item }
+                ? `EXISTS: "${nameDesc}" is already in your Jellyfin ${res.type || "media"} library! You can stream it directly.`
+                : `NOT_IN_LIBRARY: "${nameDesc}" is not in your Jellyfin media library.`,
+            data: { exists: res.exists, title: nameDesc, type: res.type, item: res.item, season: res.season, episode: res.episode }
         };
     } catch (err: any) {
         return { success: false, message: `JELLYFIN_ERROR: ${err.message}` };

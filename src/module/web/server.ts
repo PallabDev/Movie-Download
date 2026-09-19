@@ -3,7 +3,7 @@ import cookieParser from "cookie-parser";
 import { db, schema } from "../../common/db/index.js";
 import { eq, or, and, desc, like, ilike, sql, count } from "drizzle-orm";
 import { register, login, extractUser, extractUserAsync, tryRefreshToken, getAllUsers, updateUser, deleteUser, type UserRole } from "../../common/auth/auth.js";
-import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries, checkMediaExists } from "../../common/jellyfin/client.js";
+import { checkMovieExists, checkSeriesExists, getLibraryStats, getAllMovies, getAllSeries, checkMediaExists, getSeriesEpisodes } from "../../common/jellyfin/client.js";
 import { downloadQueue, secureBotFileToSavedMessages } from "../queue/queue.js";
 import { getHarness } from "../../../command/harness.js";
 import { broadcastNewDownload } from "./ws.js";
@@ -1004,6 +1004,43 @@ app.post("/api/media/details", requireMod, async (req: any, res) => {
         if (!parsed) {
             return res.status(404).json({ error: "No downloadable formats found for this release." });
         }
+
+        // Check if batches or episodes exist in Jellyfin library for this release
+        if (parsed.isSeries && parsed.name) {
+            try {
+                const clean = cleanMediaTitle(parsed.name);
+                const seasonMatch = parsed.name.match(/season\s*(\d{1,2})|\bS(\d{1,2})\b/i);
+                const targetSeason = clean.season || (seasonMatch ? parseInt(seasonMatch[1] || seasonMatch[2], 10) : 1);
+                
+                const sCheck = await checkSeriesExists(clean.title || parsed.name, targetSeason);
+                if (sCheck.seriesExists && sCheck.item) {
+                    if (sCheck.exists && parsed.seriesBatches) {
+                        for (const b of parsed.seriesBatches) {
+                            (b as any).inLibrary = true;
+                        }
+                    }
+                    if (parsed.seriesEpisodes && parsed.seriesEpisodes.length > 0) {
+                        const jfEps = await getSeriesEpisodes(sCheck.item.Id, targetSeason);
+                        const realEpNums = new Set(
+                            jfEps.filter(e => e.LocationType !== "Virtual").map(e => e.IndexNumber)
+                        );
+                        for (const ep of parsed.seriesEpisodes) {
+                            if (realEpNums.has(ep.episodeNum)) {
+                                (ep as any).inLibrary = true;
+                                if (ep.qualities) {
+                                    for (const q of ep.qualities) {
+                                        (q as any).inLibrary = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (jfErr: any) {
+                console.warn(`[MEDIA-DETAILS] Jellyfin pre-check warning:`, jfErr?.message);
+            }
+        }
+
         return res.json({ success: true, details: parsed });
     } catch (err: any) {
         console.error(`[MEDIA-DETAILS] Error:`, err.message);
@@ -1087,6 +1124,22 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
         const rawNameToParse = customTitle || resolvedDetails.name || "Media";
         const aiMeta = await parseMediaWithAI(rawNameToParse);
 
+        // Fallback season / episode extraction if AI missed it
+        if (!aiMeta.season) {
+            const sMatch = rawNameToParse.match(/season\s*(\d{1,2})|\bS(\d{1,2})\b/i);
+            if (sMatch) {
+                aiMeta.season = parseInt(sMatch[1] || sMatch[2], 10);
+            }
+        }
+        if (episodeNum !== undefined) {
+            aiMeta.episode = episodeNum;
+        } else if (aiMeta.episode === null || aiMeta.episode === undefined) {
+            const eMatch = rawNameToParse.match(/(?:ep|episode)\s*(\d{1,3})|\bE(\d{1,3})\b/i);
+            if (eMatch) {
+                aiMeta.episode = parseInt(eMatch[1] || eMatch[2], 10);
+            }
+        }
+
         const incomingType = type || reqMediaType;
         const isExplicitSeries = Boolean(
             incomingType === "series" || 
@@ -1136,13 +1189,29 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
 
         // Enforce Jellyfin library duplicate check before downloading
         try {
-            const jfCheck = await checkMediaExists(aiMeta.title, mediaType, movieYear);
+            const targetSeason = mediaType === "series" ? (aiMeta.season || undefined) : undefined;
+            const targetEpisode = mediaType === "series" ? (aiMeta.episode ?? undefined) : undefined;
+            const jfCheck = await checkMediaExists(
+                aiMeta.title,
+                mediaType,
+                movieYear,
+                targetSeason,
+                targetEpisode
+            );
             if (jfCheck.exists) {
-                console.log(`[DOWNLOAD-SPECIFIC] "${aiMeta.title}" is already in Jellyfin library (${jfCheck.type}). Blocking duplicate download.`);
+                let duplicateDesc = aiMeta.title;
+                if (mediaType === "series") {
+                    if (targetSeason !== undefined && targetEpisode !== undefined) {
+                        duplicateDesc = `${aiMeta.title} - S${String(targetSeason).padStart(2, "0")}E${String(targetEpisode).padStart(2, "0")}`;
+                    } else if (targetSeason !== undefined) {
+                        duplicateDesc = `${aiMeta.title} (Season ${targetSeason})`;
+                    }
+                }
+                console.log(`[DOWNLOAD-SPECIFIC] "${duplicateDesc}" is already in Jellyfin library (${jfCheck.type}). Blocking duplicate download.`);
                 return res.status(409).json({
                     success: false,
                     alreadyInJellyfin: true,
-                    error: `"${jfCheck.item?.Name || aiMeta.title}" already exists in your Jellyfin ${jfCheck.type || "media"} library! Re-download is prevented.`
+                    error: `"${duplicateDesc}" already exists in your Jellyfin ${jfCheck.type || "media"} library! Re-download is prevented.`
                 });
             }
         } catch (jfErr: any) {

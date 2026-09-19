@@ -300,14 +300,18 @@ export function cleanMediaTitle(query: string): { title: string; year?: string; 
         year = yearMatch[1];
     }
 
-    // Clean common search noise, phrases and typos (e.g. downlaod, dwonlaod, saerch)
+    // Clean common search noise, phrases and typos
     q = q
-        .replace(/\b(?:search\s+and\s+download|download\s+and\s+search|find\s+and\s+download|search\s+for|look\s+for|please\s+download|can\s+you\s+download|how many|how much|part is released|parts|part|till date|from internet|search|saerch|serach|download|downlaod|dwonlaod|dowload|dwnld|donwload|downlod|dwload|downlaoding|downloading|find|watch|get|play|stream|all seasons|all episodes|full movie|hd|720p|1080p|4k|web series|series|tv show|show|movie|film|option\s*\d+)\b/gi, " ")
-        .replace(/(?:\[|\b)S\d{1,2}[\s._-]*E\d{1,2}(?:\]|\b)/gi, " ")
-        .replace(/\bSeason\s*\d{1,2}\b/gi, " ")
-        .replace(/\bS\d{1,2}\b/gi, " ")
+        .replace(/\b(?:search\s+and\s+download|download\s+and\s+search|find\s+and\s+download|search\s+for|look\s+for|please\s+download|can\s+you\s+download|how many|how much|part is released|parts|part|till date|from internet|search|saerch|serach|download|downlaod|dwonlaod|dowload|dwnld|donwload|downlod|dwload|downlaoding|downloading|find|watch|get|play|stream|all seasons|all episodes|full movie|web series|series|tv show|show|movie|film|option\s*\d+)\b/gi, " ")
+        .replace(/(?:\[|\(|\b)S\d{1,2}[\s._-]*E\d{1,2}(?:\]|\)|\b)/gi, " ")
+        .replace(/(?:\[|\(|\b)Season\s*\d{1,2}(?:\]|\)|\b)/gi, " ")
+        .replace(/(?:\[|\(|\b)S\d{1,2}(?:\]|\)|\b)/gi, " ")
         .replace(/\b(19\d{2}|20\d{2})\b/g, " ")
-        .replace(/[:\-–—]/g, " ")
+        .replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|ds4k|bluray|brrip|web[-_.\s]*dl|webrip|x264|x265|hevc|10bit|dual audio|org|dd5\.1|esubs?|complete)\b.*$/i, " ")
+        .replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|ds4k|bluray|brrip|web[-_.\s]*dl|webrip|x264|x265|hevc|10bit|dual audio|org|dd5\.1|esubs?|complete)\b/gi, " ")
+        .replace(/[\(\[\{][^\)\]\}]*[\)\]\}]/g, " ") // Remove bracketed tags like [Hindi (ORG 2.0) & English]
+        .replace(/[\(\)\[\]\{\}\<\>:]/g, " ")
+        .replace(/[:\-–—_]/g, " ")
         .replace(/\s+/g, " ")
         .trim();
 

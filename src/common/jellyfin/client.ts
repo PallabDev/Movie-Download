@@ -1,7 +1,8 @@
 import { cleanMediaTitle } from "../tmdb/client.js";
+import { env } from "../utils/env.js";
 
-const JELLYFIN_URL = process.env.JELLYFIN_URL || "";
-const JELLYFIN_TOKEN = process.env.JELLYFIN_TOKEN || "";
+const JELLYFIN_URL = env.JELLYFIN_URL || process.env.JELLYFIN_URL || "";
+const JELLYFIN_TOKEN = env.JELLYFIN_TOKEN || process.env.JELLYFIN_TOKEN || "";
 
 export interface JellyfinItem {
     Id: string;
@@ -10,8 +11,11 @@ export interface JellyfinItem {
     ProductionYear?: number;
     Type: string;
     SeriesName?: string;
+    IndexNumber?: number;
+    ParentIndexNumber?: number;
     SeasonNumber?: number;
     EpisodeNumber?: number;
+    LocationType?: string;
     ChildCount?: number;
     RecursiveItemCount?: number;
     Overview?: string;
@@ -136,24 +140,94 @@ export async function checkMovieExists(
     return { exists: false };
 }
 
+export async function getSeriesSeasons(seriesId: string): Promise<JellyfinItem[]> {
+    const data: JellyfinSearchResult | null = await jellyfinFetch(`/Shows/${seriesId}/Seasons`);
+    return data?.Items || [];
+}
+
+export async function getSeriesEpisodes(seriesId: string, seasonNumber?: number): Promise<JellyfinItem[]> {
+    const params: Record<string, string> = {
+        Fields: "Overview,IndexNumber,ParentIndexNumber,LocationType",
+    };
+    if (seasonNumber !== undefined) {
+        params.season = String(seasonNumber);
+    }
+    const data: JellyfinSearchResult | null = await jellyfinFetch(`/Shows/${seriesId}/Episodes`, params);
+    return data?.Items || [];
+}
+
 export async function checkSeriesExists(
-    title: string
-): Promise<{ exists: boolean; item?: JellyfinItem }> {
+    title: string,
+    season?: number,
+    episode?: number
+): Promise<{
+    exists: boolean;
+    item?: JellyfinItem;
+    season?: number;
+    episode?: number;
+    seriesExists?: boolean;
+}> {
     const cleanInfo = cleanMediaTitle(title);
     const searchTarget = cleanInfo.title || title;
+    const targetSeason = season !== undefined ? season : cleanInfo.season;
+    const targetEpisode = episode !== undefined ? episode : cleanInfo.episode;
 
     const results = await searchSeries(searchTarget);
     if (results.length === 0) {
-        return { exists: false };
+        return { exists: false, seriesExists: false };
     }
 
+    let matchedSeries: JellyfinItem | undefined;
     for (const item of results) {
         if (isFuzzyTitleMatch(item.Name, searchTarget)) {
-            return { exists: true, item };
+            matchedSeries = item;
+            break;
         }
     }
 
-    return { exists: false };
+    if (!matchedSeries) {
+        return { exists: false, seriesExists: false };
+    }
+
+    // If neither season nor episode was requested, user is checking series overall
+    if (targetSeason === undefined && targetEpisode === undefined) {
+        return { exists: true, item: matchedSeries, seriesExists: true };
+    }
+
+    // Specific season or episode requested. Verify against real files in Jellyfin!
+    try {
+        if (targetSeason !== undefined) {
+            const eps = await getSeriesEpisodes(matchedSeries.Id, targetSeason);
+            // Filter real files (exclude virtual metadata-only entries)
+            const realEps = eps.filter(e => e.LocationType !== "Virtual");
+
+            if (targetEpisode !== undefined) {
+                const epItem = realEps.find(e => e.IndexNumber === targetEpisode);
+                if (epItem) {
+                    return { exists: true, item: epItem, season: targetSeason, episode: targetEpisode, seriesExists: true };
+                }
+                return { exists: false, item: matchedSeries, season: targetSeason, episode: targetEpisode, seriesExists: true };
+            } else {
+                // Batch pack check: exists if there are real media files for this season
+                if (realEps.length > 0) {
+                    return { exists: true, item: matchedSeries, season: targetSeason, seriesExists: true };
+                }
+                return { exists: false, item: matchedSeries, season: targetSeason, seriesExists: true };
+            }
+        } else if (targetEpisode !== undefined) {
+            const allEps = await getSeriesEpisodes(matchedSeries.Id);
+            const realEps = allEps.filter(e => e.LocationType !== "Virtual");
+            const epItem = realEps.find(e => e.IndexNumber === targetEpisode);
+            if (epItem) {
+                return { exists: true, item: epItem, episode: targetEpisode, seriesExists: true };
+            }
+            return { exists: false, item: matchedSeries, episode: targetEpisode, seriesExists: true };
+        }
+    } catch (err) {
+        console.warn(`[JELLYFIN] Error checking episodes for series ${matchedSeries.Name}:`, err);
+    }
+
+    return { exists: false, item: matchedSeries, seriesExists: true };
 }
 
 /**
@@ -162,20 +236,35 @@ export async function checkSeriesExists(
 export async function checkMediaExists(
     rawTitle: string,
     preferredType?: "movie" | "series",
-    year?: string
-): Promise<{ exists: boolean; item?: JellyfinItem; type?: "movie" | "series" }> {
+    year?: string,
+    season?: number,
+    episode?: number
+): Promise<{
+    exists: boolean;
+    item?: JellyfinItem;
+    type?: "movie" | "series";
+    season?: number;
+    episode?: number;
+    seriesExists?: boolean;
+}> {
     const clean = cleanMediaTitle(rawTitle);
     const query = clean.title || rawTitle;
     const targetYear = year || clean.year;
+    const targetSeason = season !== undefined ? season : clean.season;
+    const targetEpisode = episode !== undefined ? episode : clean.episode;
 
     // Detect if title contains obvious series markers
     const hasSeriesMarkers = /\b(season|s\d{1,2}|episode|ep\d{1,2}|batch|all episodes)\b/i.test(rawTitle);
-    const isSeriesLikely = preferredType === "series" || hasSeriesMarkers;
+    const isSeriesLikely = preferredType === "series" || hasSeriesMarkers || targetSeason !== undefined || targetEpisode !== undefined;
 
     if (isSeriesLikely) {
-        const sRes = await checkSeriesExists(query);
+        const sRes = await checkSeriesExists(query, targetSeason, targetEpisode);
         if (sRes.exists) {
-            return { exists: true, item: sRes.item, type: "series" };
+            return { exists: true, item: sRes.item, type: "series", season: sRes.season, episode: sRes.episode, seriesExists: sRes.seriesExists };
+        }
+        // If preferredType was explicitly series or targetSeason/episode is specified, don't fall back to movie
+        if (preferredType === "series" || targetSeason !== undefined || targetEpisode !== undefined) {
+            return { exists: false, item: sRes.item, type: "series", season: targetSeason, episode: targetEpisode, seriesExists: sRes.seriesExists };
         }
         // Fallback to movie check just in case
         const mRes = await checkMovieExists(query, targetYear);
@@ -188,9 +277,9 @@ export async function checkMediaExists(
             return { exists: true, item: mRes.item, type: "movie" };
         }
         // Fallback to series check
-        const sRes = await checkSeriesExists(query);
+        const sRes = await checkSeriesExists(query, targetSeason, targetEpisode);
         if (sRes.exists) {
-            return { exists: true, item: sRes.item, type: "series" };
+            return { exists: true, item: sRes.item, type: "series", season: sRes.season, episode: sRes.episode, seriesExists: sRes.seriesExists };
         }
     }
 
