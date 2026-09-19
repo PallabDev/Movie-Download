@@ -12,10 +12,16 @@ async def main():
     async with AsyncSession(impersonate='chrome120', verify=False) as session:
         r1 = await session.get(gm_url, headers=headers, timeout=20)
         print("GreenMotors status:", r1.status_code)
-        m_target = re.search(r'const\s+TARGET_URL\s*=\s*["\']([^"\']+)["\']', r1.text)
-        print("TARGET_URL:", m_target.group(1) if m_target else "None")
-        m_href = re.search(r'href=["\']([^"\']*(?:hubcloud|hubdrive|hblinks|hubcdn)[^"\']*)["\']', r1.text, re.I)
-        print("m_href:", m_href.group(1) if m_href else "None")
+        print("GreenMotors final url:", r1.url)
+        print("HTML snippet:\n", r1.text[:3000])
+        soup1 = BeautifulSoup(r1.text, 'html.parser')
+        print("All forms in GreenMotors:")
+        for f in soup1.find_all('form'):
+            print("Form action:", f.get('action'), "Inputs:", [(i.get('name'), i.get('value')) for i in f.find_all('input')])
+        print("All scripts snippet:")
+        for s in soup1.find_all('script'):
+            if s.string and len(s.string.strip()) > 0:
+                print("Script:\n", s.string[:500])
         
         hub_url = m_target.group(1) if m_target else (m_href.group(1) if m_href else None)
         if hub_url:
