@@ -27,6 +27,9 @@ HOST_ENDPOINTS = [
 ]
 
 # In-memory caches
+_cached_active_domain: Optional[str] = None
+_cached_modlist_mirrors: Optional[Dict[str, str]] = None
+
 def _rot13(s: str) -> str:
     return codecs.decode(s, "rot_13")
 
