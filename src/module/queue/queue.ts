@@ -308,13 +308,18 @@ export function createDownloadWorker() {
             }
 
             // Determine target download file path using clean metadata
-            let targetPath: string;
             let cleanTitle: string = data.cleanTitle || data.title || "Media";
             let cleanYear = data.year && /^\d{4}$/.test(String(data.year).trim()) ? String(data.year).trim() : undefined;
             let cleanSeason = data.season || 1;
             let cleanEpisode = data.episode || 1;
             let isBatch = Boolean(data.isBatchPack);
-            let mediaType = data.type;
+
+            // Strict type classification: Ensure movies are never misrouted to shows
+            const isExplicitMovie = data.type === "movie" || (!data.season && !data.episode && !data.isBatchPack && data.type !== "series" && data.type !== "tv" && data.type !== "show");
+            let mediaType: "movie" | "series" = isExplicitMovie ? "movie" : "series";
+            if (isExplicitMovie) {
+                isBatch = false;
+            }
 
             // ALWAYS use the AI cleaner harness to resolve canonical TMDB/IMDb title and release year
             const rawNameToParse = [cleanTitle, cleanYear, data.fileName].filter(Boolean).join(" ");
@@ -322,12 +327,15 @@ export function createDownloadWorker() {
             if (aiMeta && aiMeta.title && aiMeta.title !== "Unknown Media") {
                 cleanTitle = aiMeta.title;
                 if (aiMeta.year) cleanYear = aiMeta.year;
-                if (aiMeta.season && !cleanSeason) cleanSeason = aiMeta.season;
-                if (aiMeta.episode && !data.episode) cleanEpisode = aiMeta.episode;
-                if (aiMeta.isBatch) isBatch = true;
-                if (aiMeta.type) mediaType = aiMeta.type;
+                if (!isExplicitMovie) {
+                    if (aiMeta.season && !data.season) cleanSeason = aiMeta.season;
+                    if (aiMeta.episode && !data.episode) cleanEpisode = aiMeta.episode;
+                    if (aiMeta.isBatch) isBatch = true;
+                    if (aiMeta.type === "series" || aiMeta.type === "movie") mediaType = aiMeta.type;
+                }
             }
 
+            let targetPath: string;
             if (mediaType === "series") {
                 if (isBatch) {
                     targetPath = getBatchPackPath(cleanTitle, cleanSeason, data.fileName);

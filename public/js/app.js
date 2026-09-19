@@ -1441,7 +1441,8 @@ function handleDrawerFormatClick(key, btnElement) {
         data.episodeNum,
         data.fileSize,
         btnElement,
-        data.linkUrl
+        data.linkUrl,
+        data.type
     );
 }
 
@@ -1466,7 +1467,8 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                                     isBatch: true,
                                     episodeNum: undefined,
                                     fileSize: b.fileSize,
-                                    linkUrl: b.linkUrl
+                                    linkUrl: b.linkUrl,
+                                    type: 'series'
                                 });
                                 return `
                                 <div class="format-card ${b.isRecommended ? 'recommended' : ''}">
@@ -1507,7 +1509,8 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                                                 isBatch: false,
                                                 episodeNum: ep.episodeNum,
                                                 fileSize: q.fileSize,
-                                                linkUrl: q.linkUrl
+                                                linkUrl: q.linkUrl,
+                                                type: 'series'
                                             });
                                             return `
                                             <button class="btn-ep-download" onclick="handleDrawerFormatClick('${actionKey}', this)">
@@ -1537,7 +1540,8 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                             isBatch: false,
                             episodeNum: undefined,
                             fileSize: f.fileSize,
-                            linkUrl: f.linkUrl
+                            linkUrl: f.linkUrl,
+                            type: 'movie'
                         });
                         return `
                         <div class="format-card ${f.isRecommended ? 'recommended' : ''}">
@@ -1565,7 +1569,7 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
 }
 
 let isTriggeringDownload = false;
-async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize, btnElement, linkUrl) {
+async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize, btnElement, linkUrl, type) {
     if (isTriggeringDownload) return;
     isTriggeringDownload = true;
 
@@ -1587,7 +1591,8 @@ async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle,
                 isBatch: Boolean(isBatch),
                 episodeNum,
                 fileSize,
-                linkUrl
+                linkUrl,
+                type: type || (isBatch || episodeNum !== undefined ? 'series' : 'movie')
             })
         });
 

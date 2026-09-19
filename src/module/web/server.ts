@@ -1014,7 +1014,7 @@ app.post("/api/media/details", requireMod, async (req: any, res) => {
 // ─── SPECIFIC FORMAT / EPISODE DOWNLOAD ───
 
 app.post("/api/download-specific", requireMod, async (req: any, res) => {
-    const { targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize, linkUrl } = req.body;
+    const { targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize, linkUrl, type, mediaType: reqMediaType } = req.body;
 
     if (!targetUrl && !linkUrl) {
         return res.status(400).json({ error: "targetUrl or linkUrl is required" });
@@ -1087,8 +1087,26 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
         const rawNameToParse = customTitle || resolvedDetails.name || "Media";
         const aiMeta = await parseMediaWithAI(rawNameToParse);
 
-        const isExplicitSeries = Boolean(isBatch || episodeNum !== undefined || (qualityKey && (qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"))));
-        if (isExplicitSeries) {
+        const incomingType = type || reqMediaType;
+        const isExplicitSeries = Boolean(
+            incomingType === "series" || 
+            incomingType === "tv" || 
+            incomingType === "show" || 
+            (incomingType !== "movie" && (isBatch || episodeNum !== undefined || (qualityKey && (qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_")))))
+        );
+
+        if (incomingType === "movie" && episodeNum === undefined) {
+            aiMeta.type = "movie";
+            aiMeta.isBatch = false;
+            // Ensure movie has canonical TMDB title and year
+            try {
+                const tmdb = await lookupMedia(aiMeta.title, aiMeta.year);
+                if (tmdb && tmdb.found && tmdb.title) {
+                    aiMeta.title = tmdb.title;
+                    if (tmdb.year) aiMeta.year = tmdb.year;
+                }
+            } catch {}
+        } else if (isExplicitSeries) {
             aiMeta.type = "series";
             if (episodeNum !== undefined) {
                 aiMeta.episode = episodeNum;
@@ -1105,6 +1123,10 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
                     if (tmdb.year) aiMeta.year = tmdb.year;
                 }
             } catch {}
+            if (aiMeta.type !== "series") {
+                aiMeta.type = "movie";
+                aiMeta.isBatch = false;
+            }
         }
 
         const mediaType = aiMeta.type;
@@ -1241,7 +1263,7 @@ app.get("/api/download/inspect/:requestId", requireMod, async (req: any, res) =>
 // ─── SELECT & DOWNLOAD ───
 
 app.post("/api/select", requireMod, async (req: any, res) => {
-    const { searchId, optionIndex, targetUrl, buttonText } = req.body;
+    const { searchId, optionIndex, targetUrl, buttonText, type } = req.body;
     let chosenUrl = targetUrl;
     let chosenTitle = "Media";
     let chosenYear = "";
@@ -1280,7 +1302,10 @@ app.post("/api/select", requireMod, async (req: any, res) => {
             return res.status(404).json({ error: "No downloadable servers found for this item." });
         }
 
-        const isSeries = quality.isBatchPack || quality.isEpisodeList;
+        const incomingType = type || (session ? session.type : undefined);
+        const isSeries = (incomingType === "series" || incomingType === "tv" || incomingType === "show") 
+            ? true 
+            : (incomingType === "movie" ? false : (quality.isBatchPack || quality.isEpisodeList));
         let mediaType: "movie" | "series" = isSeries ? "series" : "movie";
 
         if (!chosenYear && mediaType === "movie") {
@@ -1378,6 +1403,7 @@ app.post("/api/select", requireMod, async (req: any, res) => {
             aiMeta.isBatch = true;
         } else {
             aiMeta.type = "movie";
+            aiMeta.isBatch = false;
             try {
                 const tmdb = await lookupMedia(aiMeta.title, aiMeta.year || chosenYear);
                 if (tmdb && tmdb.found && tmdb.title) {
@@ -1411,7 +1437,7 @@ app.post("/api/select", requireMod, async (req: any, res) => {
             year: chosenYear || undefined,
             servers: quality.servers,
             fileSize,
-            isBatchPack: quality.isBatchPack || Boolean(aiMeta.isBatch),
+            isBatchPack: mediaType === "series" && (quality.isBatchPack || Boolean(aiMeta.isBatch)),
             season: mediaType === "series" ? (aiMeta.season || 1) : undefined,
             fileName: jobFileName,
         });

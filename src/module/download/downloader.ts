@@ -13,6 +13,10 @@ export function ensureDir(dir: string) {
     }
 }
 
+// Ensure base download subdirectories exist
+ensureDir(join(DOWNLOAD_ROOT, "movies"));
+ensureDir(join(DOWNLOAD_ROOT, "shows"));
+
 function toTitleCase(str: string): string {
     const minorWords = new Set(["of", "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "is", "it"]);
     return str
