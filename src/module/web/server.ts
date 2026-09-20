@@ -933,10 +933,10 @@ app.post("/api/search", requireMod, async (req: any, res) => {
             // 1. Strip WordPress photon proxy prefixes (e.g. https://i0.wp.com/) that get blocked by ad blockers
             thumb = thumb.replace(/^https?:\/\/i\d+\.wp\.com\//i, "https://");
 
-            // 2. If thumbnail is from a dead image domain, fall back to resolved canonical TMDB poster
-            const isDeadDomain = /imagetot\.com|extraimage\.net|jiopic\.com|keepimg\.com/i.test(thumb);
-            if ((!thumb || isDeadDomain) && mediaMetadata && mediaMetadata.posterUrl) {
-                thumb = mediaMetadata.posterUrl;
+            // 2. Dead image domains return broken images - clear thumbnail, do NOT fall back to searched media's poster
+            const isDeadDomain = /imagetot\.com|extraimage\.net|extraimages\.net|jiopic\.com|keepimg\.com/i.test(thumb);
+            if (isDeadDomain) {
+                thumb = "";
             }
 
             const srcName = r.source || (r.sourceType === "vegamovies" ? "Vegamovies" : (r.sourceType === "modlist" ? "Modlist" : "HDHub4u"));

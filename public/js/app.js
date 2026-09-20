@@ -4288,14 +4288,13 @@ async function searchScraperForPicker(searchTitle, year, type) {
         }
 
         grid.innerHTML = results.map((rel, idx) => {
-            const fallbackThumb = downloadPickerState.posterUrl || 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&auto=format&fit=crop&q=80';
             let thumb = (rel.thumbnail || '').trim();
             thumb = thumb.replace(/^https?:\/\/i\d+\.wp\.com\//i, 'https://');
-            if (!thumb || /imagetot\.com|extraimage\.net|jiopic\.com|keepimg\.com/i.test(thumb)) {
-                thumb = fallbackThumb;
+            if (/imagetot\.com|extraimage\.net|extraimages\.net|jiopic\.com|keepimg\.com/i.test(thumb)) {
+                thumb = '';
             }
-            const safeThumb = escapeHtml(thumb).replace(/'/g, "\\'");
-            const safeFallback = escapeHtml(fallbackThumb).replace(/'/g, "\\'");
+            const hasThumb = Boolean(thumb);
+            const safeThumb = hasThumb ? escapeHtml(thumb).replace(/'/g, "\\'") : '';
             const srcName = rel.source || (rel.sourceType === 'vegamovies' ? 'Vegamovies' : (rel.sourceType === 'modlist' ? 'Modlist' : 'HDHub4u'));
             const srcClass = (rel.sourceType === 'vegamovies') ? 'source' : ((rel.sourceType === 'modlist' || (rel.source && (rel.source.includes('UHD') || rel.source.includes('MoviesMod')))) ? 'best' : 'quality');
             const qTags = Array.isArray(rel.qualityTags) ? rel.qualityTags : [];
@@ -4303,14 +4302,29 @@ async function searchScraperForPicker(searchTitle, year, type) {
 
             return `
                 <div class="picker-release-card ${rel.isBest ? 'best-match' : ''}">
-                    <div class="picker-release-thumb-wrap">
-                        <div class="picker-release-thumb-bg" style="background-image: url('${safeThumb}');"></div>
-                        <img src="${safeThumb}" 
-                             alt="${escapeHtml(rel.name)}" 
-                             class="picker-release-thumb" 
-                             referrerpolicy="no-referrer"
-                             loading="lazy" 
-                             onerror="this.onerror=null; this.src='${safeFallback}'; if(this.previousElementSibling) this.previousElementSibling.style.backgroundImage='url(\\'${safeFallback}\\')';">
+                    <div class="picker-release-thumb-wrap ${hasThumb ? '' : 'no-thumb'}">
+                        ${hasThumb ? `
+                            <div class="picker-release-thumb-bg" style="background-image: url('${safeThumb}');"></div>
+                            <img src="${safeThumb}" 
+                                 alt="${escapeHtml(rel.name)}" 
+                                 class="picker-release-thumb" 
+                                 referrerpolicy="no-referrer"
+                                 loading="lazy" 
+                                 onerror="this.onerror=null; this.style.display='none'; if(this.previousElementSibling) this.previousElementSibling.style.display='none'; const wrap = this.closest('.picker-release-thumb-wrap'); if(wrap) wrap.classList.add('no-thumb'); const ph = wrap ? wrap.querySelector('.picker-no-thumb-placeholder') : null; if(ph) ph.style.display='flex';">
+                        ` : ''}
+                        <div class="picker-no-thumb-placeholder" style="${hasThumb ? 'display: none;' : 'display: flex;'}">
+                            <svg class="tabler-icon" viewBox="0 0 24 24" style="width: 32px; height: 32px; stroke-width: 1.5; color: rgba(255,255,255,0.25);">
+                                <path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"/>
+                                <path d="M8 4l0 16"/>
+                                <path d="M16 4l0 16"/>
+                                <path d="M4 8l4 0"/>
+                                <path d="M4 16l4 0"/>
+                                <path d="M4 12l16 0"/>
+                                <path d="M16 8l4 0"/>
+                                <path d="M16 16l4 0"/>
+                            </svg>
+                            <span style="font-size: 11px; color: var(--text-muted); font-weight: 500; margin-top: 6px;">No Thumbnail Available</span>
+                        </div>
                         <div style="position: absolute; top: 8px; left: 8px; display: flex; flex-direction: column; gap: 4px; z-index: 2;">
                             <span class="chip ${srcClass}" style="font-size: 9.5px; font-weight: 700; text-transform: uppercase; padding: 2px 7px; backdrop-filter: blur(8px); box-shadow: 0 2px 6px rgba(0,0,0,0.5);">${escapeHtml(srcName)}</span>
                             ${rel.isBest ? `<span class="badge-best-match" style="position: static;">Top Match</span>` : ''}
