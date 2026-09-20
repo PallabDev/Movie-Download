@@ -486,13 +486,15 @@ async function getCachedJellyfinMedia() {
                 name: item.Name,
                 title: item.Name.toLowerCase().trim(),
                 cleanTitle: item.Name.toLowerCase().replace(/[^a-z0-9]/g, ""),
-                year: item.Year ? String(item.Year) : undefined,
+                year: (item.ProductionYear || item.Year) ? String(item.ProductionYear || item.Year) : undefined,
+                tmdbId: item.ProviderIds?.Tmdb ? Number(item.ProviderIds.Tmdb) : undefined,
             })),
             series: (jfSeries || []).map(item => ({
                 name: item.Name,
                 title: item.Name.toLowerCase().trim(),
                 cleanTitle: item.Name.toLowerCase().replace(/[^a-z0-9]/g, ""),
-                year: item.Year ? String(item.Year) : undefined,
+                year: (item.ProductionYear || item.Year) ? String(item.ProductionYear || item.Year) : undefined,
+                tmdbId: item.ProviderIds?.Tmdb ? Number(item.ProviderIds.Tmdb) : undefined,
             }))
         };
         lastJellyfinFetch = now;
@@ -502,33 +504,58 @@ async function getCachedJellyfinMedia() {
     return cachedJellyfinMedia;
 }
 
-function checkMovieInLibrary(title: string, year?: string | null, originalTitle?: string | null, jfList: { title: string; cleanTitle: string; year?: string; name: string }[] = []): boolean {
+function cleanForComparison(str: string): string {
+    return str
+        .toLowerCase()
+        .replace(/^(the|a|an)\s+/i, "")
+        .replace(/[^a-z0-9]/g, "")
+        .trim();
+}
+
+function checkMovieInLibrary(
+    title: string,
+    year?: string | null,
+    originalTitle?: string | null,
+    jfList: { title: string; cleanTitle: string; year?: string; name: string; tmdbId?: number }[] = [],
+    tmdbId?: number | null
+): boolean {
     if (!title || jfList.length === 0) return false;
-    
-    const cleanT = title.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const cleanOrig = (originalTitle || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    const rawCleanT = title.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const rawCleanOrig = (originalTitle || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const cleanT = cleanForComparison(title);
+    const cleanOrig = originalTitle ? cleanForComparison(originalTitle) : "";
     const targetYear = year ? String(year).trim() : "";
 
     for (const item of jfList) {
-        // 1. Exact match on normalized alphanumeric string
-        if (item.cleanTitle === cleanT || (cleanOrig && item.cleanTitle === cleanOrig)) {
+        // 1. Infallible TMDB ID match if both have it
+        if (tmdbId && item.tmdbId && Number(tmdbId) === Number(item.tmdbId)) {
             return true;
         }
 
-        // 2. Year check with substring match
-        const yearMatches = !targetYear || !item.year || item.year === targetYear || Math.abs(Number(item.year) - Number(targetYear)) <= 1;
+        const itemRawClean = item.cleanTitle;
+        const itemClean = cleanForComparison(item.name);
 
-        if (yearMatches) {
-            if (cleanT.length >= 4 && item.cleanTitle.length >= 4) {
-                if (cleanT.includes(item.cleanTitle) || item.cleanTitle.includes(cleanT)) {
-                    return true;
+        // 2. Exact title match (allowing for punctuation or leading articles)
+        const isTitleExact =
+            itemRawClean === rawCleanT ||
+            (rawCleanOrig && itemRawClean === rawCleanOrig) ||
+            itemClean === cleanT ||
+            (cleanOrig && itemClean === cleanOrig);
+
+        if (isTitleExact) {
+            // If both candidate and item have a release year, verify they match (within 1 year margin)
+            if (targetYear && item.year) {
+                const y1 = parseInt(targetYear, 10);
+                const y2 = parseInt(item.year, 10);
+                if (!isNaN(y1) && !isNaN(y2)) {
+                    if (Math.abs(y1 - y2) <= 1) {
+                        return true;
+                    }
+                    continue;
                 }
             }
-            if (cleanOrig && cleanOrig.length >= 4 && item.cleanTitle.length >= 4) {
-                if (cleanOrig.includes(item.cleanTitle) || item.cleanTitle.includes(cleanOrig)) {
-                    return true;
-                }
-            }
+            return true;
         }
     }
 
@@ -583,10 +610,10 @@ app.get("/api/new-releases", requireMod, async (req: any, res) => {
         const enrichedReleases = discovery.results.map(item => {
             const isSeries = item.mediaType === "series";
             const jfList = isSeries ? jfMedia.series : jfMedia.movies;
-            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfList);
+            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfList, item.tmdbId);
             return {
                 ...item,
-                jellyfinExists: inJellyfin || Boolean(item.jellyfinExists),
+                jellyfinExists: inJellyfin,
             };
         });
 
@@ -793,7 +820,7 @@ app.get("/api/trending", requireMod, async (req: any, res) => {
         const enrichedItems = result.items.map(item => {
             const isSeries = item.mediaType === "series";
             const jfList = isSeries ? jfMedia.series : jfMedia.movies;
-            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfList);
+            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfList, item.tmdbId);
             return {
                 ...item,
                 jellyfinExists: inJellyfin,
@@ -838,7 +865,7 @@ app.get("/api/popular", requireMod, async (req: any, res) => {
         const enrichedItems = result.items.map(item => {
             const isSeries = item.mediaType === "series";
             const jfList = isSeries ? jfMedia.series : jfMedia.movies;
-            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfList);
+            const inJellyfin = checkMovieInLibrary(item.title, item.year, item.originalTitle, jfList, item.tmdbId);
             return {
                 ...item,
                 jellyfinExists: inJellyfin,

@@ -21,6 +21,7 @@ export interface JellyfinItem {
     Overview?: string;
     CommunityRating?: number;
     PremiereDate?: string;
+    ProviderIds?: Record<string, string>;
 }
 
 interface JellyfinSearchResult {
@@ -63,7 +64,7 @@ export async function searchMovies(query: string): Promise<JellyfinItem[]> {
         IncludeItemTypes: "Movie",
         Recursive: "true",
         SearchTerm: query,
-        Fields: "Overview,CommunityRating,PremiereDate,ProductionYear",
+        Fields: "Overview,CommunityRating,PremiereDate,ProductionYear,ProviderIds",
         Limit: "15",
     });
     return data?.Items || [];
@@ -74,40 +75,30 @@ export async function searchSeries(query: string): Promise<JellyfinItem[]> {
         IncludeItemTypes: "Series",
         Recursive: "true",
         SearchTerm: query,
-        Fields: "Overview,ChildCount,RecursiveItemCount,CommunityRating,PremiereDate,ProductionYear",
+        Fields: "Overview,ChildCount,RecursiveItemCount,CommunityRating,PremiereDate,ProductionYear,ProviderIds",
         Limit: "20",
     });
     return data?.Items || [];
 }
 
-function normalizeTitleForMatch(str: string): string {
-    return str.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+function cleanForMatch(str: string): string {
+    return str
+        .toLowerCase()
+        .replace(/^(the|a|an)\s+/i, "")
+        .replace(/[^a-z0-9]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
 }
 
 function isFuzzyTitleMatch(candidateName: string, targetName: string): boolean {
-    const cand = normalizeTitleForMatch(candidateName);
-    const target = normalizeTitleForMatch(targetName);
+    const cand = cleanForMatch(candidateName);
+    const target = cleanForMatch(targetName);
     if (!cand || !target) return false;
     if (cand === target) return true;
 
-    // Check if one contains the other as a whole word boundary
-    const candWords = cand.split(" ");
-    const targetWords = target.split(" ");
-
-    // If target has at least 2 words and is completely in candidate
-    if (targetWords.length >= 2 && cand.includes(target)) return true;
-    if (candWords.length >= 2 && target.includes(cand)) return true;
-
-    // If single word, require exact match or length >= 4
-    if (candWords.length === 1 && targetWords.length === 1) {
-        return cand === target;
-    }
-
-    // Check high word overlap
-    const matchingWords = targetWords.filter(w => w.length > 2 && candWords.includes(w));
-    if (matchingWords.length >= Math.min(targetWords.length, 2)) {
-        return true;
-    }
+    const candCompact = cand.replace(/\s+/g, "");
+    const targetCompact = target.replace(/\s+/g, "");
+    if (candCompact === targetCompact) return true;
 
     return false;
 }
@@ -314,7 +305,7 @@ export async function getAllMovies(): Promise<JellyfinItem[]> {
     const data: JellyfinSearchResult | null = await jellyfinFetch("/Items", {
         IncludeItemTypes: "Movie",
         Recursive: "true",
-        Fields: "Overview,CommunityRating,PremiereDate,ProductionYear",
+        Fields: "Overview,CommunityRating,PremiereDate,ProductionYear,ProviderIds",
         Limit: "10000",
         SortBy: "Name",
     });
@@ -325,7 +316,7 @@ export async function getAllSeries(): Promise<JellyfinItem[]> {
     const data: JellyfinSearchResult | null = await jellyfinFetch("/Items", {
         IncludeItemTypes: "Series",
         Recursive: "true",
-        Fields: "Overview,ChildCount,RecursiveItemCount,CommunityRating,PremiereDate,ProductionYear",
+        Fields: "Overview,ChildCount,RecursiveItemCount,CommunityRating,PremiereDate,ProductionYear,ProviderIds",
         Limit: "10000",
         SortBy: "Name",
     });
