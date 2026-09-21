@@ -3,9 +3,39 @@ import { resolve, join, extname, basename, dirname } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { getHarness } from "../../../command/harness.js";
-import { normalizeDirectStreamUrl, type DownloadServer } from "./api-client.js";
+import { normalizeDirectStreamUrl, type DownloadServer, DL_API_BASE_URL } from "./api-client.js";
 
 const DOWNLOAD_ROOT = resolve(process.cwd(), "download");
+
+function isIntermediateUrl(url: string): boolean {
+    if (!url || !url.startsWith("http")) return false;
+    if (/r2\.cloudflarestorage|r2\.dev|pixeldrain\.com|storage\.googleapis|video-downloads\.googleusercontent|\.mkv$|\.mp4$|\.avi$/i.test(url)) {
+        return false;
+    }
+    return /hubcloud|hubdrive|hubcdn|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hdstream4u|hblinks|inventoryidea/i.test(url);
+}
+
+async function resolveIntermediateLink(url: string): Promise<DownloadServer[]> {
+    try {
+        const resolveApi = `${DL_API_BASE_URL}/api/resolve?url=${encodeURIComponent(url)}`;
+        console.log(`[DOWNLOAD-STREAM] Resolving intermediate link via Scraper API: ${resolveApi}`);
+        const res = await fetch(resolveApi, {
+            headers: { "Accept": "application/json" },
+            signal: AbortSignal.timeout(20000)
+        });
+        if (res.ok) {
+            const data: any = await res.json();
+            const rawServers: DownloadServer[] = data.final_downloads || [];
+            if (rawServers.length > 0) {
+                console.log(`[DOWNLOAD-STREAM] Successfully resolved ${rawServers.length} direct CDN servers for intermediate URL`);
+                return rawServers;
+            }
+        }
+    } catch (e: any) {
+        console.warn(`[DOWNLOAD-STREAM] Failed to resolve intermediate link (${url}):`, e?.message);
+    }
+    return [];
+}
 
 export function ensureDir(dir: string) {
     if (!existsSync(dir)) {
@@ -228,14 +258,25 @@ export async function downloadHttpStream(
     }
 
     let lastError = "Download failed";
+    const serverList: DownloadServer[] = [...servers];
 
-    for (let srvIdx = 0; srvIdx < servers.length; srvIdx++) {
-        const srv = servers[srvIdx];
+    for (let srvIdx = 0; srvIdx < serverList.length; srvIdx++) {
+        const srv = serverList[srvIdx];
         const rawUrl = srv.download_url;
         if (!rawUrl || !rawUrl.startsWith("http")) continue;
 
+        // Check if server URL is an unresolved intermediate landing page
+        if (isIntermediateUrl(rawUrl)) {
+            console.log(`[DOWNLOAD-STREAM] Server [${srvIdx + 1}/${serverList.length}] is an intermediate URL (${rawUrl.substring(0, 60)}...). Resolving directly...`);
+            const resolved = await resolveIntermediateLink(rawUrl);
+            if (resolved.length > 0) {
+                serverList.splice(srvIdx + 1, 0, ...resolved);
+                continue;
+            }
+        }
+
         const directUrl = normalizeDirectStreamUrl(rawUrl);
-        console.log(`[DOWNLOAD-STREAM] Attempting server [${srvIdx + 1}/${servers.length}]: ${srv.server_name} (${srv.server_type}) -> ${directUrl.substring(0, 70)}...`);
+        console.log(`[DOWNLOAD-STREAM] Attempting server [${srvIdx + 1}/${serverList.length}]: ${srv.server_name} (${srv.server_type}) -> ${directUrl.substring(0, 70)}...`);
 
         try {
             if (abortSignal?.aborted) {
@@ -284,6 +325,12 @@ export async function downloadHttpStream(
             // Check content type - if HTML, it's a captcha or landing page, not the direct stream
             const contentType = (res.headers.get("content-type") || "").toLowerCase();
             if (contentType.includes("text/html") && !res.headers.get("content-disposition")) {
+                console.warn(`[DOWNLOAD-STREAM] Server returned HTML content-type (${contentType}). Attempting on-the-fly resolution...`);
+                const resolved = await resolveIntermediateLink(directUrl);
+                if (resolved.length > 0) {
+                    serverList.splice(srvIdx + 1, 0, ...resolved);
+                    continue;
+                }
                 throw new Error(`Server returned HTML web page instead of media stream`);
             }
 
@@ -389,5 +436,5 @@ export async function downloadHttpStream(
         }
     }
 
-    return { success: false, finalPath: targetPath, totalBytes: 0, error: `All ${servers.length} download servers failed. Last error: ${lastError}` };
+    return { success: false, finalPath: targetPath, totalBytes: 0, error: `All ${serverList.length} download servers failed. Last error: ${lastError}` };
 }

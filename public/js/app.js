@@ -1598,6 +1598,8 @@ async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle,
     }
 
     try {
+        const activeFlickId = downloadPickerState.flickRequestId || state.pendingFlickRequestId || sessionStorage.getItem('pendingFlickRequestId') || undefined;
+
         const res = await fetch('/api/download-specific', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1611,12 +1613,17 @@ async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle,
                 fileSize,
                 linkUrl,
                 type: type || (isBatch || episodeNum !== undefined ? 'series' : 'movie'),
-                flickRequestId: downloadPickerState.flickRequestId || undefined
+                flickRequestId: activeFlickId
             })
         });
 
         const data = await res.json();
         if (data.success) {
+            if (activeFlickId) {
+                delete state.pendingFlickRequestId;
+                sessionStorage.removeItem('pendingFlickRequestId');
+                sessionStorage.removeItem('pendingRequestedMediaId');
+            }
             showToast(data.message || 'Download queued successfully!', 'success');
             if (btnElement) {
                 btnElement.innerHTML = `✅ Queued`;
@@ -1971,26 +1978,32 @@ async function loadRequestedMedia() {
             const rawTitleEscaped = safeTitle.replace(/'/g, "\\'");
             const safePosterEscaped = escapeHtml(item.posterUrl || '').replace(/'/g, "\\'");
             const isDownloading = item.status === 'downloading';
-            const isInLibrary = item.status === 'inlibrary' || item.status === 'available';
-            const isRejected = item.status === 'rejected';
-
-            let statusBadgeClass = 'pending';
+                   let statusBadgeClass = 'pending';
             let statusLabel = item.status;
+            let statusDotClass = 'online';
+            let statusBadgeStyle = '';
+
             if (item.status === 'approved') {
                 statusBadgeClass = 'downloading';
                 statusLabel = 'Approved';
+                statusDotClass = 'online';
             } else if (item.status === 'downloading') {
                 statusBadgeClass = 'downloading';
                 statusLabel = 'Downloading ⚡';
+                statusDotClass = 'online';
             } else if (isInLibrary) {
                 statusBadgeClass = 'completed';
                 statusLabel = 'In Library 🎉';
+                statusDotClass = 'online';
             } else if (isRejected) {
                 statusBadgeClass = 'failed';
                 statusLabel = 'Rejected';
-            } else if (item.status === 'requested' || item.status === 'pending') {
+                statusDotClass = 'offline';
+            } else {
                 statusBadgeClass = 'pending';
-                statusLabel = 'Pending';
+                statusLabel = 'Pending Review';
+                statusDotClass = 'warning';
+                statusBadgeStyle = 'background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3);';
             }
 
             return `
@@ -2013,7 +2026,7 @@ async function loadRequestedMedia() {
                                     </span>
                                 ` : `
                                     <span class="chip" style="background: rgba(255,255,255,0.06); color: var(--text-muted); font-size: 9.5px; padding: 1px 6px;">CineGrab</span>
-                                `}
+                                `)}
                                 ${item.tmdbId ? `<span class="chip" style="background: rgba(245,158,11,0.1); color: #fbbf24; font-size: 9.5px; padding: 1px 5px;">TMDB ${item.tmdbId}</span>` : ''}
                             </div>
                             ${item.note ? `<div style="font-size: 11px; color: var(--text-muted); font-style: italic; margin-top: 3px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(item.note)}">“${escapeHtml(item.note)}”</div>` : ''}
@@ -2038,8 +2051,8 @@ async function loadRequestedMedia() {
 
                 <!-- Status -->
                 <td>
-                    <span class="status-badge ${statusBadgeClass}">
-                        <span class="status-dot ${isInLibrary ? 'online' : (isRejected ? 'offline' : 'online')}"></span>
+                    <span class="status-badge ${statusBadgeClass}" ${statusBadgeStyle ? `style="${statusBadgeStyle}"` : ''}>
+                        <span class="status-dot ${statusDotClass}"></span>
                         ${statusLabel}
                     </span>
                 </td>
@@ -2050,23 +2063,17 @@ async function loadRequestedMedia() {
                     <div style="color: var(--text-muted); font-size: 10.5px;">${new Date(item.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
                 </td>
 
-                <!-- Actions: Download with search & download + Rejected -->
+                <!-- Actions: Download (redirects to search) & Reject -->
                 <td style="text-align: right; white-space: nowrap;">
                     <div style="display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end;">
-                        <!-- Option 1: Download Action Group -->
+                        <!-- Download Button -> Redirects to /?search=Title -->
                         ${!isInLibrary ? `
-                            <button class="btn-primary-action" id="btnAutoDl_${item.id}" 
-                                    style="padding: 5px 11px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;" 
-                                    onclick="triggerAutoDownloadForRequest(${item.id})">
+                            <button class="btn-primary-action" id="btnDl_${item.id}" 
+                                    style="padding: 5px 12px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px;" 
+                                    title="Search and select download format for this title"
+                                    onclick="redirectToSearchForRequest(${item.id}, '${rawTitleEscaped}', '${item.flickRequestId || ''}')">
                                 <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
                                 Download
-                            </button>
-                            <button class="btn-header" 
-                                    style="padding: 5px 8px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;" 
-                                    title="Search scraper sources and select specific quality or format"
-                                    onclick="triggerSearchAndDownloadForRequest(${item.id}, '${rawTitleEscaped}', '${item.type}', '${item.flickRequestId || ''}', '${safePosterEscaped}', '${item.year || ''}', ${item.tmdbId || 'null'})">
-                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
-                                Search & Pick
                             </button>
                         ` : `
                             <span style="font-size: 11.5px; color: var(--accent-emerald); font-weight: 500; display: inline-flex; align-items: center; gap: 4px; margin-right: 4px;">
@@ -2074,7 +2081,7 @@ async function loadRequestedMedia() {
                             </span>
                         `}
 
-                        <!-- Option 2: Reject Action -->
+                        <!-- Reject Action -->
                         ${!isInLibrary && !isRejected ? `
                             <button class="btn-header" 
                                     style="color: var(--accent-rose); border-color: rgba(244,63,94,0.3); padding: 5px 9px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;" 
@@ -2085,7 +2092,7 @@ async function loadRequestedMedia() {
                             </button>
                         ` : ''}
 
-                        <!-- Option 3: Delete / More menu -->
+                        <!-- Delete button -->
                         <button class="btn-header" style="color: var(--text-muted); padding: 5px 6px;" title="Remove from list" onclick="deleteRequestedMedia(${item.id})">
                             <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>
                         </button>
@@ -2100,8 +2107,17 @@ async function loadRequestedMedia() {
 }
 
 // --------------------------------------------------------------------------
-// REQUESTED MEDIA ACTIONS: Auto Download, Search & Pick, Reject Modal
+// REQUESTED MEDIA ACTIONS: Redirect to Search, Auto Download, Reject Modal
 // --------------------------------------------------------------------------
+
+function redirectToSearchForRequest(id, title, flickRequestId) {
+    const params = new URLSearchParams();
+    params.set('search', title);
+    if (flickRequestId) params.set('flickRequestId', flickRequestId);
+    params.set('requestId', String(id));
+    window.location.href = `/?${params.toString()}`;
+}
+window.redirectToSearchForRequest = redirectToSearchForRequest;
 
 async function triggerAutoDownloadForRequest(id) {
     const btn = document.getElementById(`btnAutoDl_${id}`);
@@ -4979,6 +4995,38 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const initialView = window.__INITIAL_VIEW__ || getViewForPath(window.location.pathname);
     switchView(initialView, false);
+
+    // Auto-search if ?search= is passed in URL query (e.g. redirected from /request Download action)
+    try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const searchQuery = urlParams.get('search') || urlParams.get('q');
+        const flickRequestId = urlParams.get('flickRequestId') || urlParams.get('flick_id');
+        const requestedMediaId = urlParams.get('requestId') || urlParams.get('req_id');
+
+        if (flickRequestId) {
+            sessionStorage.setItem('pendingFlickRequestId', flickRequestId);
+            state.pendingFlickRequestId = flickRequestId;
+        }
+        if (requestedMediaId) {
+            sessionStorage.setItem('pendingRequestedMediaId', requestedMediaId);
+            state.pendingRequestedMediaId = requestedMediaId;
+        }
+
+        if (searchQuery && searchQuery.trim()) {
+            const cleanQuery = searchQuery.trim();
+            switchView('chat');
+            if (chatInput) {
+                chatInput.value = cleanQuery;
+                chatInput.style.height = 'auto';
+                chatInput.style.height = Math.min(chatInput.scrollHeight, 140) + 'px';
+                setTimeout(() => {
+                    sendChatMessage();
+                }, 400);
+            }
+        }
+    } catch (urlErr) {
+        console.warn('[SEARCH URL QUERY NOTICE]:', urlErr);
+    }
 
     initWebSocket();
 });

@@ -264,17 +264,47 @@ export async function resolveSpecificFormatLink(
             }
 
             if (cachedServers.length > 0) {
-                console.log(`[DL-API] Instantly returning cached format servers for: ${cacheKey}`);
-                let sSize = "";
-                for (const s of cachedServers) {
-                    const sz = cleanFileSize(s.file_size || "") || cleanFileSize(s.server_name || "");
-                    if (sz) { sSize = sz; break; }
+                const isIntermediate = cachedServers.some(s =>
+                    /hubcloud|hubdrive|hubcdn|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hdstream4u|drive/i.test(s.download_url) &&
+                    !/r2\.cloudflarestorage|r2\.dev|pixeldrain\.com|storage\.googleapis|video-downloads\.googleusercontent/i.test(s.download_url)
+                );
+
+                if (!isIntermediate) {
+                    console.log(`[DL-API] Instantly returning cached format servers for: ${cacheKey}`);
+                    let sSize = "";
+                    for (const s of cachedServers) {
+                        const sz = cleanFileSize(s.file_size || "") || cleanFileSize(s.server_name || "");
+                        if (sz) { sSize = sz; break; }
+                    }
+                    return {
+                        name: cached.data.name || "Media File",
+                        servers: sortServersByPriority(cachedServers),
+                        fileSize: sSize || cachedServers[0]?.file_size || ""
+                    };
+                } else {
+                    console.log(`[DL-API] Cached servers contain intermediate landing URL; resolving to direct CDN streams...`);
+                    const intermediateUrl = cachedServers[0]?.download_url || linkUrl;
+                    if (intermediateUrl) {
+                        try {
+                            const resolveUrl = `${DL_API_BASE_URL}/api/resolve?url=${encodeURIComponent(intermediateUrl)}`;
+                            const res = await fetch(resolveUrl, { headers: { "Accept": "application/json" }, signal: AbortSignal.timeout(15000) });
+                            if (res.ok) {
+                                const data: any = await res.json();
+                                const rawServers: DownloadServer[] = data.final_downloads || [];
+                                const resolvedServers = sortServersByPriority(rawServers);
+                                if (resolvedServers.length > 0) {
+                                    return {
+                                        name: data.filename || cached.data.name || "Direct Download File",
+                                        servers: resolvedServers,
+                                        fileSize: data.file_size || cachedServers[0]?.file_size || ""
+                                    };
+                                }
+                            }
+                        } catch (resErr: any) {
+                            console.warn(`[DL-API] Cached server resolution warning: ${resErr?.message}`);
+                        }
+                    }
                 }
-                return {
-                    name: cached.data.name || "Media File",
-                    servers: sortServersByPriority(cachedServers),
-                    fileSize: sSize || cachedServers[0]?.file_size || ""
-                };
             }
         }
     }

@@ -834,9 +834,10 @@ class CloudflareScraper:
     # ─────────────────────────────────────────────────────────────
 
     @classmethod
-    async def bypass_intermediate_link(cls, link_url: str, impersonate: str = DEFAULT_IMPERSONATE) -> str:
+    async def bypass_intermediate_link(cls, link_url: str, referer: Optional[str] = None, impersonate: str = DEFAULT_IMPERSONATE) -> str:
         """Instant 0-second bypass of mediator redirect sites (greenmotors, unblockedgames, modpro, etc.)."""
-        headers = cls._get_browser_headers()
+        ref = referer or cls._cached_active_domain or "https://new6.hdhub4u.cl/"
+        headers = cls._get_browser_headers(referer=ref)
         async with AsyncSession(impersonate=impersonate, verify=False) as session:
             try:
                 # ModPro / UnblockedGames auto-bypass
@@ -864,7 +865,7 @@ class CloudflareScraper:
                                 if m_ref:
                                     return m_ref.group(1)
 
-                # Greenmotors / Greenmount / Homelander mediator bypass
+                # Greenmotors / Greenmount / Homelander mediator bypass (requires valid Referer)
                 res = await session.get(link_url, headers=headers, timeout=DEFAULT_TIMEOUT)
                 
                 # Check s('o', '...')
@@ -893,11 +894,12 @@ class CloudflareScraper:
     @classmethod
     async def extract_final_download_links(cls, link_url: str, impersonate: str = DEFAULT_IMPERSONATE) -> Dict[str, Any]:
         """Resolves intermediate URLs (HubCloud, HubDrive, HBLinks, NexDrive, FastDL, UnblockedGames) into direct streaming CDN URLs."""
-        headers = cls._get_browser_headers()
+        ref = cls._cached_active_domain or "https://new6.hdhub4u.cl/"
+        headers = cls._get_browser_headers(referer=ref)
         target_url = link_url
 
         if any(k in link_url.lower() for k in ["greenmount", "greenmotors", "unblockedgames", "id=", "modpro", "leechpro"]):
-            target_url = await cls.bypass_intermediate_link(link_url, impersonate=impersonate)
+            target_url = await cls.bypass_intermediate_link(link_url, referer=ref, impersonate=impersonate)
 
         url_lower = target_url.lower()
 
@@ -964,8 +966,8 @@ class CloudflareScraper:
             except Exception:
                 pass
 
-        # HubDrive / HubCDN URL
-        if any(k in url_lower for k in ["hubdrive.", "hubcdn."]):
+        # HubDrive / HubCDN / HDStream4u URL
+        if any(k in url_lower for k in ["hubdrive.", "hubcdn.", "hdstream4u."]):
             try:
                 async with AsyncSession(impersonate=impersonate, verify=False) as session:
                     res = await session.get(target_url, headers=headers, timeout=DEFAULT_TIMEOUT)
@@ -983,9 +985,44 @@ class CloudflareScraper:
                         return await cls.extract_final_download_links(hubcloud_url, impersonate=impersonate)
 
                     raw_links = []
+
+                    # 1. Check for hubcdn script redirect (e.g. reurl with ?r= base64 payload containing ?link=)
+                    m_reurl = re.search(r'reurl\s*=\s*["\']([^"\']+)["\']', res.text)
+                    if m_reurl:
+                        re_val = m_reurl.group(1)
+                        m_r = re.search(r'[?&]r=([A-Za-z0-9+/=]+)', re_val)
+                        if m_r:
+                            try:
+                                dec_r = base64.b64decode(m_r.group(1)).decode("utf-8")
+                                m_link = re.search(r'[?&]link=([^"\'\s&]+)', dec_r)
+                                direct_link = m_link.group(1) if m_link else None
+                                if not direct_link:
+                                    m_r2 = re.search(r'(https://[a-zA-Z0-9._-]+\.r2\.(?:dev|cloudflarestorage\.com)/[a-zA-Z0-9._-]+)', dec_r)
+                                    if m_r2:
+                                        direct_link = m_r2.group(1)
+                                if direct_link:
+                                    raw_links.append({
+                                        "server_name": "Download [Cloudflare R2 Fast CDN]",
+                                        "server_type": "💾 Direct Fast CDN",
+                                        "download_url": direct_link
+                                    })
+                            except Exception as re_err:
+                                print(f"[HUBCDN DECODE NOTICE]: {re_err}")
+
+                    # 2. Check for HDStream4u / morencius download URLs
+                    if "hdstream4u." in url_lower:
+                        m_dl = re.search(r'(https?://[^\s"\'<>]*(?:morencius\.com|hdstream4u\.com)/download/[^\s"\'<>]+)', res.text)
+                        if m_dl:
+                            raw_links.append({
+                                "server_name": "Download [HDStream4u Server]",
+                                "server_type": "⚡ Fast Streaming Server",
+                                "download_url": m_dl.group(1)
+                            })
+
+                    # 3. Check for standard anchor links (R2, Google Storage, Pixeldrain, gpdl, workers.dev)
                     for a in soup.find_all("a"):
                         h = a.get("href", "")
-                        if any(x in h for x in ["r2.cloudflarestorage.com", "storage.googleapis.com", "pixeldrain", "gpdl.", "workers.dev"]):
+                        if any(x in h for x in ["r2.cloudflarestorage.com", "storage.googleapis.com", "pixeldrain", "gpdl.", "workers.dev", "r2.dev"]):
                             stype = "💾 Direct Download File (Fast CDN)"
                             sname = a.get_text(strip=True) or stype
                             if "pixeldrain" in h:
@@ -1001,12 +1038,12 @@ class CloudflareScraper:
                     if raw_links:
                         return {
                             "source_url": target_url,
-                            "filename": filename,
+                            "filename": filename or "Movie Download File",
                             "final_downloads": raw_links,
                             "total_servers": len(raw_links)
                         }
-            except Exception:
-                pass
+            except Exception as hub_err:
+                print(f"[HUBDRIVE/HUBCDN EXTRACT ERROR]: {hub_err}")
 
         # HubCloud URL (e.g. hubcloud.cx/drive/..., hubcloud.ist/drive/...)
         try:

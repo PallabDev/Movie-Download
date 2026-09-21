@@ -1277,6 +1277,25 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
 
         const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+        let effectiveFlickId = flickRequestId;
+        if (!effectiveFlickId && aiMeta.title) {
+            try {
+                const [matchedReq] = await db.select().from(schema.requestedMedia)
+                    .where(
+                        and(
+                            eq(schema.requestedMedia.title, aiMeta.title),
+                            or(
+                                eq(schema.requestedMedia.status, "pending"),
+                                eq(schema.requestedMedia.status, "approved")
+                            )
+                        )
+                    ).limit(1);
+                if (matchedReq && matchedReq.flickRequestId) {
+                    effectiveFlickId = matchedReq.flickRequestId;
+                }
+            } catch {}
+        }
+
         await db.insert(schema.downloads).values({
             requestId,
             title: jobTitle,
@@ -1287,7 +1306,7 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             episode: mediaType === "series" ? (aiMeta.episode ?? null) : null,
             fileSize: actualFileSize,
             requestedBy: req.user.userId,
-            flickRequestId: flickRequestId || null,
+            flickRequestId: effectiveFlickId || null,
         });
 
         downloadQueue.addJob({
@@ -1303,19 +1322,19 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             isBatchPack: Boolean(aiMeta.isBatch),
             fileName: jobFileName,
             linkUrl,
-            flickRequestId: flickRequestId || undefined,
+            flickRequestId: effectiveFlickId || undefined,
         });
 
         // If this download fulfills a Flick request, update status and send webhook
-        if (flickRequestId) {
+        if (effectiveFlickId) {
             db.update(schema.requestedMedia).set({
                 status: "downloading",
                 note: `Downloading ${jobTitle} (${actualFileSize})`,
                 updatedAt: new Date(),
-            }).where(eq(schema.requestedMedia.flickRequestId, flickRequestId)).catch(() => {});
+            }).where(eq(schema.requestedMedia.flickRequestId, effectiveFlickId)).catch(() => {});
 
             notifyFlickWebhook({
-                id: flickRequestId,
+                id: effectiveFlickId,
                 status: "downloading",
                 note: `Queued and downloading "${jobTitle}" (${actualFileSize}).`
             }).catch(() => {});
@@ -1922,7 +1941,7 @@ app.post("/api/request", async (req: any, res) => {
             });
         }
 
-        // 2. Title not in Jellyfin: Record in DB as "approved"
+        // 2. Title not in Jellyfin: Record in DB as "pending" for admin/mod review
         const existingReq = await db.select().from(schema.requestedMedia)
             .where(eq(schema.requestedMedia.flickRequestId, id))
             .limit(1);
@@ -1931,8 +1950,8 @@ app.post("/api/request", async (req: any, res) => {
         if (existingReq.length > 0) {
             recordId = existingReq[0].id;
             await db.update(schema.requestedMedia).set({
-                status: "approved",
-                note: "Request approved. Searching indexers.",
+                status: "pending",
+                note: "Pending Admin/Mod review",
                 updatedAt: new Date(),
             }).where(eq(schema.requestedMedia.id, recordId));
         } else {
@@ -1940,7 +1959,7 @@ app.post("/api/request", async (req: any, res) => {
                 title: cleanReqTitle,
                 type: mediaType,
                 year: year ? String(year) : null,
-                status: "approved",
+                status: "pending",
                 flickRequestId: id,
                 tmdbId: tmdbId ? Number(tmdbId) : null,
                 posterUrl: posterUrl || null,
@@ -1949,40 +1968,23 @@ app.post("/api/request", async (req: any, res) => {
                 userName: requestedBy?.name || null,
                 userId: requestedBy?.userId || null,
                 requestedBy: requestedBy?.name || requestedBy?.email || "Flick Member",
-                note: "Request approved. Searching indexers.",
+                note: "Pending Admin/Mod review",
                 metadata: { requestedBy, requestedAt, overview, posterUrl, tmdbId },
             }).returning();
             recordId = created.id;
         }
 
-        // 3. Immediately send "approved" webhook to Flick
-        notifyFlickWebhook({
-            id,
-            status: "approved",
-            note: "Request approved. Searching release indexers for optimal release..."
-        }).catch(() => {});
-
-        // 4. Respond 200 OK to Flick
-        res.status(200).json({
+        // 3. Respond 200 OK to Flick (status: "pending")
+        return res.status(200).json({
             success: true,
-            message: `Media request for "${cleanReqTitle}" received and queued successfully`,
+            message: `Media request for "${cleanReqTitle}" received and awaiting review`,
             data: {
                 requestId: `dlm_${recordId}`,
                 flickId: id,
                 title: cleanReqTitle,
-                status: "queued"
+                status: "pending"
             }
         });
-
-        // 5. Asynchronously trigger auto search & download in background
-        setTimeout(async () => {
-            try {
-                const autoRes = await autoSearchAndDownloadForRequest(recordId);
-                console.log(`[FLICK AUTO-DOWNLOAD] Result for "${cleanReqTitle}":`, autoRes.message);
-            } catch (err: any) {
-                console.warn(`[FLICK AUTO-DOWNLOAD] Notice for "${cleanReqTitle}":`, err?.message);
-            }
-        }, 1500);
 
     } catch (err: any) {
         console.error("[DLM] /api/request error:", err);
@@ -2059,6 +2061,36 @@ app.post("/api/requested-media/:id/reject", requireMod, async (req: any, res) =>
         }
 
         res.json({ success: true, message: `Request "${row.title}" rejected and user notified.` });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Admin: Approve requested media with optional note (notifies Flick)
+app.post("/api/requested-media/:id/approve", requireMod, async (req: any, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid request ID" });
+        const { note } = req.body;
+        const [row] = await db.select().from(schema.requestedMedia).where(eq(schema.requestedMedia.id, id)).limit(1);
+        if (!row) return res.status(404).json({ error: "Request not found" });
+
+        const approvalNote = (note || "").trim() || "Request approved. Searching release indexers...";
+        await db.update(schema.requestedMedia).set({
+            status: "approved",
+            note: approvalNote,
+            updatedAt: new Date(),
+        }).where(eq(schema.requestedMedia.id, id));
+
+        if (row.flickRequestId) {
+            await notifyFlickWebhook({
+                id: row.flickRequestId,
+                status: "approved",
+                note: approvalNote,
+            });
+        }
+
+        res.json({ success: true, message: `Request "${row.title}" approved and Flick notified.` });
     } catch (err: any) {
         res.status(500).json({ success: false, error: err.message });
     }
