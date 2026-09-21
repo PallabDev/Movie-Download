@@ -2026,7 +2026,7 @@ async function loadRequestedMedia() {
                                     </span>
                                 ` : `
                                     <span class="chip" style="background: rgba(255,255,255,0.06); color: var(--text-muted); font-size: 9.5px; padding: 1px 6px;">CineGrab</span>
-                                `)}
+                                `}
                                 ${item.tmdbId ? `<span class="chip" style="background: rgba(245,158,11,0.1); color: #fbbf24; font-size: 9.5px; padding: 1px 5px;">TMDB ${item.tmdbId}</span>` : ''}
                             </div>
                             ${item.note ? `<div style="font-size: 11px; color: var(--text-muted); font-style: italic; margin-top: 3px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(item.note)}">“${escapeHtml(item.note)}”</div>` : ''}
