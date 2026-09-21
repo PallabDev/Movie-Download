@@ -45,6 +45,19 @@ CHUNK = 1024 * 1024
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".webm", ".mov", ".m4v"}
 ARCHIVE_EXTS = {".zip", ".rar", ".tar", ".gz"}
 
+JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "https://movie.pallabdev.in")
+JELLYFIN_TOKEN = os.environ.get("JELLYFIN_TOKEN", "ec6627aa89a4485fa41f7235ca3b1656")
+
+def trigger_jellyfin_refresh():
+    if not JELLYFIN_URL or not JELLYFIN_TOKEN:
+        return
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"{JELLYFIN_URL}/Library/Refresh", headers={"X-Emby-Token": JELLYFIN_TOKEN}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            print(f"[JELLYFIN] Triggered media scan refresh: status {resp.status}")
+    except Exception as e:
+        print(f"[JELLYFIN] Refresh notice: {e}")
 
 def db():
     return psycopg.connect(DATABASE_URL, row_factory=dict_row)
@@ -383,6 +396,8 @@ class MoveManager:
                 if not self.queue:
                     self.is_running = False
                     self.current_job = None
+                    # Trigger library scan on Jellyfin after all queued moves finish
+                    trigger_jellyfin_refresh()
                     break
                 item = self.queue.pop(0)
 
@@ -396,6 +411,9 @@ class MoveManager:
                     self._process_single_episode_move(item)
                 else:
                     self._process_movie_move(item)
+
+                # Proactively trigger Jellyfin refresh for each completed item
+                trigger_jellyfin_refresh()
 
             except Exception as e:
                 print(f"[MoveManager] Error processing {item.get('source_path')}: {e}")

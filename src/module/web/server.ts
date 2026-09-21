@@ -26,6 +26,7 @@ import { cleanSeriesTitleAndSeason } from "../download/downloader.js";
 import { searchMedia, getDownloadLinks, getMediaFormatDetails, resolveSpecificFormatLink, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats, cleanFileSize, testScraperSource } from "../download/api-client.js";
 import { handleChat } from "./chat.js";
 import { parseMediaWithAI, formatMediaJobTitle, formatMediaFileName } from "../ai/cleaner.js";
+import { notifyFlickWebhook, autoSearchAndDownloadForRequest } from "../flick/webhook.js";
 
 const app = express();
 app.use(express.json());
@@ -1078,7 +1079,7 @@ app.post("/api/media/details", requireMod, async (req: any, res) => {
 // ─── SPECIFIC FORMAT / EPISODE DOWNLOAD ───
 
 app.post("/api/download-specific", requireMod, async (req: any, res) => {
-    const { targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize, linkUrl, type, mediaType: reqMediaType } = req.body;
+    const { targetUrl, qualityKey, customTitle, isBatch, episodeNum, fileSize, linkUrl, type, mediaType: reqMediaType, flickRequestId } = req.body;
 
     if (!targetUrl && !linkUrl) {
         return res.status(400).json({ error: "targetUrl or linkUrl is required" });
@@ -1286,6 +1287,7 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             episode: mediaType === "series" ? (aiMeta.episode ?? null) : null,
             fileSize: actualFileSize,
             requestedBy: req.user.userId,
+            flickRequestId: flickRequestId || null,
         });
 
         downloadQueue.addJob({
@@ -1301,7 +1303,23 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
             isBatchPack: Boolean(aiMeta.isBatch),
             fileName: jobFileName,
             linkUrl,
+            flickRequestId: flickRequestId || undefined,
         });
+
+        // If this download fulfills a Flick request, update status and send webhook
+        if (flickRequestId) {
+            db.update(schema.requestedMedia).set({
+                status: "downloading",
+                note: `Downloading ${jobTitle} (${actualFileSize})`,
+                updatedAt: new Date(),
+            }).where(eq(schema.requestedMedia.flickRequestId, flickRequestId)).catch(() => {});
+
+            notifyFlickWebhook({
+                id: flickRequestId,
+                status: "downloading",
+                note: `Queued and downloading "${jobTitle}" (${actualFileSize}).`
+            }).catch(() => {});
+        }
 
         downloadTraceLogs.set(requestId, {
             requestId,
@@ -1830,11 +1848,154 @@ app.delete("/api/downloads/clear/all", requireMod, async (_req: any, res) => {
     }
 });
 
-// ─── REQUESTED MEDIA API ───
+// ─── REQUESTED MEDIA & FLICK INTEGRATION API ───
+
+// Public endpoint for Flick to submit media requests (User-Agent: Flick-Paywall/1.0)
+app.post("/api/request", async (req: any, res) => {
+    try {
+        const { id, title, posterUrl, type, year, tmdbId, overview, requestedBy, requestedAt } = req.body;
+
+        if (!id || !title || !type) {
+            return res.status(400).json({
+                success: false,
+                error: "Missing required fields: id, title, type"
+            });
+        }
+
+        const mediaType = (type === "series" || type === "tv" || type === "show") ? "series" : "movie";
+        const cleanReqTitle = title.trim();
+        console.log(`[DLM] Incoming Flick request: "${cleanReqTitle}" (${mediaType}, ${year || "N/A"}) [Flick ID: ${id}]`);
+
+        // 1. Check if media already exists in Jellyfin library
+        const jfCheck = await checkMediaExists(cleanReqTitle, mediaType, year ? String(year) : undefined);
+        if (jfCheck.exists) {
+            console.log(`[DLM] "${cleanReqTitle}" is ALREADY in Jellyfin (${jfCheck.type || "library"}). Notifying Flick immediately.`);
+
+            const existingReq = await db.select().from(schema.requestedMedia)
+                .where(eq(schema.requestedMedia.flickRequestId, id))
+                .limit(1);
+
+            let recordId: number;
+            if (existingReq.length > 0) {
+                recordId = existingReq[0].id;
+                await db.update(schema.requestedMedia).set({
+                    status: "inlibrary",
+                    note: "Already available on Jellyfin!",
+                    updatedAt: new Date(),
+                }).where(eq(schema.requestedMedia.id, recordId));
+            } else {
+                const [created] = await db.insert(schema.requestedMedia).values({
+                    title: cleanReqTitle,
+                    type: mediaType,
+                    year: year ? String(year) : null,
+                    status: "inlibrary",
+                    flickRequestId: id,
+                    tmdbId: tmdbId ? Number(tmdbId) : null,
+                    posterUrl: posterUrl || null,
+                    overview: overview || null,
+                    userEmail: requestedBy?.email || null,
+                    userName: requestedBy?.name || null,
+                    userId: requestedBy?.userId || null,
+                    requestedBy: requestedBy?.name || requestedBy?.email || "Flick Member",
+                    note: "Already available on Jellyfin!",
+                    metadata: { requestedBy, requestedAt, overview, posterUrl, tmdbId, jfCheck },
+                }).returning();
+                recordId = created.id;
+            }
+
+            // Fire-and-forget celebratory webhook to Flick
+            notifyFlickWebhook({
+                id,
+                status: "inlibrary",
+                note: "This title is already available in your Jellyfin library! Enjoy streaming in 4K HDR."
+            }).catch(() => {});
+
+            return res.status(200).json({
+                success: true,
+                message: `Media "${cleanReqTitle}" is already in Jellyfin library and ready to stream`,
+                data: {
+                    requestId: `dlm_${recordId}`,
+                    flickId: id,
+                    title: cleanReqTitle,
+                    status: "inlibrary"
+                }
+            });
+        }
+
+        // 2. Title not in Jellyfin: Record in DB as "approved"
+        const existingReq = await db.select().from(schema.requestedMedia)
+            .where(eq(schema.requestedMedia.flickRequestId, id))
+            .limit(1);
+
+        let recordId: number;
+        if (existingReq.length > 0) {
+            recordId = existingReq[0].id;
+            await db.update(schema.requestedMedia).set({
+                status: "approved",
+                note: "Request approved. Searching indexers.",
+                updatedAt: new Date(),
+            }).where(eq(schema.requestedMedia.id, recordId));
+        } else {
+            const [created] = await db.insert(schema.requestedMedia).values({
+                title: cleanReqTitle,
+                type: mediaType,
+                year: year ? String(year) : null,
+                status: "approved",
+                flickRequestId: id,
+                tmdbId: tmdbId ? Number(tmdbId) : null,
+                posterUrl: posterUrl || null,
+                overview: overview || null,
+                userEmail: requestedBy?.email || null,
+                userName: requestedBy?.name || null,
+                userId: requestedBy?.userId || null,
+                requestedBy: requestedBy?.name || requestedBy?.email || "Flick Member",
+                note: "Request approved. Searching indexers.",
+                metadata: { requestedBy, requestedAt, overview, posterUrl, tmdbId },
+            }).returning();
+            recordId = created.id;
+        }
+
+        // 3. Immediately send "approved" webhook to Flick
+        notifyFlickWebhook({
+            id,
+            status: "approved",
+            note: "Request approved. Searching release indexers for optimal release..."
+        }).catch(() => {});
+
+        // 4. Respond 200 OK to Flick
+        res.status(200).json({
+            success: true,
+            message: `Media request for "${cleanReqTitle}" received and queued successfully`,
+            data: {
+                requestId: `dlm_${recordId}`,
+                flickId: id,
+                title: cleanReqTitle,
+                status: "queued"
+            }
+        });
+
+        // 5. Asynchronously trigger auto search & download in background
+        setTimeout(async () => {
+            try {
+                const autoRes = await autoSearchAndDownloadForRequest(recordId);
+                console.log(`[FLICK AUTO-DOWNLOAD] Result for "${cleanReqTitle}":`, autoRes.message);
+            } catch (err: any) {
+                console.warn(`[FLICK AUTO-DOWNLOAD] Notice for "${cleanReqTitle}":`, err?.message);
+            }
+        }, 1500);
+
+    } catch (err: any) {
+        console.error("[DLM] /api/request error:", err);
+        res.status(500).json({ success: false, error: "Internal server error" });
+    }
+});
 
 app.get("/api/requested-media", requireMod, async (_req, res) => {
     try {
-        const items = await db.select().from(schema.requestedMedia).where(sql`${schema.requestedMedia.status} != 'deleted'`).orderBy(desc(schema.requestedMedia.createdAt)).limit(100);
+        const items = await db.select().from(schema.requestedMedia)
+            .where(sql`${schema.requestedMedia.status} != 'deleted'`)
+            .orderBy(desc(schema.requestedMedia.createdAt))
+            .limit(200);
         res.json({ items });
     } catch (err: any) {
         res.status(500).json({ error: err.message, items: [] });
@@ -1845,16 +2006,107 @@ app.post("/api/requested-media", requireMod, async (req: any, res) => {
     try {
         const { title, type, year } = req.body;
         if (!title) return res.status(400).json({ error: "Title required" });
-        await db.insert(schema.requestedMedia).values({
+        const [created] = await db.insert(schema.requestedMedia).values({
             title: title.trim(),
             type: type === "series" ? "series" : "movie",
             year: year || null,
             status: "requested",
-            requestedBy: req.user.email,
-        });
-        res.json({ success: true, message: `Added "${title}" to requested list` });
+            requestedBy: req.user.email || req.user.name,
+            userEmail: req.user.email,
+            userName: req.user.name,
+        }).returning();
+
+        res.json({ success: true, message: `Added "${title}" to requested list`, item: created });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: Auto-download requested media
+app.post("/api/requested-media/:id/auto-download", requireMod, async (req: any, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid request ID" });
+        const result = await autoSearchAndDownloadForRequest(id);
+        res.json(result);
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Admin: Reject requested media with optional note (notifies Flick)
+app.post("/api/requested-media/:id/reject", requireMod, async (req: any, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid request ID" });
+        const { note } = req.body;
+        const [row] = await db.select().from(schema.requestedMedia).where(eq(schema.requestedMedia.id, id)).limit(1);
+        if (!row) return res.status(404).json({ error: "Request not found" });
+
+        const rejectionNote = (note || "").trim() || "Request could not be fulfilled at this time.";
+        await db.update(schema.requestedMedia).set({
+            status: "rejected",
+            note: rejectionNote,
+            updatedAt: new Date(),
+        }).where(eq(schema.requestedMedia.id, id));
+
+        if (row.flickRequestId) {
+            await notifyFlickWebhook({
+                id: row.flickRequestId,
+                status: "rejected",
+                note: rejectionNote,
+            });
+        }
+
+        res.json({ success: true, message: `Request "${row.title}" rejected and user notified.` });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Admin: Manual status update & webhook dispatch (approved, downloading, inlibrary, rejected)
+app.post("/api/requested-media/:id/status", requireMod, async (req: any, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid request ID" });
+        const { status, note } = req.body;
+        if (!status) return res.status(400).json({ error: "Status is required" });
+
+        const [row] = await db.select().from(schema.requestedMedia).where(eq(schema.requestedMedia.id, id)).limit(1);
+        if (!row) return res.status(404).json({ error: "Request not found" });
+
+        await db.update(schema.requestedMedia).set({
+            status,
+            note: note !== undefined ? note : row.note,
+            updatedAt: new Date(),
+        }).where(eq(schema.requestedMedia.id, id));
+
+        if (row.flickRequestId) {
+            await notifyFlickWebhook({
+                id: row.flickRequestId,
+                status,
+                note: note || undefined,
+            });
+        }
+
+        res.json({ success: true, message: `Updated status to "${status}" and notified Flick.` });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Admin: Test webhook connection with Flick
+app.post("/api/requested-media/test-webhook", requireMod, async (req: any, res) => {
+    try {
+        const { id, status, note } = req.body;
+        const result = await notifyFlickWebhook({
+            id: id || "test_req_id",
+            status: status || "approved",
+            note: note || "Test webhook notification from DLM admin",
+        });
+        res.json(result);
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -2020,9 +2272,39 @@ async function proxyMediaManager(res: express.Response, path: string, options: R
 
 app.get("/api/media/health", requireMod, (_req, res) => proxyMediaManager(res, "/api/health"));
 app.get("/api/media/analyze", requireMod, (_req, res) => proxyMediaManager(res, "/api/media/analyze"));
-app.post("/api/media/move", requireMod, (req, res) => proxyMediaManager(res, "/api/media/move", { method: "POST", body: JSON.stringify(req.body) }));
+app.post("/api/media/move", requireMod, async (req, res) => {
+    try {
+        const response = await fetch(`${MEDIA_MANAGER_URL}/api/media/move`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(req.body),
+        });
+        const data: any = await response.json().catch(() => ({}));
+        if (response.ok && data && typeof data === 'object') {
+            data.success = (data.status !== 'error');
+            // Proactively trigger Jellyfin library refresh
+            import("../../common/jellyfin/client.js").then(({ refreshJellyfinLibrary }) => {
+                refreshJellyfinLibrary().catch(() => {});
+            });
+        }
+        res.status(response.status).json(data);
+    } catch (err: any) {
+        res.status(502).json({ success: false, error: `Media Manager offline or unreachable: ${err.message}` });
+    }
+});
 app.get("/api/media/status", requireMod, (_req, res) => proxyMediaManager(res, "/api/media/status"));
 app.get("/api/media/history", requireMod, (_req, res) => proxyMediaManager(res, "/api/media/history"));
+
+app.post("/api/jellyfin/refresh", requireAuth, async (_req, res) => {
+    try {
+        const { refreshJellyfinLibrary } = await import("../../common/jellyfin/client.js");
+        const success = await refreshJellyfinLibrary();
+        res.json({ success, message: success ? "Jellyfin media scan started" : "Failed to trigger scan" });
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 
 app.get("/api/optimize/list", requireMod, (_req, res) => proxyMediaManager(res, "/api/optimize/list"));
 app.post("/api/optimize/queue", requireMod, (req, res) => proxyMediaManager(res, "/api/optimize/queue", { method: "POST", body: JSON.stringify(req.body) }));
@@ -2857,12 +3139,12 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                             <table class="data-table">
                                 <thead>
                                     <tr>
-                                        <th>Title</th>
+                                        <th style="min-width: 260px;">Media Title</th>
                                         <th>Type</th>
-                                        <th>Year</th>
+                                        <th>Requester</th>
                                         <th>Status</th>
                                         <th>Requested Date</th>
-                                        <th style="text-align:right;">Action</th>
+                                        <th style="text-align:right; min-width: 220px;">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="requestedMediaTableBody">

@@ -37,6 +37,7 @@ export interface DownloadJobData {
     fileSizeBytes?: number;
     cleanTitle?: string;
     linkUrl?: string;
+    flickRequestId?: string;
     // Legacy compatibility fields
     bot?: string;
     btnMsgId?: number;
@@ -421,6 +422,58 @@ export function createDownloadWorker() {
                 const mediaManagerUrl = process.env.MEDIA_MANAGER_URL || "http://localhost:5687";
                 fetch(`${mediaManagerUrl}/api/media/analyze`).catch(() => {});
             } catch {}
+
+            // Trigger Jellyfin library refresh so new media is immediately scanned
+            try {
+                const { refreshJellyfinLibrary } = await import("../../common/jellyfin/client.js");
+                await refreshJellyfinLibrary();
+            } catch (jfErr: any) {
+                console.warn("[WORKER] Jellyfin refresh warning:", jfErr?.message);
+            }
+
+            // Check if this download is tied to a Flick request and deliver inlibrary webhook
+            let flickId = data.flickRequestId;
+            if (!flickId) {
+                try {
+                    const [dbRow] = await db.select({ flickRequestId: schema.downloads.flickRequestId })
+                        .from(schema.downloads)
+                        .where(eq(schema.downloads.requestId, data.requestId))
+                        .limit(1);
+                    if (dbRow?.flickRequestId) {
+                        flickId = dbRow.flickRequestId;
+                    }
+                } catch {}
+            }
+
+            if (!flickId && data.cleanTitle) {
+                try {
+                    const candidateReqs = await db.select().from(schema.requestedMedia)
+                        .where(eq(schema.requestedMedia.title, data.cleanTitle))
+                        .limit(1);
+                    if (candidateReqs && candidateReqs.length > 0 && candidateReqs[0].flickRequestId) {
+                        flickId = candidateReqs[0].flickRequestId;
+                    }
+                } catch {}
+            }
+
+            if (flickId) {
+                try {
+                    const { notifyFlickWebhook } = await import("../flick/webhook.js");
+                    await notifyFlickWebhook({
+                        id: flickId,
+                        status: "inlibrary",
+                        note: `Import complete! "${data.title}" is ready to watch on Jellyfin.`,
+                    });
+                    await db.update(schema.requestedMedia).set({
+                        status: "inlibrary",
+                        note: `Imported to library: ${data.title}`,
+                        updatedAt: new Date(),
+                    }).where(eq(schema.requestedMedia.flickRequestId, flickId));
+                    console.log(`[WORKER] Delivered "inlibrary" webhook to Flick for request ${flickId}`);
+                } catch (webhookErr: any) {
+                    console.warn(`[WORKER] Flick inlibrary webhook error:`, webhookErr?.message);
+                }
+            }
 
             console.log(`[WORKER] Successfully completed download for "${data.title}" -> ${targetPath}`);
 

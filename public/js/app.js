@@ -1610,7 +1610,8 @@ async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle,
                 episodeNum,
                 fileSize,
                 linkUrl,
-                type: type || (isBatch || episodeNum !== undefined ? 'series' : 'movie')
+                type: type || (isBatch || episodeNum !== undefined ? 'series' : 'movie'),
+                flickRequestId: downloadPickerState.flickRequestId || undefined
             })
         });
 
@@ -1950,11 +1951,11 @@ async function loadRequestedMedia() {
                             <div>
                                 <div style="font-size: 15px; font-weight: 600; color: #fff;">No Requested Media Yet</div>
                                 <div style="font-size: 12.5px; color: var(--text-secondary); max-width: 380px; margin: 4px auto 14px; line-height: 1.5;">
-                                    Search or ask AI Copilot for any movie or TV show, and your requests will automatically be tracked here.
+                                    When members submit media requests on Flick (or CineGrab), they will appear here with one-click download & rejection options.
                                 </div>
-                                <button class="btn-primary-action" onclick="switchView('chat')" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 12.5px;">
-                                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M8 9h8"/><path d="M8 13h6"/><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z"/></svg>
-                                    Go to AI Copilot
+                                <button class="btn-primary-action" onclick="openNewRequestModal()" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 12.5px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
+                                    Add Request Manually
                                 </button>
                             </div>
                         </div>
@@ -1964,47 +1965,274 @@ async function loadRequestedMedia() {
             return;
         }
 
-        tableBody.innerHTML = items.map(item => `
+        tableBody.innerHTML = items.map(item => {
+            const posterSrc = item.posterUrl || 'https://via.placeholder.com/300x450/111827/ffffff?text=No+Poster';
+            const safeTitle = escapeHtml(item.title);
+            const rawTitleEscaped = safeTitle.replace(/'/g, "\\'");
+            const safePosterEscaped = escapeHtml(item.posterUrl || '').replace(/'/g, "\\'");
+            const isDownloading = item.status === 'downloading';
+            const isInLibrary = item.status === 'inlibrary' || item.status === 'available';
+            const isRejected = item.status === 'rejected';
+
+            let statusBadgeClass = 'pending';
+            let statusLabel = item.status;
+            if (item.status === 'approved') {
+                statusBadgeClass = 'downloading';
+                statusLabel = 'Approved';
+            } else if (item.status === 'downloading') {
+                statusBadgeClass = 'downloading';
+                statusLabel = 'Downloading ⚡';
+            } else if (isInLibrary) {
+                statusBadgeClass = 'completed';
+                statusLabel = 'In Library 🎉';
+            } else if (isRejected) {
+                statusBadgeClass = 'failed';
+                statusLabel = 'Rejected';
+            } else if (item.status === 'requested' || item.status === 'pending') {
+                statusBadgeClass = 'pending';
+                statusLabel = 'Pending';
+            }
+
+            return `
             <tr>
-                <td style="font-weight: 600; color: #fff;">${escapeHtml(item.title)}</td>
-                <td><span class="chip ${item.type === 'movie' ? 'quality' : 'best'}">${escapeHtml(item.type)}</span></td>
-                <td>${escapeHtml(item.year || 'N/A')}</td>
+                <!-- Media Details with Poster -->
+                <td style="padding: 10px 12px;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <img src="${posterSrc}" alt="${safeTitle}" 
+                             style="width: 38px; height: 54px; border-radius: 5px; object-fit: cover; flex-shrink: 0; background: #1a1a24; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 2px 8px rgba(0,0,0,0.4);" 
+                             onerror="this.src='https://via.placeholder.com/300x450/111827/ffffff?text=Media';" />
+                        <div>
+                            <div style="font-weight: 600; color: #fff; font-size: 13.5px; line-height: 1.3;">
+                                ${safeTitle}
+                                ${item.year ? `<span style="color: var(--text-muted); font-weight: 400; font-size: 12px; margin-left: 4px;">(${escapeHtml(item.year)})</span>` : ''}
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
+                                ${item.flickRequestId ? `
+                                    <span class="chip" style="background: rgba(59,130,246,0.12); color: #60a5fa; border: 1px solid rgba(59,130,246,0.25); font-size: 9.5px; padding: 1px 6px;">
+                                        Flick: ${escapeHtml(item.flickRequestId.slice(0, 14))}...
+                                    </span>
+                                ` : `
+                                    <span class="chip" style="background: rgba(255,255,255,0.06); color: var(--text-muted); font-size: 9.5px; padding: 1px 6px;">CineGrab</span>
+                                `}
+                                ${item.tmdbId ? `<span class="chip" style="background: rgba(245,158,11,0.1); color: #fbbf24; font-size: 9.5px; padding: 1px 5px;">TMDB ${item.tmdbId}</span>` : ''}
+                            </div>
+                            ${item.note ? `<div style="font-size: 11px; color: var(--text-muted); font-style: italic; margin-top: 3px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(item.note)}">“${escapeHtml(item.note)}”</div>` : ''}
+                        </div>
+                    </div>
+                </td>
+
+                <!-- Type -->
                 <td>
-                    <span class="status-badge ${item.status}">
-                        <span class="status-dot online"></span>
-                        ${escapeHtml(item.status)}
+                    <span class="chip ${item.type === 'movie' ? 'quality' : 'best'}" style="text-transform: capitalize;">
+                        ${escapeHtml(item.type || 'movie')}
                     </span>
                 </td>
-                <td style="color: var(--text-secondary); font-size: 11.5px;">${new Date(item.createdAt).toLocaleDateString()} ${new Date(item.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</td>
-                <td style="text-align: right;">
-                    <button class="btn-header" style="color: var(--accent-rose); padding: 3px 8px;" onclick="deleteRequestedMedia(${item.id})">
-                        Delete
-                    </button>
+
+                <!-- Requester -->
+                <td>
+                    <div style="font-size: 12.5px; font-weight: 500; color: #fff;">
+                        ${escapeHtml(item.userName || item.requestedBy || 'Member')}
+                    </div>
+                    ${item.userEmail ? `<div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">${escapeHtml(item.userEmail)}</div>` : ''}
+                </td>
+
+                <!-- Status -->
+                <td>
+                    <span class="status-badge ${statusBadgeClass}">
+                        <span class="status-dot ${isInLibrary ? 'online' : (isRejected ? 'offline' : 'online')}"></span>
+                        ${statusLabel}
+                    </span>
+                </td>
+
+                <!-- Requested Date -->
+                <td style="color: var(--text-secondary); font-size: 11.5px; white-space: nowrap;">
+                    <div>${new Date(item.createdAt).toLocaleDateString()}</div>
+                    <div style="color: var(--text-muted); font-size: 10.5px;">${new Date(item.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                </td>
+
+                <!-- Actions: Download with search & download + Rejected -->
+                <td style="text-align: right; white-space: nowrap;">
+                    <div style="display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end;">
+                        <!-- Option 1: Download Action Group -->
+                        ${!isInLibrary ? `
+                            <button class="btn-primary-action" id="btnAutoDl_${item.id}" 
+                                    style="padding: 5px 11px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;" 
+                                    onclick="triggerAutoDownloadForRequest(${item.id})">
+                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
+                                Download
+                            </button>
+                            <button class="btn-header" 
+                                    style="padding: 5px 8px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;" 
+                                    title="Search scraper sources and select specific quality or format"
+                                    onclick="triggerSearchAndDownloadForRequest(${item.id}, '${rawTitleEscaped}', '${item.type}', '${item.flickRequestId || ''}', '${safePosterEscaped}', '${item.year || ''}', ${item.tmdbId || 'null'})">
+                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+                                Search & Pick
+                            </button>
+                        ` : `
+                            <span style="font-size: 11.5px; color: var(--accent-emerald); font-weight: 500; display: inline-flex; align-items: center; gap: 4px; margin-right: 4px;">
+                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M5 12l5 5l10 -10"/></svg> Available
+                            </span>
+                        `}
+
+                        <!-- Option 2: Reject Action -->
+                        ${!isInLibrary && !isRejected ? `
+                            <button class="btn-header" 
+                                    style="color: var(--accent-rose); border-color: rgba(244,63,94,0.3); padding: 5px 9px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px;" 
+                                    title="Decline request and notify member"
+                                    onclick="promptRejectRequest(${item.id}, '${rawTitleEscaped}', '${item.flickRequestId || ''}')">
+                                <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>
+                                Reject
+                            </button>
+                        ` : ''}
+
+                        <!-- Option 3: Delete / More menu -->
+                        <button class="btn-header" style="color: var(--text-muted); padding: 5px 6px;" title="Remove from list" onclick="deleteRequestedMedia(${item.id})">
+                            <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>
+                        </button>
+                    </div>
                 </td>
             </tr>
-        `).join('');
+            `;
+        }).join('');
     } catch (e) {
-        tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color: var(--accent-rose);">Failed to load</td></tr>`;
+        tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color: var(--accent-rose);">Failed to load requests</td></tr>`;
     }
 }
 
-async function deleteRequestedMedia(id) {
-    const confirmed = await showConfirmModal({
-        title: 'Remove Request',
-        message: 'Are you sure you want to remove this media request?',
-        confirmText: 'Remove',
-        type: 'danger'
-    });
-    if (!confirmed) return;
+// --------------------------------------------------------------------------
+// REQUESTED MEDIA ACTIONS: Auto Download, Search & Pick, Reject Modal
+// --------------------------------------------------------------------------
+
+async function triggerAutoDownloadForRequest(id) {
+    const btn = document.getElementById(`btnAutoDl_${id}`);
+    const origHtml = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<span style="display:inline-block;animation:spin 0.8s linear infinite;">⏳</span> Searching...`;
+    }
+
+    showToast('Searching 10Gbps CDN servers for best release...', 'info');
+
     try {
-        const res = await fetch(`/api/requested-media/${id}`, { method: 'DELETE', credentials: 'include' });
+        const res = await fetch(`/api/requested-media/${id}/auto-download`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            showToast(data.message || 'Download started! Status updated to Flick.', 'success', 6000);
+            if (btn) btn.innerHTML = `✅ Queued`;
+            loadRequestedMedia();
+        } else {
+            showToast(data.message || 'No releases found automatically. Please try "Search & Pick".', 'warning', 6000);
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = origHtml;
+            }
+        }
+    } catch (err) {
+        showToast(err.message || 'Failed to auto-download', 'error');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+        }
+    }
+}
+
+function triggerSearchAndDownloadForRequest(id, title, type, flickRequestId, posterUrl, year, tmdbId) {
+    openDownloadPickerForMedia({
+        title,
+        searchQuery: title,
+        mediaType: type === 'series' ? 'series' : 'movie',
+        year: year || '',
+        tmdbId: tmdbId || null,
+        posterUrl: posterUrl || null,
+        flickRequestId: flickRequestId || null,
+    });
+}
+
+function promptRejectRequest(id, title, flickRequestId) {
+    const existing = document.getElementById('rejectRequestModal');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'rejectRequestModal';
+    backdrop.className = 'modal-backdrop active';
+    backdrop.innerHTML = `
+        <div class="modal-card" style="max-width: 440px;" role="dialog" aria-modal="true">
+            <div class="modal-icon-badge danger">
+                <svg class="tabler-icon" style="width:22px;height:22px;" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg>
+            </div>
+            <div class="modal-title">Reject Media Request</div>
+            <div class="modal-message" style="margin-bottom: 12px; font-size: 13px; line-height: 1.4;">
+                Decline request for <strong>"${escapeHtml(title)}"</strong>?
+                ${flickRequestId ? `<div style="font-size:11.5px; color:#60a5fa; margin-top:4px;">⚡ This will deliver a rejection webhook to Flick and automatically email the member with your reason.</div>` : ''}
+            </div>
+
+            <div style="margin-bottom: 12px; text-align: left;">
+                <label style="font-size: 11px; color: var(--text-secondary); display: block; margin-bottom: 6px; font-weight: 600; text-transform: uppercase;">Quick Reason:</label>
+                <div style="display: flex; flex-direction: column; gap: 5px;">
+                    <button type="button" class="btn-header" style="text-align: left; padding: 6px 10px; font-size: 11.5px;" onclick="document.getElementById('rejectNoteInput').value = 'Currently not available on streaming platforms or release indexers.'">
+                        🚫 Not released on streaming indexers yet
+                    </button>
+                    <button type="button" class="btn-header" style="text-align: left; padding: 6px 10px; font-size: 11.5px;" onclick="document.getElementById('rejectNoteInput').value = 'No working 4K/HD streaming sources available at this time.'">
+                        📉 No working HD/4K sources available
+                    </button>
+                    <button type="button" class="btn-header" style="text-align: left; padding: 6px 10px; font-size: 11.5px;" onclick="document.getElementById('rejectNoteInput').value = 'Duplicate request - title is already queued or in library.'">
+                        📑 Duplicate request
+                    </button>
+                </div>
+            </div>
+
+            <div style="text-align: left; margin-bottom: 14px;">
+                <label style="font-size: 11px; color: var(--text-secondary); display: block; margin-bottom: 4px; font-weight: 600;">Custom Reason / Note for Member:</label>
+                <textarea id="rejectNoteInput" class="form-input" rows="3" style="width: 100%; font-size: 12px; resize: vertical;" placeholder="Enter message to be sent to user..."></textarea>
+            </div>
+
+            <div class="modal-actions">
+                <button type="button" class="btn-modal-cancel" onclick="document.getElementById('rejectRequestModal').remove()">Cancel</button>
+                <button type="button" class="btn-modal-confirm danger" id="btnSubmitReject" onclick="executeRejectRequest(${id})">Reject & Notify</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(backdrop);
+    document.getElementById('rejectNoteInput')?.focus();
+}
+
+async function executeRejectRequest(id) {
+    const note = document.getElementById('rejectNoteInput')?.value || '';
+    const btn = document.getElementById('btnSubmitReject');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Rejecting...';
+    }
+
+    try {
+        const res = await fetch(`/api/requested-media/${id}/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ note })
+        });
         const data = await res.json();
         if (data.success) {
-            showToast('Entry removed', 'info');
+            showToast('Request rejected and user notified', 'info');
+            document.getElementById('rejectRequestModal')?.remove();
             loadRequestedMedia();
+        } else {
+            showToast(data.error || 'Failed to reject request', 'error');
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Reject & Notify';
+            }
         }
     } catch (e) {
-        showToast(e.message, 'error');
+        showToast(e.message || 'Network error', 'error');
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Reject & Notify';
+        }
     }
 }
 
@@ -4116,6 +4344,7 @@ function openDownloadPicker(media) {
     downloadPickerState.posterUrl = media.posterUrl || 'https://via.placeholder.com/300x450/111827/ffffff?text=No+Poster';
     downloadPickerState.overview = media.overview || '';
     downloadPickerState.trailerKey = media.trailerKey || null;
+    downloadPickerState.flickRequestId = media.flickRequestId || null;
     downloadPickerState.scraperResults = [];
     downloadPickerState.selectedRelease = null;
 

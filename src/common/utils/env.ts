@@ -36,6 +36,7 @@ const envSchema = z.object({
     JWT_SECRET: z.string().min(8).default("dev-secret-change-me"),
     TMDB_API_KEY: z.string().optional().default(""),
     TMDB_API_READ_ACCESS_TOKEN: z.string().optional().default(""),
+    FLICK_WEBHOOK_URL: z.string().default("https://flick.pallabdev.in/api/webhook/request"),
 });
 
 export const env = envSchema.parse(process.env);

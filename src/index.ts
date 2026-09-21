@@ -97,7 +97,16 @@ try {
     `);
     await db.execute(sql`
         ALTER TABLE downloads ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW() NOT NULL;
+        ALTER TABLE downloads ADD COLUMN IF NOT EXISTS flick_request_id VARCHAR(100);
         ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW() NOT NULL;
+        ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS flick_request_id VARCHAR(100);
+        ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS tmdb_id INTEGER;
+        ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS poster_url TEXT;
+        ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS overview TEXT;
+        ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS user_email VARCHAR(255);
+        ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS user_name VARCHAR(255);
+        ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS user_id VARCHAR(100);
+        ALTER TABLE requested_media ADD COLUMN IF NOT EXISTS note TEXT;
         ALTER TABLE ott_releases ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW() NOT NULL;
         ALTER TABLE ott_releases ADD COLUMN IF NOT EXISTS media_type VARCHAR(20) DEFAULT 'movie' NOT NULL;
         ALTER TABLE ott_releases ADD COLUMN IF NOT EXISTS ott_release_date VARCHAR(20);
@@ -109,6 +118,8 @@ try {
             END IF;
         END $$;
         CREATE UNIQUE INDEX IF NOT EXISTS ott_releases_tmdb_type_idx ON ott_releases (tmdb_id, media_type);
+        CREATE INDEX IF NOT EXISTS requested_media_flick_id_idx ON requested_media (flick_request_id);
+        CREATE INDEX IF NOT EXISTS downloads_flick_id_idx ON downloads (flick_request_id);
     `);
     console.log("[INIT] Database tables ready");
 } catch (err) {

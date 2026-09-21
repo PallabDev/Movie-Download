@@ -322,3 +322,20 @@ export async function getAllSeries(): Promise<JellyfinItem[]> {
     });
     return data?.Items || [];
 }
+
+export async function refreshJellyfinLibrary(): Promise<boolean> {
+    if (!JELLYFIN_URL || !JELLYFIN_TOKEN) {
+        return false;
+    }
+    try {
+        const res = await fetch(`${JELLYFIN_URL}/Library/Refresh`, {
+            method: "POST",
+            headers: { "X-Emby-Token": JELLYFIN_TOKEN },
+        });
+        console.log(`[JELLYFIN] Library refresh requested: status ${res.status}`);
+        return res.ok;
+    } catch (err: any) {
+        console.warn(`[JELLYFIN] Library refresh notice:`, err?.message);
+        return false;
+    }
+}

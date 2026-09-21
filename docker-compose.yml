@@ -94,6 +94,8 @@ services:
       - LIBRARY_DIR=/media/library
       - DEST_MOVIES_DIR=/media/library/Movies
       - DEST_SHOWS_DIR=/media/library/Shows
+      - JELLYFIN_URL=https://movie.pallabdev.in
+      - JELLYFIN_TOKEN=ec6627aa89a4485fa41f7235ca3b1656
     volumes:
       - ./download:/media/download
       - /mnt/resources/media/movies:/media/library

@@ -41,6 +41,7 @@ export const downloads = pgTable("downloads", {
     speed: varchar("speed", { length: 50 }),
     eta: varchar("eta", { length: 50 }),
     requestedBy: integer("requested_by").references(() => users.id),
+    flickRequestId: varchar("flick_request_id", { length: 100 }),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -70,11 +71,19 @@ export const requestedMedia = pgTable("requested_media", {
     title: varchar("title", { length: 500 }).notNull(),
     type: varchar("type", { length: 20 }).notNull().default("movie"), // "movie" | "series"
     year: varchar("year", { length: 10 }),
-    status: varchar("status", { length: 50 }).notNull().default("requested"), // "requested" | "downloading" | "completed" | "cancelled"
+    status: varchar("status", { length: 50 }).notNull().default("requested"), // "requested" | "approved" | "downloading" | "inlibrary" | "rejected" | "deleted"
     season: integer("season"),
     episode: integer("episode"),
     metadata: jsonb("metadata"),
     requestedBy: varchar("requested_by", { length: 255 }),
+    flickRequestId: varchar("flick_request_id", { length: 100 }),
+    tmdbId: integer("tmdb_id"),
+    posterUrl: text("poster_url"),
+    overview: text("overview"),
+    userEmail: varchar("user_email", { length: 255 }),
+    userName: varchar("user_name", { length: 255 }),
+    userId: varchar("user_id", { length: 100 }),
+    note: text("note"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
