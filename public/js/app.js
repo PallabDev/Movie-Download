@@ -5011,19 +5011,6 @@ document.addEventListener('DOMContentLoaded', () => {
             sessionStorage.setItem('pendingRequestedMediaId', requestedMediaId);
             state.pendingRequestedMediaId = requestedMediaId;
         }
-
-        if (searchQuery && searchQuery.trim()) {
-            const cleanQuery = searchQuery.trim();
-            switchView('chat');
-            if (chatInput) {
-                chatInput.value = cleanQuery;
-                chatInput.style.height = 'auto';
-                chatInput.style.height = Math.min(chatInput.scrollHeight, 140) + 'px';
-                setTimeout(() => {
-                    sendChatMessage();
-                }, 400);
-            }
-        }
     } catch (urlErr) {
         console.warn('[SEARCH URL QUERY NOTICE]:', urlErr);
     }
