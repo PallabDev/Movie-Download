@@ -836,7 +836,7 @@ class CloudflareScraper:
     @classmethod
     async def bypass_intermediate_link(cls, link_url: str, referer: Optional[str] = None, impersonate: str = DEFAULT_IMPERSONATE) -> str:
         """Instant 0-second bypass of mediator redirect sites (greenmotors, unblockedgames, modpro, etc.)."""
-        ref = referer or cls._cached_active_domain or "https://new6.hdhub4u.cl/"
+        ref = referer or _cached_active_domain or "https://new6.hdhub4u.cl/"
         headers = cls._get_browser_headers(referer=ref)
         async with AsyncSession(impersonate=impersonate, verify=False) as session:
             try:
@@ -894,7 +894,7 @@ class CloudflareScraper:
     @classmethod
     async def extract_final_download_links(cls, link_url: str, impersonate: str = DEFAULT_IMPERSONATE) -> Dict[str, Any]:
         """Resolves intermediate URLs (HubCloud, HubDrive, HBLinks, NexDrive, FastDL, UnblockedGames) into direct streaming CDN URLs."""
-        ref = cls._cached_active_domain or "https://new6.hdhub4u.cl/"
+        ref = _cached_active_domain or "https://new6.hdhub4u.cl/"
         headers = cls._get_browser_headers(referer=ref)
         target_url = link_url
 
