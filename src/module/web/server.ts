@@ -2736,13 +2736,13 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                 </div>
                 <div class="header-right" id="headerRightActions">
                     ${!isUser ? `
-                    <button class="btn-header primary" id="btnHeaderAction" onclick="${activeView === 'releases' ? 'toggleMediaCatalogSearch()' : (activeView === 'requested' ? 'openNewRequestModal()' : 'startNewChat()')}">
+                    <button class="btn-header primary" id="btnHeaderAction" onclick="${activeView === 'releases' ? 'toggleMediaCatalogSearch()' : (activeView === 'requested' ? 'loadRequestedMedia()' : 'startNewChat()')}">
                         ${activeView === 'releases' ? `
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6 -6"/></svg>
                             <span id="btnHeaderActionText">Search</span>
                         ` : (activeView === 'requested' ? `
-                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
-                            <span id="btnHeaderActionText">New Request</span>
+                            <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -5v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 5v-5h-5"/></svg>
+                            <span id="btnHeaderActionText">Refresh</span>
                         ` : `
                             <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
                             <span id="btnHeaderActionText">New Chat</span>
@@ -3125,12 +3125,12 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                         <div class="history-toolbar">
                             <div>
                                 <h2 style="font-size: 15px;">Requested Media List</h2>
-                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">All tracked movie requests and status</p>
+                                <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Tracked requests synced from Flick</p>
                             </div>
                             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                                <button class="btn-primary-action" onclick="openNewRequestModal()" style="display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 12px;">
-                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
-                                    New Request
+                                <button class="btn-header" onclick="loadRequestedMedia()" style="display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 12px;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -5v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 5v-5h-5"/></svg>
+                                    Refresh
                                 </button>
                                 <button class="btn-header" style="color: var(--accent-rose);" onclick="clearAllRequestedMedia()">Clear All Requests</button>
                             </div>

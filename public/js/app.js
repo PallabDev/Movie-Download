@@ -339,8 +339,8 @@ function switchView(viewName, updateHistory = true) {
         if (viewName === 'requested') {
             btnHeaderAction.style.display = 'inline-flex';
             btnHeaderAction.classList.remove('search-active');
-            btnHeaderAction.innerHTML = `<svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg><span id="btnHeaderActionText">New Request</span>`;
-            btnHeaderAction.onclick = openNewRequestModal;
+            btnHeaderAction.innerHTML = `<svg class="tabler-icon" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -5v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 5v-5h-5"/></svg><span id="btnHeaderActionText">Refresh</span>`;
+            btnHeaderAction.onclick = () => loadRequestedMedia();
         } else if (viewName === 'releases') {
             btnHeaderAction.style.display = 'inline-flex';
             const isOpen = isMediaSearchVisible();
@@ -1950,12 +1950,12 @@ async function loadRequestedMedia() {
                             </div>
                             <div>
                                 <div style="font-size: 15px; font-weight: 600; color: #fff;">No Requested Media Yet</div>
-                                <div style="font-size: 12.5px; color: var(--text-secondary); max-width: 380px; margin: 4px auto 14px; line-height: 1.5;">
-                                    When members submit media requests on Flick (or CineGrab), they will appear here with one-click download & rejection options.
+                                <div style="font-size: 12.5px; color: var(--text-secondary); max-width: 420px; margin: 6px auto 16px; line-height: 1.5;">
+                                    When members submit media requests on <a href="https://flick.pallabdev.in" target="_blank" style="color: var(--accent-blue); text-decoration: underline;">Flick</a>, they will appear here automatically with one-click download & rejection options.
                                 </div>
-                                <button class="btn-primary-action" onclick="openNewRequestModal()" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 12.5px;">
-                                    <svg class="tabler-icon" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></svg>
-                                    Add Request Manually
+                                <button class="btn-header" onclick="loadRequestedMedia()" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 12.5px; margin: 0 auto;">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:15px;height:15px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -5v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 5v-5h-5"/></svg>
+                                    Check for Requests
                                 </button>
                             </div>
                         </div>
