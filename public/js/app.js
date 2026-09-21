@@ -1978,7 +1978,9 @@ async function loadRequestedMedia() {
             const rawTitleEscaped = safeTitle.replace(/'/g, "\\'");
             const safePosterEscaped = escapeHtml(item.posterUrl || '').replace(/'/g, "\\'");
             const isDownloading = item.status === 'downloading';
-                   let statusBadgeClass = 'pending';
+            const isInLibrary = item.status === 'inlibrary' || item.status === 'in_library';
+            const isRejected = item.status === 'rejected';
+            let statusBadgeClass = 'pending';
             let statusLabel = item.status;
             let statusDotClass = 'online';
             let statusBadgeStyle = '';
@@ -2102,7 +2104,8 @@ async function loadRequestedMedia() {
             `;
         }).join('');
     } catch (e) {
-        tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color: var(--accent-rose);">Failed to load requests</td></tr>`;
+        console.error('[LOAD-REQUESTED-MEDIA ERROR]:', e);
+        tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color: var(--accent-rose);">Failed to load requests: ${escapeHtml(e?.message || 'Unknown error')}</td></tr>`;
     }
 }
 
