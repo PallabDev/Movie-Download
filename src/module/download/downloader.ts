@@ -12,7 +12,7 @@ function isIntermediateUrl(url: string): boolean {
     if (/r2\.cloudflarestorage|r2\.dev|pixeldrain\.com|storage\.googleapis|video-downloads\.googleusercontent|\.mkv$|\.mp4$|\.avi$/i.test(url)) {
         return false;
     }
-    return /hubcloud|hubdrive|hubcdn|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hdstream4u|hblinks|inventoryidea/i.test(url);
+    return /hubcloud|hubdrive|hubcdn|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hdstream4u|hblinks|inventoryidea|multicloudlinks|multidownload/i.test(url);
 }
 
 async function resolveIntermediateLink(url: string): Promise<DownloadServer[]> {

@@ -1089,38 +1089,83 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
         console.log(`[DOWNLOAD-SPECIFIC] Fast targeted resolving: qualityKey="${qualityKey || 'default'}" for url="${targetUrl || linkUrl}"`);
         let resolvedDetails: { name: string; servers: any[]; fileSize?: string };
 
+        let failedResolution = "720p";
+        if (/4k|2160p/i.test(qualityKey || "")) failedResolution = "4K";
+        else if (/1080p/i.test(qualityKey || "")) failedResolution = "1080p";
+        else if (/720p/i.test(qualityKey || "")) failedResolution = "720p";
+        else if (/480p/i.test(qualityKey || "")) failedResolution = "480p";
+
+        let suggestedResolution = failedResolution === "720p" ? "1080p" : "720p";
+        try {
+            if (targetUrl) {
+                const formats = await getMediaFormatDetails(targetUrl);
+                if (formats?.movieFormats && formats.movieFormats.length > 0) {
+                    const alt = formats.movieFormats.find(f => f.resolution && f.resolution !== failedResolution && f.resolution !== "480p");
+                    if (alt) {
+                        suggestedResolution = alt.resolution;
+                    } else {
+                        const anyAlt = formats.movieFormats.find(f => f.resolution && f.resolution !== failedResolution);
+                        if (anyAlt) suggestedResolution = anyAlt.resolution;
+                    }
+                }
+            }
+        } catch { /* ignore fallback error */ }
+
         try {
             resolvedDetails = await resolveSpecificFormatLink(targetUrl || "", qualityKey, linkUrl);
         } catch (resolveErr: any) {
             console.warn(`[DOWNLOAD-SPECIFIC] Target resolution warning: ${resolveErr.message}`);
             // Fallback to full page getDownloadLinks if targeted lookup was unable to locate option
             if (targetUrl) {
-                const details = await getDownloadLinks(targetUrl);
-                const rawServers = (qualityKey && details.downloads[qualityKey]) || Object.values(details.downloads)[0];
-                if (!rawServers || rawServers.length === 0) {
-                    return res.status(404).json({
+                try {
+                    const details = await getDownloadLinks(targetUrl);
+                    const rawServers = (qualityKey && details.downloads[qualityKey]) || Object.values(details.downloads)[0];
+                    if (!rawServers || rawServers.length === 0) {
+                        return res.status(200).json({
+                            success: false,
+                            isBroken: true,
+                            failedResolution,
+                            suggestedResolution,
+                            qualityKey,
+                            error: `The ${failedResolution} download link is broken from the provider end. Please try downloading with the ${suggestedResolution} link.`
+                        });
+                    }
+                    resolvedDetails = {
+                        name: details.name,
+                        servers: sortServersByPriority(rawServers),
+                        fileSize: fileSize || ""
+                    };
+                } catch {
+                    return res.status(200).json({
                         success: false,
-                        error: "This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release."
+                        isBroken: true,
+                        failedResolution,
+                        suggestedResolution,
+                        qualityKey,
+                        error: `The ${failedResolution} download link is broken from the provider end. Please try downloading with the ${suggestedResolution} link.`
                     });
                 }
-                resolvedDetails = {
-                    name: details.name,
-                    servers: sortServersByPriority(rawServers),
-                    fileSize: fileSize || ""
-                };
             } else {
-                return res.status(404).json({
+                return res.status(200).json({
                     success: false,
-                    error: "This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release."
+                    isBroken: true,
+                    failedResolution,
+                    suggestedResolution,
+                    qualityKey,
+                    error: `The ${failedResolution} download link is broken from the provider end. Please try downloading with the ${suggestedResolution} link.`
                 });
             }
         }
 
         const servers = resolvedDetails.servers;
         if (!servers || servers.length === 0) {
-            return res.status(404).json({
+            return res.status(200).json({
                 success: false,
-                error: "This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release."
+                isBroken: true,
+                failedResolution,
+                suggestedResolution,
+                qualityKey,
+                error: `The ${failedResolution} download link is broken from the provider end. Please try downloading with the ${suggestedResolution} link.`
             });
         }
 

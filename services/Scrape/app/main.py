@@ -147,7 +147,7 @@ async def api_download_endpoint(
     try:
         # If link_url is provided, or target_url is an intermediate download service
         eval_url = link_url or target_url
-        if any(k in eval_url.lower() for k in ["hubdrive.", "hubcloud.", "hblinks.", "greenmount", "nexdrive", "vgmlinks", "unblockedgames", "links.modpro", "fast-dl", "vcloud"]):
+        if link_url or CloudflareScraper.is_intermediate_url(eval_url):
             result = await CloudflareScraper.extract_final_download_links(
                 link_url=eval_url,
                 impersonate=impersonate

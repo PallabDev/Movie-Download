@@ -265,7 +265,7 @@ export async function resolveSpecificFormatLink(
 
             if (cachedServers.length > 0) {
                 const isIntermediate = cachedServers.some(s =>
-                    /hubcloud|hubdrive|hubcdn|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hdstream4u|drive/i.test(s.download_url) &&
+                    /hubcloud|hubdrive|hubcdn|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hdstream4u|hblinks|multicloudlinks|multidownload|drive/i.test(s.download_url) &&
                     !/r2\.cloudflarestorage|r2\.dev|pixeldrain\.com|storage\.googleapis|video-downloads\.googleusercontent/i.test(s.download_url)
                 );
 
@@ -324,7 +324,7 @@ export async function resolveSpecificFormatLink(
     }
 
     // 3. If direct intermediate linkUrl is provided, resolve directly via /api/resolve (1.5s)
-    if (linkUrl && /hubcloud|hubdrive|hblinks|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hubcdn|drive/i.test(linkUrl)) {
+    if (linkUrl && /hubcloud|hubdrive|hblinks|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hubcdn|multicloudlinks|multidownload|drive/i.test(linkUrl)) {
         const resolveUrl = `${DL_API_BASE_URL}/api/resolve?url=${encodeURIComponent(linkUrl)}`;
         console.log(`[DL-API] Fast single-link resolution: ${resolveUrl}`);
         try {
@@ -335,8 +335,11 @@ export async function resolveSpecificFormatLink(
             if (res.ok) {
                 const data: any = await res.json();
                 const rawServers: DownloadServer[] = data.final_downloads || [];
-                const servers = sortServersByPriority(rawServers);
-                if (servers.length > 0) {
+                const directServers = rawServers.filter(s =>
+                    s.download_url && !/greenmotors|greenmount|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|multicloudlinks/i.test(s.download_url)
+                );
+                const servers = sortServersByPriority(directServers.length > 0 ? directServers : rawServers);
+                if (servers.length > 0 && !servers.some(s => /greenmotors|greenmount|unblockedgames/i.test(s.download_url))) {
                     let sSize = "";
                     for (const s of servers) {
                         const sz = cleanFileSize(s.file_size || "") || cleanFileSize(s.server_name || "");
@@ -359,7 +362,7 @@ export async function resolveSpecificFormatLink(
     if (targetUrl) params.set("param", targetUrl);
     if (qualityKey) params.set("quality_key", qualityKey);
     // Only pass link_url if it's an intermediate redirect URL, avoid confusing scraper with final URLs
-    if (linkUrl && /hubcloud|hubdrive|hblinks|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hubcdn|drive/i.test(linkUrl)) {
+    if (linkUrl && /hubcloud|hubdrive|hblinks|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hubcdn|multicloudlinks|multidownload|drive/i.test(linkUrl)) {
         params.set("link_url", linkUrl);
     }
 
@@ -396,7 +399,36 @@ export async function resolveSpecificFormatLink(
         servers = data.final_downloads;
     }
 
-    const sortedServers = sortServersByPriority(servers);
+    // Ensure intermediate URLs are resolved or discarded rather than returned as final video streams
+    const verifiedServers: DownloadServer[] = [];
+    for (const s of servers) {
+        if (!s.download_url) continue;
+        const isInter = /hubcloud|hubdrive|hubcdn|greenmount|greenmotors|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|hdstream4u|hblinks|multicloudlinks|multidownload/i.test(s.download_url) &&
+            !/r2\.cloudflarestorage|r2\.dev|pixeldrain\.com|storage\.googleapis|video-downloads\.googleusercontent/i.test(s.download_url);
+        
+        if (isInter) {
+            try {
+                const rUrl = `${DL_API_BASE_URL}/api/resolve?url=${encodeURIComponent(s.download_url)}`;
+                const rRes = await fetch(rUrl, { headers: { "Accept": "application/json" }, signal: AbortSignal.timeout(12000) });
+                if (rRes.ok) {
+                    const rData: any = await rRes.json();
+                    if (rData.final_downloads && rData.final_downloads.length > 0) {
+                        for (const fs of rData.final_downloads) {
+                            if (fs.download_url && !/greenmotors|greenmount|unblockedgames/i.test(fs.download_url)) {
+                                verifiedServers.push(fs);
+                            }
+                        }
+                    }
+                }
+            } catch (err: any) {
+                console.warn(`[DL-API] Server resolution error for ${s.download_url}: ${err.message}`);
+            }
+        } else {
+            verifiedServers.push(s);
+        }
+    }
+
+    const sortedServers = sortServersByPriority(verifiedServers);
     if (sortedServers.length === 0) {
         throw new Error("This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release.");
     }

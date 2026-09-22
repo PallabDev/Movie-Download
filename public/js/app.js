@@ -1551,6 +1551,7 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                 <div class="formats-section-title">⚡ Available Movie Qualities (Direct 10Gbps CDN)</div>
                 <div class="formats-grid">
                     ${details.movieFormats.map(f => {
+                        const isBroken = Boolean(window._brokenFormats && (window._brokenFormats.has(f.qualityKey) || window._brokenFormats.has(f.linkUrl)));
                         const actionKey = registerDrawerFormatAction({
                             targetUrl,
                             qualityKey: f.qualityKey,
@@ -1562,18 +1563,19 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                             type: 'movie'
                         });
                         return `
-                        <div class="format-card ${f.isRecommended ? 'recommended' : ''}">
+                        <div class="format-card ${f.isRecommended && !isBroken ? 'recommended' : ''} ${isBroken ? 'broken' : ''}" style="${isBroken ? 'border-color: rgba(239,68,68,0.35);' : ''}">
                             <div class="format-card-info">
                                 <div class="format-card-label">${escapeHtml(f.label)}</div>
                                 <div class="format-card-sub">
                                     <span class="badge ${f.resolution === '4K' ? 'codec' : 'res'}">${escapeHtml(f.resolution)}</span>
                                     ${f.fileSize ? `<span class="badge size">${escapeHtml(f.fileSize)}</span>` : ''}
-                                    ${f.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                    ${f.isRecommended && !isBroken ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                    ${isBroken ? `<span class="badge badge-broken" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 600; padding: 2px 7px; border-radius: 4px;">❌ Link Not Working</span>` : ''}
                                 </div>
                             </div>
-                            <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="handleDrawerFormatClick('${actionKey}', this)">
+                            <button class="btn-download-format ${f.isRecommended && !isBroken ? 'primary' : ''} ${isBroken ? 'btn-broken' : ''}" ${isBroken ? 'disabled style="opacity:0.6;cursor:not-allowed;border-color:rgba(239,68,68,0.4);color:#f87171;"' : `onclick="handleDrawerFormatClick('${actionKey}', this)"`}>
                                 <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                Download ${escapeHtml(f.resolution)}
+                                ${isBroken ? '⚠️ Link Broken' : `Download ${escapeHtml(f.resolution)}`}
                             </button>
                         </div>
                         `;
@@ -1638,7 +1640,67 @@ async function triggerSpecificFormatDownload(targetUrl, qualityKey, customTitle,
                 switchView('downloads');
             }
         } else {
-            if (data.alreadyInJellyfin) {
+            if (data.isBroken) {
+                // Provider link is broken: warn user, do not push to download, suggest working alternative
+                const failedRes = data.failedResolution || '720p';
+                const suggestedRes = data.suggestedResolution || '1080p';
+                const brokenMsg = data.error || `The ${failedRes} download link is broken from provider end. Please try downloading with the ${suggestedRes} link!`;
+                showToast(brokenMsg, 'warning', 8500);
+
+                window._brokenFormats = window._brokenFormats || new Set();
+                if (qualityKey) window._brokenFormats.add(qualityKey);
+                if (linkUrl) window._brokenFormats.add(linkUrl);
+
+                if (btnElement) {
+                    btnElement.disabled = true;
+                    btnElement.innerHTML = `⚠️ Broken (Try ${escapeHtml(suggestedRes)})`;
+                    btnElement.classList.remove('primary');
+                    btnElement.classList.add('btn-broken');
+                    btnElement.style.opacity = '0.6';
+                    btnElement.style.cursor = 'not-allowed';
+                    btnElement.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+                    btnElement.style.color = '#f87171';
+
+                    const card = btnElement.closest('.format-card');
+                    if (card) {
+                        card.classList.add('broken');
+                        card.style.borderColor = 'rgba(239, 68, 68, 0.35)';
+                        const sub = card.querySelector('.format-card-sub');
+                        if (sub && !sub.querySelector('.badge-broken')) {
+                            const brokenBadge = document.createElement('span');
+                            brokenBadge.className = 'badge badge-broken';
+                            brokenBadge.style.cssText = 'background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 600; padding: 2px 7px; border-radius: 4px;';
+                            brokenBadge.innerHTML = '❌ Link Not Working';
+                            sub.appendChild(brokenBadge);
+                        }
+                    }
+
+                    // Highlight suggested alternative card in the modal
+                    const modal = btnElement.closest('#downloadOptionsModal, .drawer-formats-list, .chat-formats-panel') || document;
+                    const allCards = modal.querySelectorAll('.format-card');
+                    allCards.forEach(c => {
+                        const label = c.querySelector('.format-card-label')?.textContent || '';
+                        const sub = c.querySelector('.format-card-sub')?.textContent || '';
+                        if (label.includes(suggestedRes) || sub.includes(suggestedRes)) {
+                            c.classList.add('recommended', 'suggested-active');
+                            c.style.borderColor = '#10b981';
+                            c.style.boxShadow = '0 0 15px rgba(16, 185, 129, 0.35)';
+                            const cSub = c.querySelector('.format-card-sub');
+                            if (cSub && !cSub.querySelector('.badge-suggested')) {
+                                const sugBadge = document.createElement('span');
+                                sugBadge.className = 'badge rec badge-suggested';
+                                sugBadge.style.cssText = 'background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-weight: 600; padding: 2px 7px; border-radius: 4px;';
+                                sugBadge.innerHTML = `⭐ Recommended: ${escapeHtml(suggestedRes)} Working`;
+                                cSub.appendChild(sugBadge);
+                            }
+                            const btn = c.querySelector('.btn-download-format');
+                            if (btn && !btn.disabled) {
+                                btn.classList.add('primary');
+                            }
+                        }
+                    });
+                }
+            } else if (data.alreadyInJellyfin) {
                 showToast(data.error || 'Media already exists in your Jellyfin library!', 'warning', 6000);
                 if (btnElement) {
                     btnElement.disabled = true;

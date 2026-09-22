@@ -41,7 +41,11 @@ def _decode_greenmotors_payload(payload: str) -> Optional[str]:
         d4 = base64.b64decode(d3).decode("utf-8")
         data = json.loads(d4)
         if isinstance(data, dict) and "o" in data:
-            return base64.b64decode(data["o"]).decode("utf-8")
+            target = base64.b64decode(data["o"]).decode("utf-8")
+            # Filter out screenshot image hosts
+            if any(img_host in target.lower() for img_host in ["extraimage.", "imgbb.", "postimg.", "pixhost.", "imagebam."]):
+                return None
+            return target
     except Exception as e:
         print(f"[GREENMOTORS DECODE ERROR]: {e}")
     return None
@@ -534,15 +538,28 @@ class CloudflareScraper:
     GATEWAY_DOMAINS = [
         "hubcloud", "hubdrive", "hblinks", "greenmount", "greenmotors", "mediator", "search-recover",
         "leechpro", "modpro", "links.", "techmny", "fastdl", "fast-dl", "vcloud", "hubcdn", "hdstream4u",
-        "nexdrive", "cloud.unblockedgames", "unblockedgames", "gdirect", "gdflix", "filepress", "pixeldrain", "drive"
+        "nexdrive", "cloud.unblockedgames", "unblockedgames", "gdirect", "gdflix", "filepress", "pixeldrain", "drive",
+        "multicloudlinks", "multidownload", "dr1."
     ]
+
+    @classmethod
+    def is_intermediate_url(cls, url: str) -> bool:
+        if not url:
+            return False
+        u = url.lower()
+        if any(cdn in u for cdn in ["video-downloads.googleusercontent.com", "pixeldrain.com/api/file", "workers.dev", "r2.dev", "r2.cloudflarestorage.com"]):
+            return False
+        return any(gw in u for gw in cls.GATEWAY_DOMAINS)
 
     @classmethod
     def _is_valid_download_gateway_url(cls, href: str) -> bool:
         if not href:
             return False
         h = href.lower()
-        if any(bad in h for bad in ["/how-to-", "telegram", "t.me", "#", "report", "/category/", "/tag/", "/author/", "/page/", "/genre/", "google.com", "whatsapp"]):
+        if any(bad in h for bad in [
+            "/how-to-", "telegram", "t.me", "#", "report", "/category/", "/tag/", "/author/",
+            "/page/", "/genre/", "google.com", "whatsapp", "extraimage.", "imgbb.", "postimg.", "pixhost.", "imagebam."
+        ]):
             return False
         return any(gw in h for gw in cls.GATEWAY_DOMAINS)
 
@@ -633,11 +650,29 @@ class CloudflareScraper:
             if not cls._is_valid_download_gateway_url(href) or href in seen_hrefs:
                 continue
 
-            seen_hrefs.add(href)
-
+            a_text = a.get_text(" ", strip=True)
             parent = a.parent
             parent_text = parent.get_text(" ", strip=True) if parent else ""
-            a_text = a.get_text(" ", strip=True)
+            has_img = bool(a.find("img"))
+
+            # Skip screenshot images / image gallery links wrapped in anchor tags
+            if has_img and not a_text:
+                img_tag = a.find("img")
+                img_alt = (img_tag.get("alt") or "").lower() if img_tag else ""
+                if not any(k in img_alt for k in ["download", "torrent", "gdrive", "direct"]):
+                    continue
+
+            # If anchor text is empty or purely navigational/category words
+            nav_words = ["movie", "movies", "hollywood", "bollywood", "how to download", "how to download ?", "telegram", "watch online", "click here", "join our telegram"]
+            if not a_text or any(a_text.strip().lower() == nw for nw in nav_words):
+                if not re.search(r'\b(?:480p|720p|1080p|2160p|4k|download|episode|ep|batch|pack|zip|links)\b', a_text, re.I):
+                    continue
+
+            # Must have either explicit resolution, size, or download keywords in link or immediate context
+            if not re.search(r'\b(?:480p|720p|1080p|2160p|4k|batch|pack|zip|episode|ep|download|g-drive|drive|links)\b', a_text + " " + parent_text, re.I):
+                continue
+
+            seen_hrefs.add(href)
             heading_context = cls._find_nearest_heading_context(a)
 
             full_context = f"{heading_context} | {parent_text} | {a_text}".strip()
@@ -927,18 +962,79 @@ class CloudflareScraper:
                     inner_links = []
                     for a in hb_soup.find_all("a"):
                         h = a.get("href", "")
-                        if any(k in h.lower() for k in ["hubcloud", "hubdrive", "hubcdn", "pixeldrain", "workers.dev", "drive"]) and not ("hblinks.lol/" in h.lower() and "/archives/" not in h.lower()):
+                        if any(k in h.lower() for k in ["hubcloud", "hubdrive", "hubcdn", "pixeldrain", "workers.dev", "drive", "multicloudlinks", "multidownload", "dr1.", "linkrit"]) and not ("hblinks.lol/" in h.lower() and "/archives/" not in h.lower()):
                             inner_links.append(h)
                     
                     if inner_links:
-                        hubcloud_links = [h for h in inner_links if "hubcloud." in h.lower()]
-                        other_links = [h for h in inner_links if "hubcloud." not in h.lower()]
-                        for candidate in (hubcloud_links + other_links):
+                        for candidate in inner_links:
                             candidate_res = await cls.extract_final_download_links(candidate, impersonate=impersonate)
                             if candidate_res.get("total_servers", 0) > 0:
                                 return candidate_res
             except Exception as e:
                 print(f"[HBLINKS EXTRACT ERROR] {target_url}: {e}")
+
+        # MultiCloudLinks & MultiDownload URL
+        if any(k in url_lower for k in ["multicloudlinks.", "multidownload."]):
+            try:
+                if "multidownload." in url_lower and "/d/" in target_url:
+                    return {
+                        "source_url": target_url,
+                        "filename": "Direct Download File",
+                        "final_downloads": [{
+                            "server_name": "Download [Turbo Fast CDN (Cloudflare R2)]",
+                            "server_type": "💾 Direct Fast CDN",
+                            "download_url": target_url,
+                            "file_size": ""
+                        }],
+                        "total_servers": 1,
+                        "is_streamable": True
+                    }
+
+                async with AsyncSession(impersonate=impersonate, verify=False) as session:
+                    mcl_headers = {**headers, "Referer": "https://hblinks.lol/"}
+                    res = await session.get(target_url, headers=mcl_headers, timeout=DEFAULT_TIMEOUT)
+                    soup = BeautifulSoup(res.text, "html.parser")
+                    filename = soup.title.string.replace("Download Links - ", "").replace("MultiCloud", "").strip() if soup.title else ""
+                    raw_links = []
+                    for a in soup.find_all("a"):
+                        h = a.get("href", "")
+                        t = a.get_text(" ", strip=True)
+                        if not h or not h.startswith("http"):
+                            continue
+                        if any(bad in h.lower() for bad in ["facebook", "twitter", "whatsapp", "telegram", "t.me", "about.php", "terms", "privacy", "dmca", "contact", "login", "signup"]):
+                            continue
+                        
+                        # Turbo Download (direct R2 stream)
+                        if "multidownload." in h.lower() or "turbo download" in t.lower():
+                            raw_links.append({
+                                "server_name": "Download [Turbo Fast CDN (R2)]",
+                                "server_type": "💾 Direct Fast CDN",
+                                "download_url": h
+                            })
+                        # Pixeldrain mirror
+                        elif "pixeldra.multicloudlinks" in h.lower() or "pixeldrain" in h.lower():
+                            raw_links.append({
+                                "server_name": "Download [Pixeldrain Fast Download]",
+                                "server_type": "📦 Pixeldrain Fast Download",
+                                "download_url": h
+                            })
+                        # 10 Gbps instant download or direct mirror
+                        elif any(k in t.lower() for k in ["instant download", "direct download", "10 gbps", "mirror"]):
+                            raw_links.append({
+                                "server_name": f"Download [{t}]" if t else "Download [MultiCloud Mirror]",
+                                "server_type": "⚡ Server : 10Gbps High Speed",
+                                "download_url": h
+                            })
+
+                    if raw_links:
+                        return {
+                            "source_url": target_url,
+                            "filename": filename or "Movie Download File",
+                            "final_downloads": raw_links,
+                            "total_servers": len(raw_links)
+                        }
+            except Exception as mcl_err:
+                print(f"[MULTICLOUDLINKS EXTRACT ERROR]: {mcl_err}")
 
         # NexDrive URL (Vegamovies)
         if "nexdrive." in url_lower:
