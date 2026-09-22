@@ -324,9 +324,13 @@ async function verifyServersAlive(servers: DownloadServer[]): Promise<DownloadSe
             } else {
                 aliveServers.push(s);
             }
-        } catch {
-            // Keep on timeout / network quirks as potential fallback
-            aliveServers.push(s);
+        } catch (err: any) {
+            if (/pixeldrain\.com/i.test(s.download_url)) {
+                console.warn(`[DL-API] Pixeldrain stream connection failed (${err.message}): ${s.download_url}`);
+            } else {
+                // Keep Google CDN / Cloudflare workers on timeout / network quirks as potential fallback
+                aliveServers.push(s);
+            }
         }
     }));
     return aliveServers;

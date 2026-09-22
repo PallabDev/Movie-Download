@@ -1221,11 +1221,28 @@ class CloudflareScraper:
                                 "download_url": h
                             })
 
+                # Filter out broken/expired/404 upstream streams (e.g. deleted Pixeldrain files)
+                verified_downloads = []
+                for dl in raw_downloads:
+                    dl_url = dl.get("download_url", "")
+                    if not dl_url:
+                        continue
+                    if "pixeldrain.com" in dl_url:
+                        try:
+                            chk = await client.get(dl_url, impersonate=impersonate, timeout=3.5)
+                            if chk.status_code in (404, 410):
+                                print(f"[SCRAPER] Upstream Pixeldrain file is dead ({chk.status_code}): {dl_url}")
+                                continue
+                        except Exception as p_err:
+                            print(f"[SCRAPER] Pixeldrain health check failed: {p_err}")
+                            continue
+                    verified_downloads.append(dl)
+
                 return {
                     "source_url": target_url,
                     "filename": filename,
-                    "final_downloads": raw_downloads,
-                    "total_servers": len(raw_downloads)
+                    "final_downloads": verified_downloads,
+                    "total_servers": len(verified_downloads)
                 }
         except Exception as e:
             print(f"[EXTRACT FINAL DOWNLOADS ERROR]: {e}")
