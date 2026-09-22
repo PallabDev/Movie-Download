@@ -309,17 +309,45 @@ export async function resolveSpecificFormatLink(
         }
     }
 
+async function verifyServersAlive(servers: DownloadServer[]): Promise<DownloadServer[]> {
+    const aliveServers: DownloadServer[] = [];
+    await Promise.all(servers.map(async s => {
+        if (!s.download_url) return;
+        try {
+            const headRes = await fetch(s.download_url, {
+                method: "HEAD",
+                headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+                signal: AbortSignal.timeout(3500)
+            });
+            if (headRes.status === 404 || headRes.status === 410) {
+                console.warn(`[DL-API] Upstream server file is deleted/dead (${headRes.status}): ${s.download_url}`);
+            } else {
+                aliveServers.push(s);
+            }
+        } catch {
+            // Keep on timeout / network quirks as potential fallback
+            aliveServers.push(s);
+        }
+    }));
+    return aliveServers;
+}
+
     // 2. Direct CDN Link Check: If linkUrl is already a final direct download CDN stream (0ms)
     if (linkUrl && /video-downloads\.googleusercontent\.com|pixeldrain\.com|r2\.cloudflarestorage\.com|workers\.dev|r2\.dev|pub-/i.test(linkUrl)) {
-        console.log(`[DL-API] Link URL is already a direct CDN download stream`);
+        console.log(`[DL-API] Link URL is already a direct CDN download stream: ${linkUrl}`);
+        const singleServer: DownloadServer = {
+            server_name: "Download [Server : 10Gbps]",
+            server_type: "⚡ Server : 10Gbps High Speed (Google CDN)",
+            download_url: linkUrl,
+            file_size: ""
+        };
+        const alive = await verifyServersAlive([singleServer]);
+        if (alive.length === 0) {
+            throw new Error("This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release.");
+        }
         return {
             name: "Direct Download File",
-            servers: [{
-                server_name: "Download [Server : 10Gbps]",
-                server_type: "⚡ Server : 10Gbps High Speed (Google CDN)",
-                download_url: linkUrl,
-                file_size: ""
-            }]
+            servers: alive
         };
     }
 
@@ -338,7 +366,8 @@ export async function resolveSpecificFormatLink(
                 const directServers = rawServers.filter(s =>
                     s.download_url && !/greenmotors|greenmount|unblockedgames|leechpro|modpro|links\.|techmny|fastdl|fast-dl|vcloud|multicloudlinks/i.test(s.download_url)
                 );
-                const servers = sortServersByPriority(directServers.length > 0 ? directServers : rawServers);
+                const aliveServers = await verifyServersAlive(directServers.length > 0 ? directServers : rawServers);
+                const servers = sortServersByPriority(aliveServers);
                 if (servers.length > 0 && !servers.some(s => /greenmotors|greenmount|unblockedgames/i.test(s.download_url))) {
                     let sSize = "";
                     for (const s of servers) {
@@ -350,10 +379,15 @@ export async function resolveSpecificFormatLink(
                         servers,
                         fileSize: sSize || data.file_size || ""
                     };
+                } else if (rawServers.length > 0 && aliveServers.length === 0) {
+                    throw new Error("This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release.");
                 }
             }
         } catch (e: any) {
             console.warn(`[DL-API] Direct resolve fallback: ${e.message}`);
+            if (e.message && e.message.includes("unavailable or has expired")) {
+                throw e;
+            }
         }
     }
 
@@ -429,25 +463,7 @@ export async function resolveSpecificFormatLink(
     }
 
     // Verify servers are reachable and not deleted/404 on the upstream host (e.g. deleted Pixeldrain / expired CDN links)
-    const aliveServers: DownloadServer[] = [];
-    await Promise.all(verifiedServers.map(async s => {
-        try {
-            const headRes = await fetch(s.download_url, {
-                method: "HEAD",
-                headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-                signal: AbortSignal.timeout(3500)
-            });
-            if (headRes.status === 404 || headRes.status === 410) {
-                console.warn(`[DL-API] Upstream server file is deleted/dead (${headRes.status}): ${s.download_url}`);
-            } else {
-                aliveServers.push(s);
-            }
-        } catch {
-            // Keep on timeout / network quirks as potential fallback
-            aliveServers.push(s);
-        }
-    }));
-
+    const aliveServers = await verifyServersAlive(verifiedServers);
     const sortedServers = sortServersByPriority(aliveServers);
     if (sortedServers.length === 0) {
         throw new Error("This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release.");
