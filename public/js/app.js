@@ -911,22 +911,26 @@ function addChatMessage(content, sender = 'assistant', meta = {}) {
                         <span>Available Movie Formats (Direct 10Gbps CDN)</span>
                     </div>
                     <div class="formats-grid">
-                        ${mf.movieFormats.map(f => `
-                            <div class="format-card ${f.isRecommended ? 'recommended' : ''}">
+                        ${mf.movieFormats.map(f => {
+                            const isBroken = Boolean(f.isBroken || (window._brokenFormats && (window._brokenFormats.has(f.qualityKey) || window._brokenFormats.has(f.linkUrl))));
+                            return `
+                            <div class="format-card ${f.isRecommended && !isBroken ? 'recommended' : ''} ${isBroken ? 'broken' : ''}" style="${isBroken ? 'border-color: rgba(239,68,68,0.35);' : ''}">
                                 <div class="format-card-top">
                                     <div class="format-badges-row">
                                         <span class="badge ${f.resolution === '4K' ? 'codec' : 'res'}">${escapeHtml(f.resolution)}</span>
                                         ${f.fileSize ? `<span class="badge size">${escapeHtml(f.fileSize)}</span>` : ''}
-                                        ${f.isRecommended ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                        ${f.isRecommended && !isBroken ? `<span class="badge rec">⭐ Recommended</span>` : ''}
+                                        ${isBroken ? `<span class="badge badge-broken" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 600; padding: 2px 7px; border-radius: 4px;">❌ Link Not Working</span>` : ''}
                                     </div>
                                 </div>
                                 <div class="format-card-label">${escapeHtml(f.label)}</div>
-                                <button class="btn-download-format ${f.isRecommended ? 'primary' : ''}" onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(f.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, undefined, '${escapeHtml(f.fileSize)}', this, '${f.linkUrl ? escapeHtml(f.linkUrl).replace(/'/g, "\\'") : ''}')">
+                                <button class="btn-download-format ${f.isRecommended && !isBroken ? 'primary' : ''} ${isBroken ? 'btn-broken' : ''}" ${isBroken ? 'disabled style="opacity:0.6;cursor:not-allowed;border-color:rgba(239,68,68,0.4);color:#f87171;"' : `onclick="triggerSpecificFormatDownload('${escapeHtml(targetUrl).replace(/'/g, "\\'")}', '${escapeHtml(f.qualityKey)}', '${escapeHtml(title).replace(/'/g, "\\'")}', false, undefined, '${escapeHtml(f.fileSize)}', this, '${f.linkUrl ? escapeHtml(f.linkUrl).replace(/'/g, "\\'") : ''}')"`}>
                                     <svg class="tabler-icon" style="width:14px;height:14px;" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></svg>
-                                    Download ${escapeHtml(f.resolution)}
+                                    ${isBroken ? '⚠️ Link Broken' : `Download ${escapeHtml(f.resolution)}`}
                                 </button>
                             </div>
-                        `).join('')}
+                            `;
+                        }).join('')}
                     </div>
                 </div>
             `;
@@ -1551,7 +1555,7 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                 <div class="formats-section-title">⚡ Available Movie Qualities (Direct 10Gbps CDN)</div>
                 <div class="formats-grid">
                     ${details.movieFormats.map(f => {
-                        const isBroken = Boolean(window._brokenFormats && (window._brokenFormats.has(f.qualityKey) || window._brokenFormats.has(f.linkUrl)));
+                        const isBroken = Boolean(f.isBroken || (window._brokenFormats && (window._brokenFormats.has(f.qualityKey) || window._brokenFormats.has(f.linkUrl))));
                         const actionKey = registerDrawerFormatAction({
                             targetUrl,
                             qualityKey: f.qualityKey,
@@ -1563,7 +1567,7 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                             type: 'movie'
                         });
                         return `
-                        <div class="format-card ${f.isRecommended && !isBroken ? 'recommended' : ''} ${isBroken ? 'broken' : ''}" style="${isBroken ? 'border-color: rgba(239,68,68,0.35);' : ''}">
+                        <div class="format-card ${f.isRecommended && !isBroken ? 'recommended' : ''} ${isBroken ? 'broken' : ''}" data-format-key="${escapeHtml(f.qualityKey || f.linkUrl || '')}" style="${isBroken ? 'border-color: rgba(239,68,68,0.35);' : ''}">
                             <div class="format-card-info">
                                 <div class="format-card-label">${escapeHtml(f.label)}</div>
                                 <div class="format-card-sub">
@@ -1583,8 +1587,102 @@ function renderDrawerContent(drawer, details, targetUrl, rawTitle) {
                 </div>
             </div>
         `;
+        // Pre-validate any unverified formats asynchronously in background to ensure accurate live status
+        validateDrawerFormats(drawer, details, targetUrl);
     } else {
         drawer.innerHTML = `<div style="color: var(--text-muted); font-size: 12px; padding: 10px;">No specific formats found.</div>`;
+    }
+}
+
+async function validateDrawerFormats(drawer, details, targetUrl) {
+    if (!details || !details.movieFormats || details.movieFormats.length === 0) return;
+    const unverified = details.movieFormats.filter(f => f.isBroken === undefined);
+    if (unverified.length === 0) return;
+
+    try {
+        const res = await fetch('/api/media/validate-formats', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                targetUrl,
+                formats: details.movieFormats.map(f => ({
+                    qualityKey: f.qualityKey,
+                    linkUrl: f.linkUrl,
+                    label: f.label,
+                    resolution: f.resolution
+                }))
+            })
+        });
+        const data = await res.json();
+        if (!data.success || !data.statuses) return;
+
+        window._brokenFormats = window._brokenFormats || new Set();
+
+        details.movieFormats.forEach(f => {
+            const key = f.qualityKey || f.linkUrl;
+            const status = data.statuses[key];
+            if (!status) return;
+
+            f.isBroken = status.isBroken;
+            if (status.isBroken) {
+                window._brokenFormats.add(f.qualityKey);
+                window._brokenFormats.add(f.linkUrl);
+                f.isRecommended = false;
+            }
+
+            const card = drawer.querySelector(`[data-format-key="${key}"]`);
+            if (card) {
+                if (status.isBroken) {
+                    card.classList.add('broken');
+                    card.classList.remove('recommended');
+                    card.style.borderColor = 'rgba(239,68,68,0.35)';
+                    const sub = card.querySelector('.format-card-sub');
+                    if (sub) {
+                        const recBadge = sub.querySelector('.badge.rec');
+                        if (recBadge) recBadge.remove();
+                        if (!sub.querySelector('.badge-broken')) {
+                            const b = document.createElement('span');
+                            b.className = 'badge badge-broken';
+                            b.style.cssText = 'background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 600; padding: 2px 7px; border-radius: 4px;';
+                            b.innerHTML = '❌ Link Not Working';
+                            sub.appendChild(b);
+                        }
+                    }
+                    const btn = card.querySelector('.btn-download-format');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.classList.remove('primary');
+                        btn.classList.add('btn-broken');
+                        btn.style.opacity = '0.6';
+                        btn.style.cursor = 'not-allowed';
+                        btn.style.borderColor = 'rgba(239,68,68,0.4)';
+                        btn.style.color = '#f87171';
+                        btn.innerHTML = '⚠️ Link Broken';
+                    }
+                }
+            }
+        });
+
+        if (data.suggestedWorkingKey) {
+            const sugCard = drawer.querySelector(`[data-format-key="${data.suggestedWorkingKey}"]`);
+            if (sugCard && !sugCard.classList.contains('broken')) {
+                sugCard.classList.add('recommended');
+                const sub = sugCard.querySelector('.format-card-sub');
+                if (sub && !sub.querySelector('.badge.rec')) {
+                    const rec = document.createElement('span');
+                    rec.className = 'badge rec';
+                    rec.innerHTML = '⭐ Recommended';
+                    sub.appendChild(rec);
+                }
+                const btn = sugCard.querySelector('.btn-download-format');
+                if (btn && !btn.disabled) {
+                    btn.classList.add('primary');
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('[DRAWER] Async format validation error:', e.message);
     }
 }
 

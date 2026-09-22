@@ -1069,11 +1069,92 @@ app.post("/api/media/details", requireMod, async (req: any, res) => {
             }
         }
 
+        // Pre-validate movie formats (verify upstream CDN health) so modal opens with accurate broken badges
+        if (!parsed.isSeries && parsed.movieFormats && parsed.movieFormats.length > 0) {
+            try {
+                await Promise.all(parsed.movieFormats.map(async (f) => {
+                    if (!f.linkUrl) return;
+                    try {
+                        const resolved = await resolveSpecificFormatLink(chosenUrl, f.qualityKey, f.linkUrl);
+                        if (!resolved.servers || resolved.servers.length === 0) {
+                            (f as any).isBroken = true;
+                            f.isRecommended = false;
+                        } else {
+                            (f as any).isBroken = false;
+                        }
+                    } catch (verErr: any) {
+                        console.warn(`[MEDIA-DETAILS] Format ${f.resolution || f.label} broken:`, verErr.message);
+                        (f as any).isBroken = true;
+                        f.isRecommended = false;
+                    }
+                }));
+
+                const hasWorkingRec = parsed.movieFormats.some(f => f.isRecommended && !(f as any).isBroken);
+                if (!hasWorkingRec) {
+                    const working = parsed.movieFormats.filter(f => !(f as any).isBroken);
+                    if (working.length > 0) {
+                        const pref1080 = working.find(f => /1080p/i.test(f.resolution || f.label || ""));
+                        if (pref1080) {
+                            pref1080.isRecommended = true;
+                        } else {
+                            working[0].isRecommended = true;
+                        }
+                    }
+                }
+            } catch (valErr: any) {
+                console.warn(`[MEDIA-DETAILS] Pre-validation failed:`, valErr.message);
+            }
+        }
+
         return res.json({ success: true, details: parsed });
     } catch (err: any) {
         console.error(`[MEDIA-DETAILS] Error:`, err.message);
         return res.status(500).json({ error: err.message });
     }
+});
+
+app.post("/api/media/validate-formats", requireMod, async (req: any, res) => {
+    const { targetUrl, formats } = req.body;
+    if (!targetUrl || !Array.isArray(formats) || formats.length === 0) {
+        return res.json({ success: true, statuses: {} });
+    }
+
+    const statuses: Record<string, { isBroken: boolean; aliveCount: number; error?: string }> = {};
+
+    await Promise.all(formats.map(async (f: any) => {
+        const key = f.qualityKey || f.linkUrl;
+        if (!key) return;
+        try {
+            const resolved = await resolveSpecificFormatLink(targetUrl, f.qualityKey, f.linkUrl);
+            statuses[key] = {
+                isBroken: !resolved.servers || resolved.servers.length === 0,
+                aliveCount: resolved.servers ? resolved.servers.length : 0
+            };
+        } catch (err: any) {
+            statuses[key] = {
+                isBroken: true,
+                aliveCount: 0,
+                error: err.message
+            };
+        }
+    }));
+
+    let suggestedWorkingKey: string | null = null;
+    const working = formats.filter((f: any) => {
+        const key = f.qualityKey || f.linkUrl;
+        return statuses[key] && !statuses[key].isBroken;
+    });
+
+    if (working.length > 0) {
+        const pref1080 = working.find((f: any) => /1080p/i.test(f.label || f.resolution || ""));
+        if (pref1080) {
+            suggestedWorkingKey = pref1080.qualityKey || pref1080.linkUrl;
+        } else {
+            suggestedWorkingKey = working[0].qualityKey || working[0].linkUrl;
+        }
+    }
+
+    return res.json({ success: true, statuses, suggestedWorkingKey });
 });
 
 // ─── SPECIFIC FORMAT / EPISODE DOWNLOAD ───
@@ -1114,47 +1195,15 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
         try {
             resolvedDetails = await resolveSpecificFormatLink(targetUrl || "", qualityKey, linkUrl);
         } catch (resolveErr: any) {
-            console.warn(`[DOWNLOAD-SPECIFIC] Target resolution warning: ${resolveErr.message}`);
-            // Fallback to full page getDownloadLinks if targeted lookup was unable to locate option
-            if (targetUrl) {
-                try {
-                    const details = await getDownloadLinks(targetUrl);
-                    const rawServers = (qualityKey && details.downloads[qualityKey]) || Object.values(details.downloads)[0];
-                    if (!rawServers || rawServers.length === 0) {
-                        return res.status(200).json({
-                            success: false,
-                            isBroken: true,
-                            failedResolution,
-                            suggestedResolution,
-                            qualityKey,
-                            error: `The ${failedResolution} download link is broken from the provider end. Please try downloading with the ${suggestedResolution} link.`
-                        });
-                    }
-                    resolvedDetails = {
-                        name: details.name,
-                        servers: sortServersByPriority(rawServers),
-                        fileSize: fileSize || ""
-                    };
-                } catch {
-                    return res.status(200).json({
-                        success: false,
-                        isBroken: true,
-                        failedResolution,
-                        suggestedResolution,
-                        qualityKey,
-                        error: `The ${failedResolution} download link is broken from the provider end. Please try downloading with the ${suggestedResolution} link.`
-                    });
-                }
-            } else {
-                return res.status(200).json({
-                    success: false,
-                    isBroken: true,
-                    failedResolution,
-                    suggestedResolution,
-                    qualityKey,
-                    error: `The ${failedResolution} download link is broken from the provider end. Please try downloading with the ${suggestedResolution} link.`
-                });
-            }
+            console.warn(`[DOWNLOAD-SPECIFIC] Target resolution failed: ${resolveErr.message}`);
+            return res.status(200).json({
+                success: false,
+                isBroken: true,
+                failedResolution,
+                suggestedResolution,
+                qualityKey,
+                error: `The ${failedResolution} download link is broken from the provider end. Please try downloading with the ${suggestedResolution} link.`
+            });
         }
 
         const servers = resolvedDetails.servers;
