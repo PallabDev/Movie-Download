@@ -1229,7 +1229,7 @@ class CloudflareScraper:
                         continue
                     if "pixeldrain.com" in dl_url:
                         try:
-                            chk = await client.get(dl_url, impersonate=impersonate, timeout=3.5)
+                            chk = await session.get(dl_url, timeout=3.5)
                             if chk.status_code in (404, 410):
                                 print(f"[SCRAPER] Upstream Pixeldrain file is dead ({chk.status_code}): {dl_url}")
                                 continue
