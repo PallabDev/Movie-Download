@@ -1418,9 +1418,9 @@ def api_optimize_queue():
                 rejected.append(f"{path.name} (already optimal)")
                 continue
 
-            # Remove previous failed jobs so they can be safely re-queued
-            conn.execute("DELETE FROM optimisation_events WHERE job_id IN (SELECT id FROM optimisation_jobs WHERE source_path=%s AND status='failed')", (str(path),))
-            conn.execute("DELETE FROM optimisation_jobs WHERE source_path=%s AND status='failed'", (str(path),))
+            # Remove previous completed/failed jobs so the path can be re-queued
+            conn.execute("DELETE FROM optimisation_events WHERE job_id IN (SELECT id FROM optimisation_jobs WHERE source_path=%s AND status IN ('failed', 'completed'))", (str(path),))
+            conn.execute("DELETE FROM optimisation_jobs WHERE source_path=%s AND status IN ('failed', 'completed')", (str(path),))
 
             existing = conn.execute("SELECT id FROM optimisation_jobs WHERE source_path=%s AND status != 'completed'",
                                     (str(path),)).fetchone()

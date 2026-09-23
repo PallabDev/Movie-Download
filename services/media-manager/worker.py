@@ -103,19 +103,17 @@ def process(job):
         # Old partial output is disposable and never the preserved original.
         temporary.unlink(missing_ok=True)
 
-        # Pure Dynamic Constant Rate Factor (CRF) 720p H.264 Encoding:
-        # - Pure CRF 22 + -tune film: Fully dynamic bit allocation frame-by-frame.
-        #   * Simple/dialogue scenes drop to ~500–900 kbps to save massive storage.
-        #   * Action/complex scenes dynamically receive bits only when human eye needs them.
-        # - No fixed maxrate cap: Encoder has full freedom to minimize size without quality loss.
-        # - Preset medium: Enhanced Trellis quantization & CABAC for 8–12% smaller size at identical visual quality.
-        # - 128k Stereo AAC: Clean dialogue and rich sound in minimal storage.
-        # - movflags +faststart: Instant streaming without buffering.
+        # Optimal 720p H.264 Encoding:
+        # - CRF 23 + -maxrate 1600k + -bufsize 3200k: Caps bitrate on grain-heavy sources
+        #   to ensure substantial storage reduction (~1.3 - 1.7 GB) while maintaining high clarity.
+        # - Preset medium: Balances compression ratio and CPU usage.
+        # - 128k Stereo AAC: Preserves dual-audio tracks in compact size.
+        # - movflags +faststart: Instant web playback.
         command = [
             "ffmpeg", "-nostdin", "-y", "-i", str(backup),
             "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
             "-vf", "scale=-2:720:flags=lanczos:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "22", "-tune", "film",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-maxrate", "1600k", "-bufsize", "3200k",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k", "-ac", "2",
             "-c:s", "copy",
