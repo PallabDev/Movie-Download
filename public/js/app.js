@@ -6023,7 +6023,7 @@ function renderOptimizerQueue(jobs) {
             <tr>
                 <td>
                     <div style="font-weight: 500; font-size: 12.5px; color: #fff; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(job.source_path)}">${escapeHtml(job.source_path.split('/').pop() || job.source_path)}</div>
-                    ${job.error ? `<div style="font-size: 11px; color: var(--accent-rose); margin-top: 2px;">${escapeHtml(job.error)}</div>` : ''}
+                    ${job.error ? `<div style="font-size: 11px; color: ${job.status === 'completed' ? 'var(--text-secondary)' : 'var(--accent-rose)'}; margin-top: 2px;">${escapeHtml(job.error)}</div>` : ''}
                 </td>
                 <td>
                     <div style="display: flex; align-items: center; gap: 6px;">
