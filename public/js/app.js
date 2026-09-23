@@ -5998,10 +5998,8 @@ function renderOptimizerQueue(jobs) {
         const origMb = Math.round((job.original_size || 0) / (1024 * 1024));
         const origStr = origMb > 1024 ? `${(origMb / 1024).toFixed(1)} GB` : `${origMb} MB`;
         const outMb = job.output_size ? Math.round(job.output_size / (1024 * 1024)) : null;
-        let outStr = outMb ? (outMb > 1024 ? `${(outMb / 1024).toFixed(1)} GB` : `${outMb} MB`) : '-';
-        if (job.status === 'completed' && job.output_size && job.original_size && job.output_size >= job.original_size) {
-            outStr = `${outStr} <span style="font-size: 10.5px; color: var(--text-muted); font-weight: normal;">(Preserved)</span>`;
-        }
+        const outStr = outMb ? (outMb > 1024 ? `${(outMb / 1024).toFixed(1)} GB` : `${outMb} MB`) : '-';
+        const isPreserved = job.status === 'completed' && job.output_size && job.original_size && job.output_size >= job.original_size;
 
         let statusColor = '#94a3b8';
         let displayStatus = job.status || 'queued';
@@ -6037,7 +6035,7 @@ function renderOptimizerQueue(jobs) {
                     </div>
                 </td>
                 <td class="tabular-nums" style="font-size: 12px; color: var(--text-secondary);">${escapeHtml(origStr)}</td>
-                <td class="tabular-nums" style="font-size: 12px; color: ${job.status === 'completed' ? '#34d399' : 'var(--text-muted)'};">${escapeHtml(outStr)}</td>
+                <td class="tabular-nums" style="font-size: 12px; color: ${job.status === 'completed' ? '#34d399' : 'var(--text-muted)'};">${escapeHtml(outStr)}${isPreserved ? ' <span style="font-size: 10.5px; color: var(--text-secondary); font-weight: normal;">(Preserved)</span>' : ''}</td>
                 <td>
                     <span class="chip quality" style="color: ${statusColor}; border-color: ${statusColor}40;">${escapeHtml(displayStatus)}</span>
                 </td>
