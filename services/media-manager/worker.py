@@ -188,7 +188,7 @@ def process(job):
             temporary.unlink(missing_ok=True)
             if backup.exists() and not source.exists():
                 os.replace(backup, source)
-            mark(job_id, "completed", "Original file was already smaller than 720p transcode. Original preserved.",
+            mark(job_id, "completed", None,
                  completed_at="__now__", progress=100, output_size=original_size, output_height=info["height"])
             # Update cache to mark as optimised
             try:

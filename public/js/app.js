@@ -5998,7 +5998,10 @@ function renderOptimizerQueue(jobs) {
         const origMb = Math.round((job.original_size || 0) / (1024 * 1024));
         const origStr = origMb > 1024 ? `${(origMb / 1024).toFixed(1)} GB` : `${origMb} MB`;
         const outMb = job.output_size ? Math.round(job.output_size / (1024 * 1024)) : null;
-        const outStr = outMb ? (outMb > 1024 ? `${(outMb / 1024).toFixed(1)} GB` : `${outMb} MB`) : '-';
+        let outStr = outMb ? (outMb > 1024 ? `${(outMb / 1024).toFixed(1)} GB` : `${outMb} MB`) : '-';
+        if (job.status === 'completed' && job.output_size && job.original_size && job.output_size >= job.original_size) {
+            outStr = `${outStr} <span style="font-size: 10.5px; color: var(--text-muted); font-weight: normal;">(Preserved)</span>`;
+        }
 
         let statusColor = '#94a3b8';
         let displayStatus = job.status || 'queued';
@@ -6023,7 +6026,7 @@ function renderOptimizerQueue(jobs) {
             <tr>
                 <td>
                     <div style="font-weight: 500; font-size: 12.5px; color: #fff; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(job.source_path)}">${escapeHtml(job.source_path.split('/').pop() || job.source_path)}</div>
-                    ${job.error ? `<div style="font-size: 11px; color: ${job.status === 'completed' ? 'var(--text-secondary)' : 'var(--accent-rose)'}; margin-top: 2px;">${escapeHtml(job.error)}</div>` : ''}
+                    ${job.error && job.status === 'failed' ? `<div style="font-size: 11px; color: var(--accent-rose); margin-top: 2px;">${escapeHtml(job.error)}</div>` : ''}
                 </td>
                 <td>
                     <div style="display: flex; align-items: center; gap: 6px;">
