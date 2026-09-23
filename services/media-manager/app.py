@@ -1172,7 +1172,7 @@ class LibraryScanner:
                             width = EXCLUDED.width,
                             height = EXCLUDED.height,
                             duration = EXCLUDED.duration,
-                            is_optimised = EXCLUDED.is_optimised,
+                            is_optimised = CASE WHEN media_file_cache.mtime = EXCLUDED.mtime THEN (EXCLUDED.is_optimised OR media_file_cache.is_optimised) ELSE EXCLUDED.is_optimised END,
                             scanned_at = now()
                     """, chunk_records)
 

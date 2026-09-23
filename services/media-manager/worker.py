@@ -1,6 +1,7 @@
 """Single durable FFmpeg queue worker. It never deletes the preserved backup before verification."""
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -128,6 +129,17 @@ def process(job):
         duration = float(job.get("duration_seconds") or 0)
         last_progress = -1
 
+        stderr_lines = []
+        def drain_stderr():
+            try:
+                for sline in iter(process_cmd.stderr.readline, ""):
+                    stderr_lines.append(sline)
+            except Exception:
+                pass
+
+        stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+        stderr_thread.start()
+
         # Read progress from stdout
         for line in process_cmd.stdout:
             if line.startswith("out_time_ms=") and duration:
@@ -155,7 +167,9 @@ def process(job):
                 except ValueError:
                     pass
 
-        _, stderr_output = process_cmd.communicate()
+        process_cmd.wait()
+        stderr_thread.join(timeout=3)
+        stderr_output = "".join(stderr_lines)
         if process_cmd.returncode != 0:
             err_snippet = (stderr_output or "").strip().split("\n")[-3:]
             raise RuntimeError(f"FFmpeg failed: {' '.join(err_snippet) or 'Unknown error'}")
@@ -180,28 +194,30 @@ def process(job):
             try:
                 st = source.stat()
                 src_info = media_info(source)
-                rel_path = str(source.relative_to(OPTIMISE_DIR))
-            except Exception:
-                st = None
-                rel_path = source.name
-            if st:
-                with db() as conn:
-                    conn.execute("""
-                        INSERT INTO media_file_cache
-                            (path, relative_path, size, mtime, is_video, codec, width, height, duration, is_optimised, scanned_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-                        ON CONFLICT (path) DO UPDATE SET
-                            relative_path = EXCLUDED.relative_path,
-                            size = EXCLUDED.size,
-                            mtime = EXCLUDED.mtime,
-                            is_video = EXCLUDED.is_video,
-                            codec = EXCLUDED.codec,
-                            width = EXCLUDED.width,
-                            height = EXCLUDED.height,
-                            duration = EXCLUDED.duration,
-                            is_optimised = true,
-                            scanned_at = now()
-                    """, (str(source), rel_path, st.st_size, st.st_mtime, src_info["video"], src_info["codec"], src_info["width"], src_info["height"], src_info["duration"]))
+                try:
+                    rel_path = str(source.relative_to(OPTIMISE_DIR))
+                except Exception:
+                    rel_path = source.name
+                if st:
+                    with db() as conn:
+                        conn.execute("""
+                            INSERT INTO media_file_cache
+                                (path, relative_path, size, mtime, is_video, codec, width, height, duration, is_optimised, scanned_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                            ON CONFLICT (path) DO UPDATE SET
+                                relative_path = EXCLUDED.relative_path,
+                                size = EXCLUDED.size,
+                                mtime = EXCLUDED.mtime,
+                                is_video = EXCLUDED.is_video,
+                                codec = EXCLUDED.codec,
+                                width = EXCLUDED.width,
+                                height = EXCLUDED.height,
+                                duration = EXCLUDED.duration,
+                                is_optimised = true,
+                                scanned_at = now()
+                        """, (str(source), rel_path, st.st_size, st.st_mtime, src_info["video"], src_info["codec"], src_info["width"], src_info["height"], src_info["duration"], True))
+            except Exception as e:
+                print(f"[Worker] Warning: could not update media cache: {e}")
             return
 
         mark(job_id, "output_verified", None, output_size=output_size, output_height=info["height"])
