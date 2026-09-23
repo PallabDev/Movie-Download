@@ -113,7 +113,7 @@ def process(job):
         command = [
             "ffmpeg", "-nostdin", "-y", "-i", str(backup),
             "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
-            "-vf", "scale=-2:720:flags=lanczos:force_original_aspect_ratio=decrease",
+            "-vf", "scale=-2:720:flags=lanczos:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
             "-c:v", "libx264", "-preset", "medium", "-crf", "22", "-tune", "film",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k", "-ac", "2",
@@ -212,6 +212,12 @@ def process(job):
     except Exception as exc:
         # Delete only a disposable partial file. The original is source or backup and is retained.
         temporary.unlink(missing_ok=True)
+        if backup.exists() and not source.exists():
+            try:
+                os.replace(backup, source)
+                print(f"[Worker] Restored original source from backup after failure: {source.name}")
+            except Exception as e:
+                print(f"[Worker] Error restoring backup after failure: {e}")
         mark(job_id, "failed", str(exc))
 
 

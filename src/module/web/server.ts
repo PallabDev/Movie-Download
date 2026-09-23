@@ -29,7 +29,7 @@ import { parseMediaWithAI, formatMediaJobTitle, formatMediaFileName } from "../a
 import { notifyFlickWebhook, autoSearchAndDownloadForRequest } from "../flick/webhook.js";
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "50mb", type: ["application/json", "text/plain", "application/*+json"] }));
 app.use(cookieParser());
 
 // Disable static caching for immediate updates
@@ -2433,7 +2433,14 @@ app.post("/api/jellyfin/refresh", requireAuth, async (_req, res) => {
 
 
 app.get("/api/optimize/list", requireMod, (_req, res) => proxyMediaManager(res, "/api/optimize/list"));
-app.post("/api/optimize/queue", requireMod, (req, res) => proxyMediaManager(res, "/api/optimize/queue", { method: "POST", body: JSON.stringify(req.body) }));
+app.post("/api/optimize/queue", requireMod, (req, res) => {
+    const bodyStr = typeof req.body === "string" ? req.body : JSON.stringify(req.body || {});
+    return proxyMediaManager(res, "/api/optimize/queue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: bodyStr
+    });
+});
 app.get("/api/optimize/status", requireMod, (_req, res) => proxyMediaManager(res, "/api/optimize/status"));
 app.post("/api/optimize/scan", requireMod, (req, res) => proxyMediaManager(res, "/api/optimize/scan", { method: "POST", body: JSON.stringify(req.body) }));
 app.post("/api/optimize/cancel/:id", requireMod, (req, res) => proxyMediaManager(res, `/api/optimize/cancel/${encodeURIComponent(req.params.id)}`, { method: "POST" }));

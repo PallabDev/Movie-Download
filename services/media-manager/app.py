@@ -1374,7 +1374,13 @@ def api_optimize_list():
 @app.post("/api/optimize/queue")
 def api_optimize_queue():
     """Queues selected video paths for 720p H.264 compression."""
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(force=True, silent=True) or {}
+    if not payload and request.data:
+        try:
+            payload = json.loads(request.data.decode("utf-8", errors="ignore"))
+        except Exception:
+            payload = {}
+
     selected = payload.get("paths") or payload.get("files") or []
     if isinstance(selected, str):
         selected = [selected]
@@ -1392,6 +1398,16 @@ def api_optimize_queue():
     with db() as conn:
         for p_str in selected:
             path = Path(p_str)
+            backup = path.with_name(f"{path.stem}.unoptimised{path.suffix}")
+
+            # Auto-recovery: if original was renamed to backup by a previous failed attempt, restore it!
+            if not path.is_file() and backup.is_file():
+                try:
+                    os.replace(backup, path)
+                    print(f"[Queue] Restored source from previous unoptimised backup: {path.name}")
+                except Exception as e:
+                    print(f"[Queue] Could not restore backup for {path.name}: {e}")
+
             if not path.is_file() or (LIBRARY_DIR not in path.resolve().parents and path.resolve() != LIBRARY_DIR):
                 rejected.append(path.name)
                 continue
@@ -1402,6 +1418,10 @@ def api_optimize_queue():
                 rejected.append(f"{path.name} (already optimal)")
                 continue
 
+            # Remove previous failed jobs so they can be safely re-queued
+            conn.execute("DELETE FROM optimisation_events WHERE job_id IN (SELECT id FROM optimisation_jobs WHERE source_path=%s AND status='failed')", (str(path),))
+            conn.execute("DELETE FROM optimisation_jobs WHERE source_path=%s AND status='failed'", (str(path),))
+
             existing = conn.execute("SELECT id FROM optimisation_jobs WHERE source_path=%s AND status != 'completed'",
                                     (str(path),)).fetchone()
             if existing:
@@ -1409,12 +1429,14 @@ def api_optimize_queue():
                 continue
 
             job_id = uuid.uuid4()
-            backup = path.with_name(f"{path.stem}.unoptimised{path.suffix}")
             temporary = path.with_name(f".{path.stem}.{job_id}.optimising{path.suffix}")
 
-            if backup.exists():
-                rejected.append(f"{path.name} (backup file exists)")
-                continue
+            # If a stale backup exists and source is present, remove the stale backup
+            if backup.exists() and path.exists():
+                try:
+                    backup.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
             conn.execute("""
                 INSERT INTO optimisation_jobs

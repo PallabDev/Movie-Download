@@ -100,7 +100,11 @@ window.fetch = async function(...args) {
 
 async function safeApiFetch(url, options = {}) {
     try {
-        const res = await fetch(url, { credentials: 'include', ...options });
+        const headers = { ...(options.headers || {}) };
+        if (options.body && typeof options.body === 'string' && !headers['Content-Type']) {
+            headers['Content-Type'] = 'application/json';
+        }
+        const res = await fetch(url, { credentials: 'include', ...options, headers });
         if (res.status === 401) {
             const isAuthRoute = typeof url === 'string' && (url.includes('/api/auth/login') || url.includes('/api/auth/register'));
             if (!isAuthRoute) {
@@ -6140,6 +6144,7 @@ async function queueOptimization(encodedPath) {
         showToast('Adding to FFmpeg transcode queue...', 'info');
         const res = await safeApiFetch('/api/optimize/queue', {
             method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ paths: [path], files: [path] })
         });
         if (isApiSuccessful(res)) {
@@ -6163,6 +6168,7 @@ async function queueAllUnoptimized() {
     showToast(`Queueing ${paths.length} files for background optimization...`, 'info');
     const res = await safeApiFetch('/api/optimize/queue', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paths: paths, files: paths })
     });
     if (isApiSuccessful(res)) {
