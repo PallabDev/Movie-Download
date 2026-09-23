@@ -5982,9 +5982,70 @@ async function loadMediaHistory() {
 let unoptimizedMediaItems = [];
 let optimizerPollTimer = null;
 
+function renderOptimizerQueue(jobs) {
+    const queueTbody = document.getElementById('optimizerQueueTableBody');
+    if (!queueTbody) return;
+    jobs = jobs || [];
+    if (jobs.length === 0) {
+        queueTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 20px; color: var(--text-muted);">No optimization jobs in queue.</td></tr>`;
+        return;
+    }
+    queueTbody.innerHTML = jobs.map(job => {
+        const origMb = Math.round((job.original_size || 0) / (1024 * 1024));
+        const origStr = origMb > 1024 ? `${(origMb / 1024).toFixed(1)} GB` : `${origMb} MB`;
+        const outMb = job.output_size ? Math.round(job.output_size / (1024 * 1024)) : null;
+        const outStr = outMb ? (outMb > 1024 ? `${(outMb / 1024).toFixed(1)} GB` : `${outMb} MB`) : '-';
+
+        let statusColor = '#94a3b8';
+        let displayStatus = job.status || 'queued';
+        if (job.status === 'completed') {
+            statusColor = '#34d399';
+            displayStatus = 'Completed';
+        } else if (['running', 'renamed', 'output_verified', 'verified'].includes(job.status)) {
+            statusColor = '#60a5fa';
+            displayStatus = 'Transcoding';
+        } else if (job.status === 'queued') {
+            statusColor = '#fbbf24';
+            displayStatus = 'Queued';
+        } else if (job.status === 'failed') {
+            statusColor = '#f87171';
+            displayStatus = 'Failed';
+        }
+
+        const progressPct = Math.round(job.progress || 0);
+        const isActive = ['running', 'queued', 'renamed', 'output_verified', 'verified'].includes(job.status);
+
+        return `
+            <tr>
+                <td>
+                    <div style="font-weight: 500; font-size: 12.5px; color: #fff; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(job.source_path)}">${escapeHtml(job.source_path.split('/').pop() || job.source_path)}</div>
+                    ${job.error ? `<div style="font-size: 11px; color: var(--accent-rose); margin-top: 2px;">${escapeHtml(job.error)}</div>` : ''}
+                </td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <div style="height: 5px; width: 60px; background: var(--bg-surface-elevated); border-radius: 2px; overflow: hidden;">
+                            <div style="height: 100%; width: ${progressPct}%; background: ${statusColor};"></div>
+                        </div>
+                        <span class="tabular-nums" style="font-size: 11.5px; color: var(--text-secondary);">${progressPct}%</span>
+                    </div>
+                </td>
+                <td class="tabular-nums" style="font-size: 12px; color: var(--text-secondary);">${escapeHtml(origStr)}</td>
+                <td class="tabular-nums" style="font-size: 12px; color: ${job.status === 'completed' ? '#34d399' : 'var(--text-muted)'};">${escapeHtml(outStr)}</td>
+                <td>
+                    <span class="chip quality" style="color: ${statusColor}; border-color: ${statusColor}40;">${escapeHtml(displayStatus)}</span>
+                </td>
+                <td style="text-align: right;">
+                    ${isActive ? 
+                        `<button class="btn-header" onclick="cancelOptimizerJob('${job.id}')" style="color: var(--accent-rose); padding: 3px 8px; font-size: 11px;">Cancel</button>` : 
+                        `<button class="btn-header" onclick="cancelOptimizerJob('${job.id}')" style="color: var(--text-muted); padding: 3px 8px; font-size: 11px;">Remove</button>`}
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
 async function loadOptimizerData() {
     const unoptTbody = document.getElementById('unoptimizedTableBody');
-    const queueTbody = document.getElementById('optimizerQueueTableBody');
 
     const data = await safeApiFetch('/api/optimize/list');
     if (!isApiSuccessful(data)) {
@@ -5992,20 +6053,26 @@ async function loadOptimizerData() {
         return;
     }
 
+    const totalFiles = data.stats?.total_files ?? data.total_videos ?? 0;
+    const optFiles = data.stats?.already_optimised ?? data.already_optimised_count ?? 0;
+    const needsOptFiles = data.stats?.not_optimised ?? data.not_optimised_count ?? 0;
+    const jobs = data.jobs || [];
+    const activeJobs = data.stats?.active_jobs ?? jobs.filter(j => ['queued', 'running', 'renamed', 'output_verified', 'verified'].includes(j.status)).length;
+
     // Update metrics
     const totalEl = document.getElementById('metricOptTotalScanned');
-    if (totalEl) totalEl.textContent = data.stats?.total_files || 0;
+    if (totalEl) totalEl.textContent = totalFiles;
     const optEl = document.getElementById('metricOptOptimizedCount');
-    if (optEl) optEl.textContent = data.stats?.already_optimised || 0;
+    if (optEl) optEl.textContent = optFiles;
     const needsOptEl = document.getElementById('metricOptNeedsOptCount');
-    if (needsOptEl) needsOptEl.textContent = data.stats?.not_optimised || 0;
+    if (needsOptEl) needsOptEl.textContent = needsOptFiles;
     const queueEl = document.getElementById('metricOptQueueCount');
-    if (queueEl) queueEl.textContent = data.stats?.active_jobs || 0;
+    if (queueEl) queueEl.textContent = activeJobs;
 
     const optBadge = document.getElementById('optimizerPendingBadge');
     if (optBadge) {
-        optBadge.textContent = data.stats?.not_optimised || 0;
-        optBadge.style.display = (data.stats?.not_optimised || 0) > 0 ? 'inline-block' : 'none';
+        optBadge.textContent = needsOptFiles;
+        optBadge.style.display = needsOptFiles > 0 ? 'inline-block' : 'none';
     }
 
     unoptimizedMediaItems = data.not_optimised || [];
@@ -6019,12 +6086,13 @@ async function loadOptimizerData() {
                 const height = item.height ? `${item.height}p` : 'Unknown';
                 const sizeMb = Math.round((item.size || 0) / (1024 * 1024));
                 const sizeStr = item.size_str || (sizeMb > 1024 ? `${(sizeMb / 1024).toFixed(1)} GB` : `${sizeMb} MB`);
-                const isAlreadyQueued = data.active_by_path && !!data.active_by_path[item.path];
+                const isAlreadyQueued = (data.active_by_path && !!data.active_by_path[item.path]) ||
+                                        (item.job_status && !['completed', 'failed'].includes(item.job_status));
 
                 return `
                     <tr>
                         <td>
-                            <div style="font-weight: 600; color: #fff; font-size: 13px;">${escapeHtml(item.relative || item.path.split('/').pop())}</div>
+                            <div style="font-weight: 600; color: #fff; font-size: 13px;">${escapeHtml(item.relative_path || item.relative || item.path.split('/').pop())}</div>
                         </td>
                         <td><span class="chip quality" style="background: rgba(239, 68, 68, 0.18); color: #f87171; border-color: rgba(239, 68, 68, 0.35);">${escapeHtml(height)}</span></td>
                         <td><span style="font-family: monospace; font-size: 12px; color: var(--text-secondary);">${escapeHtml(item.codec || 'video')}</span></td>
@@ -6048,52 +6116,10 @@ async function loadOptimizerData() {
         }
     }
 
-    // Render active queue & history
-    if (queueTbody) {
-        const jobs = data.jobs || [];
-        if (jobs.length === 0) {
-            queueTbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 20px; color: var(--text-muted);">No optimization jobs in queue.</td></tr>`;
-        } else {
-            queueTbody.innerHTML = jobs.map(job => {
-                const origMb = Math.round((job.original_size || 0) / (1024 * 1024));
-                const origStr = origMb > 1024 ? `${(origMb / 1024).toFixed(1)} GB` : `${origMb} MB`;
-                const outMb = job.output_size ? Math.round(job.output_size / (1024 * 1024)) : null;
-                const outStr = outMb ? (outMb > 1024 ? `${(outMb / 1024).toFixed(1)} GB` : `${outMb} MB`) : '-';
+    renderOptimizerQueue(jobs);
 
-                let statusColor = '#94a3b8';
-                if (job.status === 'completed') statusColor = '#34d399';
-                if (job.status === 'running') statusColor = '#60a5fa';
-                if (job.status === 'failed') statusColor = '#f87171';
-
-                const progressPct = Math.round(job.progress || 0);
-
-                return `
-                    <tr>
-                        <td>
-                            <div style="font-weight: 500; font-size: 12.5px; color: #fff; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(job.source_path.split('/').pop() || job.source_path)}</div>
-                        </td>
-                        <td>
-                            <div style="display: flex; align-items: center; gap: 6px;">
-                                <div style="height: 5px; width: 60px; background: var(--bg-surface-elevated); border-radius: 2px; overflow: hidden;">
-                                    <div style="height: 100%; width: ${progressPct}%; background: ${statusColor};"></div>
-                                </div>
-                                <span class="tabular-nums" style="font-size: 11.5px; color: var(--text-secondary);">${progressPct}%</span>
-                            </div>
-                        </td>
-                        <td class="tabular-nums" style="font-size: 12px; color: var(--text-secondary);">${escapeHtml(origStr)}</td>
-                        <td class="tabular-nums" style="font-size: 12px; color: ${job.status === 'completed' ? '#34d399' : 'var(--text-muted)'};">${escapeHtml(outStr)}</td>
-                        <td>
-                            <span class="chip quality" style="color: ${statusColor}; border-color: ${statusColor}40;">${escapeHtml(job.status)}</span>
-                        </td>
-                        <td style="text-align: right;">
-                            ${job.status === 'running' || job.status === 'queued' ? 
-                                `<button class="btn-header" onclick="cancelOptimizerJob('${job.id}')" style="color: var(--accent-rose); padding: 3px 8px; font-size: 11px;">Cancel</button>` : 
-                                `<button class="btn-header" onclick="cancelOptimizerJob('${job.id}')" style="color: var(--text-muted); padding: 3px 8px; font-size: 11px;">Remove</button>`}
-                        </td>
-                    </tr>
-                `;
-            }).join('');
-        }
+    if (activeJobs > 0 && !optimizerPollTimer) {
+        startOptimizerPolling();
     }
 }
 
@@ -6114,7 +6140,7 @@ async function queueOptimization(encodedPath) {
         showToast('Adding to FFmpeg transcode queue...', 'info');
         const res = await safeApiFetch('/api/optimize/queue', {
             method: 'POST',
-            body: JSON.stringify({ files: [path] })
+            body: JSON.stringify({ paths: [path], files: [path] })
         });
         if (isApiSuccessful(res)) {
             showToast(res.message || 'Queued for 720p H.264 optimization', 'success');
@@ -6137,7 +6163,7 @@ async function queueAllUnoptimized() {
     showToast(`Queueing ${paths.length} files for background optimization...`, 'info');
     const res = await safeApiFetch('/api/optimize/queue', {
         method: 'POST',
-        body: JSON.stringify({ files: paths })
+        body: JSON.stringify({ paths: paths, files: paths })
     });
     if (isApiSuccessful(res)) {
         showToast(res.message || `Queued ${paths.length} files`, 'success');
@@ -6177,9 +6203,10 @@ async function loadOptimizerStatus() {
     if (!data) return;
 
     const banner = document.getElementById('optimizerScannerBanner');
-    const status = data.scan_status || (data.status && typeof data.status === 'object' ? data.status : data);
+    const status = data.scan_status;
+    const isScanning = !!(status && status.is_scanning);
 
-    if (status && status.is_scanning) {
+    if (isScanning) {
         if (banner) banner.style.display = 'block';
         const txt = document.getElementById('scannerStatusText');
         if (txt) txt.textContent = status.current_file ? `Scanning: ${status.current_file}` : 'Discovering library files...';
@@ -6189,9 +6216,22 @@ async function loadOptimizerStatus() {
         if (bar) bar.style.width = `${status.percent || 0}%`;
     } else {
         if (banner) banner.style.display = 'none';
-        if (optimizerPollTimer && (!status || !status.is_scanning)) {
+    }
+
+    if (Array.isArray(data.jobs)) {
+        renderOptimizerQueue(data.jobs);
+        const activeCount = data.jobs.filter(j => ['queued', 'running', 'renamed', 'output_verified', 'verified'].includes(j.status)).length;
+        const queueEl = document.getElementById('metricOptQueueCount');
+        if (queueEl) queueEl.textContent = activeCount;
+
+        if (!isScanning && activeCount === 0 && optimizerPollTimer) {
+            clearInterval(optimizerPollTimer);
+            optimizerPollTimer = null;
             loadOptimizerData();
         }
+    } else if (!isScanning && optimizerPollTimer) {
+        clearInterval(optimizerPollTimer);
+        optimizerPollTimer = null;
     }
 }
 

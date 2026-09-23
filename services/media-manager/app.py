@@ -1209,7 +1209,7 @@ def cached_library_files() -> List[Dict[str, Any]]:
 
 def queue_snapshot() -> List[Dict[str, Any]]:
     with db() as conn:
-        rows = conn.execute("""SELECT id, source_path, status, progress, error, created_at
+        rows = conn.execute("""SELECT id, source_path, status, progress, error, original_size, output_size, duration_seconds, created_at
                                FROM optimisation_jobs ORDER BY created_at DESC LIMIT 100""").fetchall()
     for row in rows:
         row["id"] = str(row["id"])
@@ -1323,10 +1323,8 @@ def api_optimize_list():
     if not files and not scanner.is_scanning and LIBRARY_DIR.exists():
         scanner.scan_in_background(chunk_size=15)
 
-    with db() as conn:
-        jobs = conn.execute("SELECT * FROM optimisation_jobs ORDER BY created_at DESC LIMIT 100").fetchall()
-
-    active_paths = {row["source_path"]: row["status"] for row in jobs if row["status"] not in ("completed", "failed")}
+    jobs_list = queue_snapshot()
+    active_paths = {row["source_path"]: row["status"] for row in jobs_list if row["status"] not in ("completed", "failed")}
 
     not_opt = []
     already_opt = []
@@ -1352,6 +1350,8 @@ def api_optimize_list():
         elif item["video"]:
             already_opt.append(entry)
 
+    active_jobs_count = len([j for j in jobs_list if j.get("status") in ("queued", "running", "renamed", "output_verified", "verified")])
+
     return jsonify({
         "status": "ok",
         "total_videos": len(files),
@@ -1359,7 +1359,15 @@ def api_optimize_list():
         "already_optimised_count": len(already_opt),
         "not_optimised": not_opt,
         "already_optimised": already_opt,
-        "scan_status": scanner.get_status()
+        "scan_status": scanner.get_status(),
+        "jobs": jobs_list,
+        "active_by_path": active_paths,
+        "stats": {
+            "total_files": len(files),
+            "already_optimised": len(already_opt),
+            "not_optimised": len(not_opt),
+            "active_jobs": active_jobs_count
+        }
     })
 
 
@@ -1367,7 +1375,13 @@ def api_optimize_list():
 def api_optimize_queue():
     """Queues selected video paths for 720p H.264 compression."""
     payload = request.get_json(silent=True) or {}
-    selected = payload.get("paths") or []
+    selected = payload.get("paths") or payload.get("files") or []
+    if isinstance(selected, str):
+        selected = [selected]
+    if not selected:
+        single = payload.get("path") or payload.get("file")
+        if single:
+            selected = [single]
 
     if not selected:
         return jsonify({"status": "error", "message": "No video paths specified."}), 400
@@ -1378,7 +1392,7 @@ def api_optimize_queue():
     with db() as conn:
         for p_str in selected:
             path = Path(p_str)
-            if not path.is_file() or LIBRARY_DIR not in path.resolve().parents and path.resolve() != LIBRARY_DIR:
+            if not path.is_file() or (LIBRARY_DIR not in path.resolve().parents and path.resolve() != LIBRARY_DIR):
                 rejected.append(path.name)
                 continue
 
