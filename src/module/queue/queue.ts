@@ -311,7 +311,7 @@ export function createDownloadWorker() {
             // Determine target download file path using clean metadata
             let cleanTitle: string = data.cleanTitle || data.title || "Media";
             let cleanYear = data.year && /^\d{4}$/.test(String(data.year).trim()) ? String(data.year).trim() : undefined;
-            let cleanSeason = data.season || 1;
+            let cleanSeason = data.season !== undefined && data.season !== null ? data.season : 1;
             let cleanEpisode = data.episode || 1;
             let isBatch = Boolean(data.isBatchPack);
 
@@ -329,8 +329,8 @@ export function createDownloadWorker() {
                 cleanTitle = aiMeta.title;
                 if (aiMeta.year) cleanYear = aiMeta.year;
                 if (!isExplicitMovie) {
-                    if (aiMeta.season && !data.season) cleanSeason = aiMeta.season;
-                    if (aiMeta.episode && !data.episode) cleanEpisode = aiMeta.episode;
+                    if (aiMeta.season !== undefined && aiMeta.season !== null && data.season === undefined) cleanSeason = aiMeta.season;
+                    if (aiMeta.episode !== undefined && aiMeta.episode !== null && data.episode === undefined) cleanEpisode = aiMeta.episode;
                     if (aiMeta.isBatch) isBatch = true;
                     if (aiMeta.type === "series" || aiMeta.type === "movie") mediaType = aiMeta.type;
                 }

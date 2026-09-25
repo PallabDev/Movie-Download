@@ -234,7 +234,7 @@ def normalize_title(name: str) -> str:
     """Normalizes title for robust comparison."""
     # Remove Season/Episode and release group info
     s = re.sub(
-        r"\b(?:s\d{1,2}|season\s*\d{1,2}|all\s*episodes|web[-\s]*dl|hindi|complete|full\s*season(?:\s*batch)?|hdhub4u.*|dd5\.1|1080p|720p|480p|x264|hevc|x265)\b.*",
+        r"\b(?:s\d{1,2}|season\s*\d{1,2}|oad|ova|specials?|all\s*episodes|web[-\s]*dl|hindi|complete|full\s*season(?:\s*batch)?|hdhub4u.*|dd5\.1|1080p|720p|480p|x264|hevc|x265)\b.*",
         "", name, flags=re.I
     )
     # Remove Year like (2024), [2021]
@@ -247,7 +247,7 @@ def normalize_title(name: str) -> str:
 def clean_title_display(name: str) -> str:
     """Formats clean Title Cased title."""
     s = re.sub(
-        r"\b(?:s\d{1,2}|season\s*\d{1,2}|all\s*episodes|web[-\s]*dl|hindi|complete|full\s*season(?:\s*batch)?|hdhub4u.*)\b.*",
+        r"\b(?:s\d{1,2}|season\s*\d{1,2}|oad|ova|specials?|all\s*episodes|web[-\s]*dl|hindi|complete|full\s*season(?:\s*batch)?|hdhub4u.*)\b.*",
         "", name, flags=re.I
     )
     s = re.sub(r"[\(\[\{]\s*\d{4}\s*[\)\]\}]", "", s)
@@ -259,6 +259,8 @@ def clean_title_display(name: str) -> str:
 
 
 def extract_season_num(text: str) -> int:
+    if re.search(r"\b(?:oad|ova|specials?)\b", text, re.I):
+        return 0
     m = re.search(r"\b(?:season|s)\s*[-._]?\s*(\d{1,2})\b", text, re.I)
     return int(m.group(1)) if m else 1
 
@@ -575,11 +577,28 @@ class MoveManager:
         # Determine Show name and match against existing library
         raw_show = item.get("title") or source.parent.parent.name
         matched_show, _ = match_existing_show(raw_show)
-        season = item.get("season") or extract_season_num(str(source))
+        season = item["season"] if item.get("season") is not None else extract_season_num(str(source))
         season_folder = f"Season {season:02d}"
 
+        # Extract episode number from filename or item
+        ep_num = item.get("episode")
+        if ep_num is None:
+            m_ep = re.search(r"(?:e|ep|episode|oad|ova)[-._\s]*(\d{1,3})", source.name, re.I)
+            if m_ep:
+                ep_num = int(m_ep.group(1))
+            else:
+                m_num = re.search(r"\b(\d{1,2})\b", source.stem)
+                if m_num:
+                    ep_num = int(m_num.group(1))
+
+        ext = source.suffix.lower() or ".mkv"
+        if ep_num is not None:
+            formatted_name = f"{matched_show} - S{season:02d}E{ep_num:02d}{ext}"
+        else:
+            formatted_name = source.name
+
         target_dir = DEST_SHOWS_DIR / matched_show / season_folder
-        target_file = safe_destination_for(target_dir / source.name)
+        target_file = safe_destination_for(target_dir / formatted_name)
 
         move_id = uuid.uuid4()
         total_size = source.stat().st_size
@@ -697,7 +716,7 @@ class MoveManager:
 
         raw_show = item.get("title") or zip_source.parent.name
         matched_show, is_exist = match_existing_show(raw_show)
-        season = item.get("season") or extract_season_num(f"{zip_source.parent.name} {zip_source.name}")
+        season = item["season"] if item.get("season") is not None else extract_season_num(f"{zip_source.parent.name} {zip_source.name}")
         season_folder = f"Season {season:02d}"
 
         target_season_dir = DEST_SHOWS_DIR / matched_show / season_folder
@@ -742,7 +761,10 @@ class MoveManager:
                     if p.suffix.lower() in VIDEO_EXTS and not p.name.startswith("."):
                         extracted_videos.append(p)
 
-            extracted_videos.sort(key=lambda x: x.name.lower())
+            def natural_sort_key(s: Path):
+                return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s.name)]
+
+            extracted_videos.sort(key=natural_sort_key)
 
             if not extracted_videos:
                 raise ValueError("No valid video files (.mkv, .mp4, etc.) found inside extracted ZIP.")
@@ -756,9 +778,21 @@ class MoveManager:
                     self.current_job["stage_label"] = f"Found {total_episodes} episodes. Moving to '{matched_show}/{season_folder}'..."
             self.emit_progress()
 
-            # Process each episode with full SHA-256 verification
+            # Process each episode with full SHA-256 verification and sequential naming
             for idx, ep_file in enumerate(extracted_videos, 1):
-                target_file = safe_destination_for(target_season_dir / ep_file.name)
+                m_ep = re.search(r"(?:e|ep|episode|oad|ova)[-._\s]*(\d{1,3})", ep_file.name, re.I)
+                if m_ep:
+                    ep_num = int(m_ep.group(1))
+                else:
+                    m_num = re.search(r"\b(\d{1,2})\b", ep_file.stem)
+                    if m_num:
+                        ep_num = int(m_num.group(1))
+                    else:
+                        ep_num = idx
+
+                ext = ep_file.suffix.lower() or ".mkv"
+                formatted_name = f"{matched_show} - S{season:02d}E{ep_num:02d}{ext}"
+                target_file = safe_destination_for(target_season_dir / formatted_name)
                 ep_size = ep_file.stat().st_size
                 ep_id = uuid.uuid4()
 

@@ -131,10 +131,14 @@ export function getMoviePath(title: string, year?: string, originalFileName?: st
 export function cleanSeriesTitleAndSeason(raw: string, fallbackSeason?: number): { title: string; season: number } {
     let s = (raw || "Series").trim();
 
-    let season = fallbackSeason && fallbackSeason > 0 ? fallbackSeason : 1;
+    const isSpecial = /\b(?:oad|ova|specials?)\b/i.test(s);
+    let season = fallbackSeason !== undefined ? fallbackSeason : (isSpecial ? 0 : 1);
+
     const seasonMatch = s.match(/[\(\[\{]?\b(?:season|s)\s*[-._]?\s*(\d{1,2})\b[\)\]\}]?/i);
-    if (seasonMatch) {
+    if (!isSpecial && seasonMatch) {
         season = parseInt(seasonMatch[1], 10);
+    } else if (isSpecial) {
+        season = 0;
     }
 
     // Cut off everything from season marker onwards
@@ -150,7 +154,7 @@ export function cleanSeriesTitleAndSeason(raw: string, fallbackSeason?: number):
 
     // Clean release tags, resolutions, brackets, and extra junk (DO NOT truncate hyphens!)
     s = s
-        .replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|ds4k|web[-_.\s]*dl|webrip|bluray|brrip|dvdrip|x264|x265|hevc|10bit|dual audio|hindi|english|org|dd5\.1|esubs?|complete|full\s*season(?:\s*batch)?|all\s*episodes|primevideo|netflix|nf|hotstar|disney|zee5|sonyliv|series|hdhub4u.*)\b.*$/i, "")
+        .replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|ds4k|web[-_.\s]*dl|webrip|bluray|brrip|dvdrip|x264|x265|hevc|10bit|dual audio|hindi|english|org|dd5\.1|esubs?|complete|full\s*season(?:\s*batch)?|all\s*episodes|primevideo|netflix|nf|hotstar|disney|zee5|sonyliv|series|hdhub4u.*|oad|ova|specials?)\b.*$/i, "")
         .replace(/\[.*?\]/g, "")
         .replace(/\(.*?\)/g, "")
         .replace(/\s*[-–—|:]\s*$/g, "")

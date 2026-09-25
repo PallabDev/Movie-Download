@@ -18,11 +18,11 @@ export const MediaMetadataSchema = z.object({
     ),
     season: z.preprocess(
         (val) => (val === null || val === undefined || val === "" ? null : Number(val)),
-        z.number().int().positive().nullable().optional()
+        z.number().int().min(0).nullable().optional()
     ),
     episode: z.preprocess(
         (val) => (val === null || val === undefined || val === "" ? null : Number(val)),
-        z.number().int().positive().nullable().optional()
+        z.number().int().min(0).nullable().optional()
     ),
     isBatch: z.preprocess(
         (val) => Boolean(val),
@@ -72,9 +72,10 @@ async function safeHarnessMovieInfo(entry: string) {
  */
 export function extractHeuristicMetadata(rawTitle: string): MediaMetadata {
     const key = (rawTitle || "").trim();
-    const isSeries = /season|\bS\d{1,2}\b|\bEP\s*\d{1,3}\b|episode/i.test(key);
+    const isSpecial = /\b(?:oad|ova|specials?)\b/i.test(key);
+    const isSeries = isSpecial || /season|\bS\d{1,2}\b|\bEP\s*\d{1,3}\b|episode/i.test(key);
     const seasonMatch = key.match(/season\s*(\d{1,2})|\bS(\d{1,2})\b/i);
-    const epMatch = key.match(/(?:ep|episode)\s*(\d{1,3})|\bE(\d{1,3})\b/i);
+    const epMatch = key.match(/(?:ep|episode|e)\s*(\d{1,3})/i);
     const yearMatch = key.match(/\b(19\d{2}|20\d{2})\b/);
 
     let clean = key;
@@ -85,15 +86,25 @@ export function extractHeuristicMetadata(rawTitle: string): MediaMetadata {
         clean = key.split(/[\[\{\|\/]/)[0];
     }
     // Remove release format noise from clean title
-    clean = clean.replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|ds4k|bluray|brrip|web[-_.\s]*dl|webrip|x264|x265|hevc|10bit|dual audio|hindi|english|org|dd5\.1|esubs?|full movie|complete)\b.*$/i, "");
+    clean = clean.replace(/\b(?:4k|2160p|1080p|720p|480p|hdrip|ds4k|bluray|brrip|web[-_.\s]*dl|webrip|x264|x265|hevc|10bit|dual audio|hindi|english|org|dd5\.1|esubs?|full movie|complete|oad|ova|specials?)\b.*$/i, "");
     clean = clean.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+    clean = clean.replace(/[\(\[\{][^\)\]\}]*[\)\]\}]/g, " ").trim();
     clean = clean.replace(/[\(\[\{\|\-–—:]+$/, "").trim();
+
+    let detectedSeason: number | null = null;
+    if (isSpecial) {
+        detectedSeason = 0;
+    } else if (seasonMatch) {
+        detectedSeason = parseInt(seasonMatch[1] || seasonMatch[2], 10);
+    } else if (isSeries) {
+        detectedSeason = 1;
+    }
 
     return {
         title: clean || key || "Unknown Media",
         type: isSeries ? "series" : "movie",
         year: yearMatch ? yearMatch[1] : "",
-        season: seasonMatch ? parseInt(seasonMatch[1] || seasonMatch[2], 10) : (isSeries ? 1 : null),
+        season: detectedSeason,
         episode: epMatch ? parseInt(epMatch[1] || epMatch[2], 10) : null,
         isBatch: isSeries && !epMatch,
         tmdbId: null
@@ -132,7 +143,7 @@ export async function parseMediaWithAI(rawTitle: string): Promise<MediaMetadata>
     // Step 1: AI candidate extraction
     try {
         const client = getClient();
-        const prompt = `Extract media title query, release year, media type ("movie"|"series"), season (int|null), episode (int|null), isBatch (bool) from raw release: "${key}". Output ONLY raw JSON: {"title": string, "type": "movie"|"series", "year": string, "season": number|null, "episode": number|null, "isBatch": boolean}`;
+        const prompt = `Extract media title query, release year, media type ("movie"|"series"), season (int|null, use 0 for specials/OAD/OVA), episode (int|null), isBatch (bool) from raw release: "${key}". Output ONLY raw JSON: {"title": string, "type": "movie"|"series", "year": string, "season": number|null, "episode": number|null, "isBatch": boolean}`;
 
         const resp = await client.chat.completions.create({
             model: env.AI_MODEL,
@@ -232,8 +243,8 @@ Output ONLY JSON matching: {"tmdbId": number, "title": string, "year": string, "
     }
 
     // Preserve series season and episode if detected
-    if (extracted.season && !finalMeta.season) finalMeta.season = extracted.season;
-    if (extracted.episode && !finalMeta.episode) finalMeta.episode = extracted.episode;
+    if (extracted.season !== null && extracted.season !== undefined && (finalMeta.season === null || finalMeta.season === undefined)) finalMeta.season = extracted.season;
+    if (extracted.episode !== null && extracted.episode !== undefined && (finalMeta.episode === null || finalMeta.episode === undefined)) finalMeta.episode = extracted.episode;
     if (extracted.isBatch) finalMeta.isBatch = extracted.isBatch;
 
     // Log to Harness activity and movie information
@@ -256,15 +267,16 @@ export function formatMediaJobTitle(meta: MediaMetadata): string {
         return meta.year ? `${meta.title} (${meta.year})` : meta.title;
     }
 
-    const s = meta.season || 1;
+    const s = meta.season !== null && meta.season !== undefined ? meta.season : 1;
     const seasonStr = String(s).padStart(2, "0");
+    const seasonLabel = s === 0 ? "Specials" : `Season ${seasonStr}`;
 
     if (meta.episode !== null && meta.episode !== undefined) {
         const epStr = String(meta.episode).padStart(2, "0");
         return `${meta.title} - S${seasonStr}E${epStr}`;
     }
 
-    return `${meta.title} - Season ${seasonStr} (Full Season Batch)`;
+    return `${meta.title} - ${seasonLabel} (Full Batch)`;
 }
 
 /**
@@ -278,7 +290,7 @@ export function formatMediaFileName(meta: MediaMetadata): string {
         return meta.year ? `${cleanTitle} (${meta.year}).mkv` : `${cleanTitle}.mkv`;
     }
 
-    const s = meta.season || 1;
+    const s = meta.season !== null && meta.season !== undefined ? meta.season : 1;
     const seasonStr = String(s).padStart(2, "0");
 
     if (meta.episode !== null && meta.episode !== undefined) {

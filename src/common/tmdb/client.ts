@@ -280,17 +280,24 @@ export async function getCollectionDetails(collectionId: number): Promise<TMDBCo
 /**
  * Clean user search text to extract the core title
  */
-export function cleanMediaTitle(query: string): { title: string; year?: string; season?: number; episode?: number } {
+export function cleanMediaTitle(query: string): { title: string; year?: string; season?: number; episode?: number; isSpecial?: boolean } {
     let q = query.trim();
+
+    // Check for OAD / OVA / Special(s)
+    const isSpecial = /\b(?:oad|ova|specials?)\b/i.test(q);
 
     // Extract season/episode if mentioned
     let season: number | undefined;
     let episode: number | undefined;
 
-    const sMatch = q.match(/S(\d{1,2})/i) || q.match(/Season\s*(\d{1,2})/i);
-    if (sMatch) season = parseInt(sMatch[1], 10);
+    if (isSpecial) {
+        season = 0;
+    } else {
+        const sMatch = q.match(/S(\d{1,2})/i) || q.match(/Season\s*(\d{1,2})/i);
+        if (sMatch) season = parseInt(sMatch[1], 10);
+    }
 
-    const eMatch = q.match(/E(\d{1,2})/i) || q.match(/Episode\s*(\d{1,2})/i);
+    const eMatch = q.match(/(?:ep|episode|e)\s*(\d{1,3})/i);
     if (eMatch) episode = parseInt(eMatch[1], 10);
 
     // Extract year
@@ -302,7 +309,7 @@ export function cleanMediaTitle(query: string): { title: string; year?: string; 
 
     // Clean common search noise, phrases and typos
     q = q
-        .replace(/\b(?:search\s+and\s+download|download\s+and\s+search|find\s+and\s+download|search\s+for|look\s+for|please\s+download|can\s+you\s+download|how many|how much|part is released|parts|part|till date|from internet|search|saerch|serach|download|downlaod|dwonlaod|dowload|dwnld|donwload|downlod|dwload|downlaoding|downloading|find|watch|get|play|stream|all seasons|all episodes|full movie|web series|series|tv show|show|movie|film|option\s*\d+)\b/gi, " ")
+        .replace(/\b(?:search\s+and\s+download|download\s+and\s+search|find\s+and\s+download|search\s+for|look\s+for|please\s+download|can\s+you\s+download|how many|how much|part is released|parts|part|till date|from internet|search|saerch|serach|download|downlaod|dwonlaod|dowload|dwnld|donwload|downlod|dwload|downlaoding|downloading|find|watch|get|play|stream|all seasons|all episodes|full movie|web series|series|tv show|show|movie|film|option\s*\d+|oad|ova|specials?)\b/gi, " ")
         .replace(/(?:\[|\(|\b)S\d{1,2}[\s._-]*E\d{1,2}(?:\]|\)|\b)/gi, " ")
         .replace(/(?:\[|\(|\b)Season\s*\d{1,2}(?:\]|\)|\b)/gi, " ")
         .replace(/(?:\[|\(|\b)S\d{1,2}(?:\]|\)|\b)/gi, " ")
@@ -325,6 +332,7 @@ export function cleanMediaTitle(query: string): { title: string; year?: string; 
         year,
         season,
         episode,
+        isSpecial,
     };
 }
 

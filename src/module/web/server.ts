@@ -1036,9 +1036,10 @@ app.post("/api/media/details", requireMod, async (req: any, res) => {
         // Check if batches or episodes exist in Jellyfin library for this release
         if (parsed.isSeries && parsed.name) {
             try {
+                const isSpecial = /\b(?:oad|ova|specials?)\b/i.test(parsed.name);
                 const clean = cleanMediaTitle(parsed.name);
                 const seasonMatch = parsed.name.match(/season\s*(\d{1,2})|\bS(\d{1,2})\b/i);
-                const targetSeason = clean.season || (seasonMatch ? parseInt(seasonMatch[1] || seasonMatch[2], 10) : 1);
+                const targetSeason = isSpecial ? 0 : (clean.season !== undefined ? clean.season : (seasonMatch ? parseInt(seasonMatch[1] || seasonMatch[2], 10) : 1));
                 
                 const sCheck = await checkSeriesExists(clean.title || parsed.name, targetSeason);
                 if (sCheck.seriesExists && sCheck.item) {
@@ -1247,7 +1248,11 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
         const aiMeta = await parseMediaWithAI(rawNameToParse);
 
         // Fallback season / episode extraction if AI missed it
-        if (!aiMeta.season) {
+        const isSpecial = /\b(?:oad|ova|specials?)\b/i.test(rawNameToParse);
+        if (isSpecial) {
+            aiMeta.season = 0;
+            aiMeta.type = "series";
+        } else if (aiMeta.season === null || aiMeta.season === undefined) {
             const sMatch = rawNameToParse.match(/season\s*(\d{1,2})|\bS(\d{1,2})\b/i);
             if (sMatch) {
                 aiMeta.season = parseInt(sMatch[1] || sMatch[2], 10);
@@ -1311,8 +1316,8 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
 
         // Enforce Jellyfin library duplicate check before downloading
         try {
-            const targetSeason = mediaType === "series" ? (aiMeta.season || undefined) : undefined;
-            const targetEpisode = mediaType === "series" ? (aiMeta.episode ?? undefined) : undefined;
+            const targetSeason = mediaType === "series" ? (aiMeta.season !== undefined && aiMeta.season !== null ? aiMeta.season : undefined) : undefined;
+            const targetEpisode = mediaType === "series" ? (aiMeta.episode !== undefined && aiMeta.episode !== null ? aiMeta.episode : undefined) : undefined;
             const jfCheck = await checkMediaExists(
                 aiMeta.title,
                 mediaType,
@@ -1326,7 +1331,7 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
                     if (targetSeason !== undefined && targetEpisode !== undefined) {
                         duplicateDesc = `${aiMeta.title} - S${String(targetSeason).padStart(2, "0")}E${String(targetEpisode).padStart(2, "0")}`;
                     } else if (targetSeason !== undefined) {
-                        duplicateDesc = `${aiMeta.title} (Season ${targetSeason})`;
+                        duplicateDesc = targetSeason === 0 ? `${aiMeta.title} (Specials / OAD)` : `${aiMeta.title} (Season ${targetSeason})`;
                     }
                 }
                 console.log(`[DOWNLOAD-SPECIFIC] "${duplicateDesc}" is already in Jellyfin library (${jfCheck.type}). Blocking duplicate download.`);
@@ -1650,7 +1655,7 @@ app.post("/api/select", requireMod, async (req: any, res) => {
             year: chosenYear || null,
             type: mediaType,
             status: "queued",
-            season: mediaType === "series" ? (aiMeta.season || 1) : null,
+            season: mediaType === "series" ? (aiMeta.season !== undefined && aiMeta.season !== null ? aiMeta.season : 1) : null,
             episode: mediaType === "series" ? (aiMeta.episode ?? null) : null,
             fileSize,
             requestedBy: req.user.userId,
@@ -1665,7 +1670,7 @@ app.post("/api/select", requireMod, async (req: any, res) => {
             servers: quality.servers,
             fileSize,
             isBatchPack: mediaType === "series" && (quality.isBatchPack || Boolean(aiMeta.isBatch)),
-            season: mediaType === "series" ? (aiMeta.season || 1) : undefined,
+            season: mediaType === "series" ? (aiMeta.season !== undefined && aiMeta.season !== null ? aiMeta.season : 1) : undefined,
             fileName: jobFileName,
         });
 
@@ -1729,7 +1734,7 @@ app.post("/api/select-all-episodes", requireMod, async (req: any, res) => {
                 title: jobTitle,
                 type: "series",
                 status: "queued",
-                season: batchMeta.season || 1,
+                season: batchMeta.season !== undefined && batchMeta.season !== null ? batchMeta.season : 1,
                 year: batchMeta.year || null,
                 fileSize,
                 requestedBy: req.user.userId,
@@ -1743,7 +1748,7 @@ app.post("/api/select-all-episodes", requireMod, async (req: any, res) => {
                 servers: quality.servers,
                 fileSize,
                 isBatchPack: true,
-                season: batchMeta.season || 1,
+                season: batchMeta.season !== undefined && batchMeta.season !== null ? batchMeta.season : 1,
                 fileName: jobFileName,
             });
 
