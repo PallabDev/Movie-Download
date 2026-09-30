@@ -1,5 +1,6 @@
 import express from "express";
 import cookieParser from "cookie-parser";
+import { env } from "../../common/utils/env.js";
 import { db, schema } from "../../common/db/index.js";
 import { eq, or, and, desc, like, ilike, sql, count } from "drizzle-orm";
 import { register, login, extractUser, extractUserAsync, tryRefreshToken, getAllUsers, updateUser, deleteUser, type UserRole } from "../../common/auth/auth.js";
@@ -2333,7 +2334,23 @@ app.delete("/api/requested-media/:id", requireMod, async (req: any, res) => {
     try {
         const id = Number(req.params.id);
         if (!id || isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+        const [row] = await db.select().from(schema.requestedMedia).where(eq(schema.requestedMedia.id, id)).limit(1);
+        if (!row) return res.status(404).json({ error: "Request not found" });
+
         await db.update(schema.requestedMedia).set({ status: "deleted", updatedAt: new Date() }).where(eq(schema.requestedMedia.id, id));
+
+        // If linked to Flick, also mark deleted in Flick Neon DB
+        if (row.flickRequestId && env.FLICK_DATABASE_URL) {
+            try {
+                const { default: postgres } = await import("postgres");
+                const sql = postgres(env.FLICK_DATABASE_URL, { ssl: "require", max: 1, connect_timeout: 5 });
+                await sql`UPDATE media_request SET status = 'deleted', updated_at = NOW() WHERE id = ${row.flickRequestId}`;
+                await sql.end({ timeout: 1 }).catch(() => {});
+            } catch (err: any) {
+                console.warn("[DELETE REQUEST] Flick Neon DB update notice:", err.message);
+            }
+        }
+
         res.json({ success: true, message: "Entry removed" });
     } catch (err: any) {
         res.status(500).json({ error: err.message });

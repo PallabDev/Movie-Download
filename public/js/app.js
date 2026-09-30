@@ -2265,7 +2265,7 @@ async function loadRequestedMedia() {
                         ` : ''}
 
                         <!-- Delete button -->
-                        <button class="btn-header" style="color: var(--text-muted); padding: 5px 6px;" title="Remove from list" onclick="deleteRequestedMedia(${item.id})">
+                        <button class="btn-header" style="color: var(--text-muted); padding: 5px 6px;" title="Remove from list" onclick="deleteRequestedMedia(${item.id}, '${rawTitleEscaped}')">
                             <svg class="tabler-icon" viewBox="0 0 24 24" style="width:13px;height:13px;"><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/></svg>
                         </button>
                     </div>
@@ -2425,6 +2425,30 @@ async function executeRejectRequest(id) {
     }
 }
 
+async function deleteRequestedMedia(id, title) {
+    const displayTitle = title ? `"${title}"` : 'this request';
+    const confirmed = await showConfirmModal({
+        title: 'Remove Request',
+        message: `Are you sure you want to remove ${displayTitle} from the requested media list?`,
+        confirmText: 'Delete',
+        type: 'danger'
+    });
+    if (!confirmed) return;
+
+    try {
+        const res = await safeApiFetch(`/api/requested-media/${id}`, { method: 'DELETE' });
+        if (res && res.success) {
+            showToast('Request removed from list', 'info');
+            await loadRequestedMedia();
+        } else {
+            showToast(res?.error || 'Failed to remove request', 'error');
+        }
+    } catch (e) {
+        showToast(e?.message || 'Error removing request', 'error');
+    }
+}
+window.deleteRequestedMedia = deleteRequestedMedia;
+
 async function clearAllRequestedMedia() {
     const confirmed = await showConfirmModal({
         title: 'Clear Requested Media',
@@ -2434,16 +2458,18 @@ async function clearAllRequestedMedia() {
     });
     if (!confirmed) return;
     try {
-        const res = await fetch('/api/requested-media/clear', { method: 'DELETE', credentials: 'include' });
-        const data = await res.json();
-        if (data.success) {
+        const res = await safeApiFetch('/api/requested-media/clear', { method: 'DELETE' });
+        if (res && res.success) {
             showToast('Cleared all requested media', 'info');
-            loadRequestedMedia();
+            await loadRequestedMedia();
+        } else {
+            showToast(res?.error || 'Failed to clear requests', 'error');
         }
     } catch (e) {
-        showToast(e.message, 'error');
+        showToast(e?.message || 'Error clearing requests', 'error');
     }
 }
+window.clearAllRequestedMedia = clearAllRequestedMedia;
 
 async function syncRequestedMediaFromFlick() {
     const btn = document.getElementById('btnSyncFlick');

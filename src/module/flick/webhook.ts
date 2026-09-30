@@ -275,6 +275,7 @@ export async function syncFromFlickDatabase(): Promise<{
         let updatedCount = 0;
 
         for (const row of rows) {
+            if (row.status === "deleted") continue;
             const flickId = row.id;
             const title = (row.title || "").trim();
             if (!title) continue;
@@ -293,6 +294,10 @@ export async function syncFromFlickDatabase(): Promise<{
             const [existing] = await db.select().from(schema.requestedMedia)
                 .where(eq(schema.requestedMedia.flickRequestId, flickId))
                 .limit(1);
+
+            if (existing && existing.status === "deleted") {
+                continue;
+            }
 
             if (!existing) {
                 // Check if in Jellyfin with quick timeout
