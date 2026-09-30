@@ -26,7 +26,7 @@ import { cleanSeriesTitleAndSeason } from "../download/downloader.js";
 import { searchMedia, getDownloadLinks, getMediaFormatDetails, resolveSpecificFormatLink, selectBest720pQuality, sortServersByPriority, parseAvailableMediaFormats, cleanFileSize, testScraperSource } from "../download/api-client.js";
 import { handleChat } from "./chat.js";
 import { parseMediaWithAI, formatMediaJobTitle, formatMediaFileName } from "../ai/cleaner.js";
-import { notifyFlickWebhook, autoSearchAndDownloadForRequest } from "../flick/webhook.js";
+import { notifyFlickWebhook, autoSearchAndDownloadForRequest, syncFromFlickDatabase } from "../flick/webhook.js";
 
 const app = express();
 app.use(express.json({ limit: "50mb", type: ["application/json", "text/plain", "application/*+json"] }));
@@ -1985,25 +1985,70 @@ app.delete("/api/downloads/clear/all", requireMod, async (_req: any, res) => {
 
 // ─── REQUESTED MEDIA & FLICK INTEGRATION API ───
 
-// Public endpoint for Flick to submit media requests (User-Agent: Flick-Paywall/1.0)
-app.post("/api/request", async (req: any, res) => {
-    try {
-        const { id, title, posterUrl, type, year, tmdbId, overview, requestedBy, requestedAt } = req.body;
+let lastFlickAutoSyncTime = 0;
 
-        if (!id || !title || !type) {
+// Periodic background sync from Flick database every 5 minutes
+setInterval(() => {
+    syncFromFlickDatabase().catch(e => console.warn("[FLICK PERIODIC SYNC] Error:", e.message));
+}, 5 * 60 * 1000);
+
+// Public endpoints for Flick to submit media requests (User-Agent: Flick-Paywall/1.0)
+app.post(["/api/request", "/api/requests", "/api/flick/request", "/api/webhook/request"], async (req: any, res) => {
+    try {
+        const body = req.body || {};
+        const rawTitle = (body.title || body.name || body.mediaTitle || "").trim();
+        const rawType = (body.type || body.mediaType || body.media_type || body.itemType || "movie").toLowerCase();
+        const year = body.year ? String(body.year).trim() : null;
+        const posterUrl = body.posterUrl || body.poster || body.poster_path || body.screenshotUrl || body.screenshot_url || null;
+        const tmdbId = body.tmdbId || body.tmdb_id ? Number(body.tmdbId || body.tmdb_id) : null;
+        const overview = body.overview || body.description || body.plot || null;
+        const requestedAt = body.requestedAt || body.requested_at || new Date().toISOString();
+        const requestedBy = body.requestedBy || body.requested_by || body.user || body.userName || body.userEmail || "Flick Member";
+
+        if (!rawTitle) {
             return res.status(400).json({
                 success: false,
-                error: "Missing required fields: id, title, type"
+                error: "Missing required field: title"
             });
         }
 
-        const mediaType = (type === "series" || type === "tv" || type === "show") ? "series" : "movie";
-        const cleanReqTitle = title.trim();
-        console.log(`[DLM] Incoming Flick request: "${cleanReqTitle}" (${mediaType}, ${year || "N/A"}) [Flick ID: ${id}]`);
+        const id = String(body.id || body.requestId || body.request_id || body.flickId || body.flick_id || body._id || `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+        const mediaType = (rawType === "series" || rawType === "tv" || rawType === "show" || rawType === "tv_show" || rawType === "anime") ? "series" : "movie";
+        const cleanReqTitle = rawTitle;
 
-        // 1. Check if media already exists in Jellyfin library
-        const jfCheck = await checkMediaExists(cleanReqTitle, mediaType, year ? String(year) : undefined);
-        if (jfCheck.exists) {
+        let userEmail: string | null = null;
+        let userName: string | null = null;
+        let userId: string | null = null;
+        let requesterDisplay = "Flick Member";
+
+        if (typeof requestedBy === "object" && requestedBy !== null) {
+            userEmail = requestedBy.email || null;
+            userName = requestedBy.name || null;
+            userId = requestedBy.userId || requestedBy.user_id || requestedBy.id || null;
+            requesterDisplay = userName || userEmail || "Flick Member";
+        } else if (typeof requestedBy === "string" && requestedBy.trim()) {
+            requesterDisplay = requestedBy.trim();
+            if (requesterDisplay.includes("@")) {
+                userEmail = requesterDisplay;
+            } else {
+                userName = requesterDisplay;
+            }
+        }
+
+        console.log(`[DLM] Incoming Flick request: "${cleanReqTitle}" (${mediaType}, ${year || "N/A"}) [Flick ID: ${id}] by ${requesterDisplay}`);
+
+        // 1. Check if media already exists in Jellyfin library (with 3.5s timeout safeguard)
+        let jfCheck = { exists: false } as any;
+        try {
+            jfCheck = await Promise.race([
+                checkMediaExists(cleanReqTitle, mediaType, year ? String(year) : undefined),
+                new Promise<{ exists: boolean }>((resolve) => setTimeout(() => resolve({ exists: false }), 3500))
+            ]);
+        } catch (jfErr: any) {
+            console.warn("[DLM] Jellyfin quick check error or timeout:", jfErr?.message);
+        }
+
+        if (jfCheck && jfCheck.exists) {
             console.log(`[DLM] "${cleanReqTitle}" is ALREADY in Jellyfin (${jfCheck.type || "library"}). Notifying Flick immediately.`);
 
             const existingReq = await db.select().from(schema.requestedMedia)
@@ -2025,13 +2070,13 @@ app.post("/api/request", async (req: any, res) => {
                     year: year ? String(year) : null,
                     status: "inlibrary",
                     flickRequestId: id,
-                    tmdbId: tmdbId ? Number(tmdbId) : null,
+                    tmdbId: tmdbId && !isNaN(tmdbId) ? Number(tmdbId) : null,
                     posterUrl: posterUrl || null,
                     overview: overview || null,
-                    userEmail: requestedBy?.email || null,
-                    userName: requestedBy?.name || null,
-                    userId: requestedBy?.userId || null,
-                    requestedBy: requestedBy?.name || requestedBy?.email || "Flick Member",
+                    userEmail: userEmail || null,
+                    userName: userName || null,
+                    userId: userId || null,
+                    requestedBy: requesterDisplay,
                     note: "Already available on Jellyfin!",
                     metadata: { requestedBy, requestedAt, overview, posterUrl, tmdbId, jfCheck },
                 }).returning();
@@ -2077,13 +2122,13 @@ app.post("/api/request", async (req: any, res) => {
                 year: year ? String(year) : null,
                 status: "pending",
                 flickRequestId: id,
-                tmdbId: tmdbId ? Number(tmdbId) : null,
+                tmdbId: tmdbId && !isNaN(tmdbId) ? Number(tmdbId) : null,
                 posterUrl: posterUrl || null,
                 overview: overview || null,
-                userEmail: requestedBy?.email || null,
-                userName: requestedBy?.name || null,
-                userId: requestedBy?.userId || null,
-                requestedBy: requestedBy?.name || requestedBy?.email || "Flick Member",
+                userEmail: userEmail || null,
+                userName: userName || null,
+                userId: userId || null,
+                requestedBy: requesterDisplay,
                 note: "Pending Admin/Mod review",
                 metadata: { requestedBy, requestedAt, overview, posterUrl, tmdbId },
             }).returning();
@@ -2108,8 +2153,25 @@ app.post("/api/request", async (req: any, res) => {
     }
 });
 
+// Admin/Mod: Direct sync with Flick Neon PostgreSQL database
+app.post("/api/requested-media/sync-flick", requireMod, async (_req: any, res) => {
+    try {
+        const result = await syncFromFlickDatabase();
+        lastFlickAutoSyncTime = Date.now();
+        res.json(result);
+    } catch (err: any) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 app.get("/api/requested-media", requireMod, async (_req, res) => {
     try {
+        // Opportunistic background auto-sync if > 2 minutes have elapsed
+        if (Date.now() - lastFlickAutoSyncTime > 120000) {
+            lastFlickAutoSyncTime = Date.now();
+            syncFromFlickDatabase().catch(e => console.warn("[FLICK AUTO-SYNC] Background sync notice:", e.message));
+        }
+
         const items = await db.select().from(schema.requestedMedia)
             .where(sql`${schema.requestedMedia.status} != 'deleted'`)
             .orderBy(desc(schema.requestedMedia.createdAt))
@@ -3283,6 +3345,10 @@ function getDashboardPage(user: any, initialView: string = "chat"): string {
                                 <p style="font-size: 11.5px; color: var(--text-secondary); margin-top: 2px;">Tracked requests synced from Flick</p>
                             </div>
                             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                                <button class="btn-header" id="btnSyncFlick" onclick="syncRequestedMediaFromFlick()" style="display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 12px; color: var(--accent-blue); border-color: rgba(59,130,246,0.3);">
+                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -5v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 5v-5h-5"/></svg>
+                                    Sync from Flick
+                                </button>
                                 <button class="btn-header" onclick="loadRequestedMedia()" style="display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 12px;">
                                     <svg class="tabler-icon" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -5v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 5v-5h-5"/></svg>
                                     Refresh

@@ -2124,10 +2124,16 @@ async function loadRequestedMedia() {
                                 <div style="font-size: 12.5px; color: var(--text-secondary); max-width: 420px; margin: 6px auto 16px; line-height: 1.5;">
                                     When members submit media requests on <a href="https://flick.pallabdev.in" target="_blank" style="color: var(--accent-blue); text-decoration: underline;">Flick</a>, they will appear here automatically with one-click download & rejection options.
                                 </div>
-                                <button class="btn-header" onclick="loadRequestedMedia()" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 12.5px; margin: 0 auto;">
-                                    <svg class="tabler-icon" viewBox="0 0 24 24" style="width:15px;height:15px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -5v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 5v-5h-5"/></svg>
-                                    Check for Requests
-                                </button>
+                                <div style="display: flex; gap: 8px; justify-content: center; margin-top: 14px; flex-wrap: wrap;">
+                                    <button class="btn-header" onclick="syncRequestedMediaFromFlick()" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 12.5px; color: var(--accent-blue); border-color: rgba(59,130,246,0.35);">
+                                        <svg class="tabler-icon" viewBox="0 0 24 24" style="width:15px;height:15px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -5v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 5v-5h-5"/></svg>
+                                        Sync from Flick
+                                    </button>
+                                    <button class="btn-header" onclick="loadRequestedMedia()" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; font-size: 12.5px;">
+                                        <svg class="tabler-icon" viewBox="0 0 24 24" style="width:15px;height:15px;"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -5v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 5v-5h-5"/></svg>
+                                        Check for Requests
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </td>
@@ -2438,6 +2444,36 @@ async function clearAllRequestedMedia() {
         showToast(e.message, 'error');
     }
 }
+
+async function syncRequestedMediaFromFlick() {
+    const btn = document.getElementById('btnSyncFlick');
+    const origHtml = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<svg class="tabler-icon spin" viewBox="0 0 24 24" style="width:14px;height:14px;"><path d="M12 3a9 9 0 1 0 9 9"/></svg> Syncing...`;
+    }
+
+    try {
+        const res = await safeApiFetch('/api/requested-media/sync-flick', { method: 'POST' });
+        if (res && res.success) {
+            const countMsg = res.syncedCount > 0
+                ? `Imported ${res.syncedCount} new request${res.syncedCount === 1 ? '' : 's'} from Flick!`
+                : `All requests are up to date with Flick (${res.totalFlickRequests || 0} total).`;
+            showToast(countMsg, 'success');
+            await loadRequestedMedia();
+        } else {
+            showToast(res?.error || 'Failed to sync with Flick', 'error');
+        }
+    } catch (e) {
+        showToast(e?.message || 'Error syncing with Flick', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+        }
+    }
+}
+window.syncRequestedMediaFromFlick = syncRequestedMediaFromFlick;
 
 // ─── NEW MEDIA REQUEST MODAL ───
 

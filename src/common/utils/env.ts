@@ -37,6 +37,7 @@ const envSchema = z.object({
     TMDB_API_KEY: z.string().optional().default(""),
     TMDB_API_READ_ACCESS_TOKEN: z.string().optional().default(""),
     FLICK_WEBHOOK_URL: z.string().default("https://flick.pallabdev.in/api/webhook/request"),
+    FLICK_DATABASE_URL: z.string().optional().default("postgresql://neondb_owner:npg_uRoiel9XC2TK@ep-shy-rice-azft3589-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"),
 });
 
 export const env = envSchema.parse(process.env);
