@@ -73,9 +73,10 @@ async function safeHarnessMovieInfo(entry: string) {
 export function extractHeuristicMetadata(rawTitle: string): MediaMetadata {
     const key = (rawTitle || "").trim();
     const isSpecial = /\b(?:oad|ova|specials?)\b/i.test(key);
-    const isSeries = isSpecial || /season|\bS\d{1,2}\b|\bEP\s*\d{1,3}\b|episode/i.test(key);
-    const seasonMatch = key.match(/season\s*(\d{1,2})|\bS(\d{1,2})\b/i);
-    const epMatch = key.match(/(?:ep|episode|e)\s*(\d{1,3})/i);
+    const seasonMatch = key.match(/\bseason\s*(\d{1,2})\b|\bS(\d{1,2})\b/i);
+    const epMatch = key.match(/(?:[sS]\d{1,2}[-._\s]*)?[eE](\d{1,3})\b|\b(?:ep|episode|oad|ova)[-._\s]*(\d{1,3})\b/i);
+    const isExplicitSeriesKeyword = /\b(?:tv series|web series|full series|complete series|batch pack|all episodes)\b/i.test(key);
+    const isSeries = isSpecial || Boolean(seasonMatch) || Boolean(epMatch) || isExplicitSeriesKeyword;
     const yearMatch = key.match(/\b(19\d{2}|20\d{2})\b/);
 
     let clean = key;
@@ -92,12 +93,18 @@ export function extractHeuristicMetadata(rawTitle: string): MediaMetadata {
     clean = clean.replace(/[\(\[\{\|\-–—:]+$/, "").trim();
 
     let detectedSeason: number | null = null;
-    if (isSpecial) {
-        detectedSeason = 0;
-    } else if (seasonMatch) {
-        detectedSeason = parseInt(seasonMatch[1] || seasonMatch[2], 10);
-    } else if (isSeries) {
-        detectedSeason = 1;
+    let detectedEpisode: number | null = null;
+    if (isSeries) {
+        if (isSpecial) {
+            detectedSeason = 0;
+        } else if (seasonMatch) {
+            detectedSeason = parseInt(seasonMatch[1] || seasonMatch[2], 10);
+        } else {
+            detectedSeason = 1;
+        }
+        if (epMatch) {
+            detectedEpisode = parseInt(epMatch[1] || epMatch[2], 10);
+        }
     }
 
     return {
@@ -105,8 +112,8 @@ export function extractHeuristicMetadata(rawTitle: string): MediaMetadata {
         type: isSeries ? "series" : "movie",
         year: yearMatch ? yearMatch[1] : "",
         season: detectedSeason,
-        episode: epMatch ? parseInt(epMatch[1] || epMatch[2], 10) : null,
-        isBatch: isSeries && !epMatch,
+        episode: detectedEpisode,
+        isBatch: isSeries && !detectedEpisode,
         tmdbId: null
     };
 }
@@ -242,10 +249,16 @@ Output ONLY JSON matching: {"tmdbId": number, "title": string, "year": string, "
         console.warn(`[AI-HARNESS] TMDB search error: ${tmdbErr?.message}. Retaining extracted metadata.`);
     }
 
-    // Preserve series season and episode if detected
-    if (extracted.season !== null && extracted.season !== undefined && (finalMeta.season === null || finalMeta.season === undefined)) finalMeta.season = extracted.season;
-    if (extracted.episode !== null && extracted.episode !== undefined && (finalMeta.episode === null || finalMeta.episode === undefined)) finalMeta.episode = extracted.episode;
-    if (extracted.isBatch) finalMeta.isBatch = extracted.isBatch;
+    // Preserve series season and episode ONLY if final metadata is a series
+    if (finalMeta.type === "movie") {
+        finalMeta.season = null;
+        finalMeta.episode = null;
+        finalMeta.isBatch = false;
+    } else {
+        if (extracted.season !== null && extracted.season !== undefined && (finalMeta.season === null || finalMeta.season === undefined)) finalMeta.season = extracted.season;
+        if (extracted.episode !== null && extracted.episode !== undefined && (finalMeta.episode === null || finalMeta.episode === undefined)) finalMeta.episode = extracted.episode;
+        if (extracted.isBatch) finalMeta.isBatch = extracted.isBatch;
+    }
 
     // Log to Harness activity and movie information
     safeHarnessLog(`[AI-HARNESS] Cleaned "${key.slice(0, 50)}" -> "${finalMeta.title} (${finalMeta.year || "N/A"})" [${finalMeta.type}]`).catch(() => {});

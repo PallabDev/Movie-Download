@@ -583,9 +583,9 @@ class MoveManager:
         # Extract episode number from filename or item
         ep_num = item.get("episode")
         if ep_num is None:
-            m_ep = re.search(r"(?:e|ep|episode|oad|ova)[-._\s]*(\d{1,3})", source.name, re.I)
+            m_ep = re.search(r"(?:[sS]\d{1,2}[-._\s]*)?[eE](\d{1,3})\b|\b(?:ep|episode|oad|ova)[-._\s]*(\d{1,3})\b", source.name, re.I)
             if m_ep:
-                ep_num = int(m_ep.group(1))
+                ep_num = int(m_ep.group(1) or m_ep.group(2))
             else:
                 m_num = re.search(r"\b(\d{1,2})\b", source.stem)
                 if m_num:
@@ -780,9 +780,9 @@ class MoveManager:
 
             # Process each episode with full SHA-256 verification and sequential naming
             for idx, ep_file in enumerate(extracted_videos, 1):
-                m_ep = re.search(r"(?:e|ep|episode|oad|ova)[-._\s]*(\d{1,3})", ep_file.name, re.I)
+                m_ep = re.search(r"(?:[sS]\d{1,2}[-._\s]*)?[eE](\d{1,3})\b|\b(?:ep|episode|oad|ova)[-._\s]*(\d{1,3})\b", ep_file.name, re.I)
                 if m_ep:
-                    ep_num = int(m_ep.group(1))
+                    ep_num = int(m_ep.group(1) or m_ep.group(2))
                 else:
                     m_num = re.search(r"\b(\d{1,2})\b", ep_file.stem)
                     if m_num:
@@ -913,7 +913,7 @@ def is_show_file_or_folder(path: Path, existing_shows: List[str]) -> Tuple[bool,
         return True, matched_show, season_num, None
 
     has_season_or_ep = bool(re.search(
-        r"\b(?:s\d{1,2}|season\s*\d{1,2}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b",
+        r"(?:[sS]\d{1,2}[-._\s]*[eE]\d{1,3}\b|\bseason\s*\d{1,2}\b|\bep(?:isode)?\s*\d{1,3}\b|\bfull\s*batch\b|\bfull\s*season\b|\bbatch\s*pack\b|\ball\s*episodes\b|\boad\b|\bova\b|\bspecials?\b)",
         name_str, re.I
     ))
 
@@ -934,9 +934,9 @@ def is_show_file_or_folder(path: Path, existing_shows: List[str]) -> Tuple[bool,
     season_num = extract_season_num(name_str)
 
     ep_num = None
-    m_ep = re.search(r"(?:e|ep|episode)[-._\s]*(\d{1,3})", path.name, re.I)
+    m_ep = re.search(r"(?:[sS]\d{1,2}[-._\s]*)?[eE](\d{1,3})\b|\b(?:ep|episode|oad|ova)[-._\s]*(\d{1,3})\b", path.name, re.I)
     if m_ep:
-        ep_num = int(m_ep.group(1))
+        ep_num = int(m_ep.group(1) or m_ep.group(2))
 
     return True, matched_show, season_num, ep_num
 

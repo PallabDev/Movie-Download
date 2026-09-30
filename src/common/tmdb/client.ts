@@ -293,12 +293,12 @@ export function cleanMediaTitle(query: string): { title: string; year?: string; 
     if (isSpecial) {
         season = 0;
     } else {
-        const sMatch = q.match(/S(\d{1,2})/i) || q.match(/Season\s*(\d{1,2})/i);
+        const sMatch = q.match(/\bS(\d{1,2})\b/i) || q.match(/\bSeason\s*(\d{1,2})\b/i);
         if (sMatch) season = parseInt(sMatch[1], 10);
     }
 
-    const eMatch = q.match(/(?:ep|episode|e)\s*(\d{1,3})/i);
-    if (eMatch) episode = parseInt(eMatch[1], 10);
+    const eMatch = q.match(/(?:[sS]\d{1,2}[-._\s]*)?[eE](\d{1,3})\b|\b(?:ep|episode|oad|ova)[-._\s]*(\d{1,3})\b/i);
+    if (eMatch) episode = parseInt(eMatch[1] || eMatch[2], 10);
 
     // Extract year
     let year: string | undefined;

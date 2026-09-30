@@ -1259,32 +1259,35 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
                 aiMeta.season = parseInt(sMatch[1] || sMatch[2], 10);
             }
         }
-        if (episodeNum !== undefined) {
+        const incomingType = type || reqMediaType;
+        if (episodeNum !== undefined && incomingType !== "movie") {
             aiMeta.episode = episodeNum;
-        } else if (aiMeta.episode === null || aiMeta.episode === undefined) {
-            const eMatch = rawNameToParse.match(/(?:ep|episode)\s*(\d{1,3})|\bE(\d{1,3})\b/i);
+        } else if ((aiMeta.episode === null || aiMeta.episode === undefined) && incomingType !== "movie") {
+            const eMatch = rawNameToParse.match(/(?:[sS]\d{1,2}[-._\s]*)?[eE](\d{1,3})\b|\b(?:ep|episode)[-._\s]*(\d{1,3})\b/i);
             if (eMatch) {
                 aiMeta.episode = parseInt(eMatch[1] || eMatch[2], 10);
             }
         }
 
-        const incomingType = type || reqMediaType;
+        const isArchivePack = Boolean(isBatch || (qualityKey && qualityKey.startsWith("batch_")));
         const hasSeriesSignal = Boolean(
             incomingType === "series" || 
             incomingType === "tv" || 
             incomingType === "show" || 
-            aiMeta.type === "series" ||
-            (aiMeta.season !== null && aiMeta.season !== undefined) ||
-            (aiMeta.episode !== null && aiMeta.episode !== undefined) ||
-            aiMeta.isBatch ||
-            isBatch ||
-            episodeNum !== undefined ||
+            (incomingType !== "movie" && aiMeta.type === "series") ||
+            (incomingType !== "movie" && aiMeta.season !== null && aiMeta.season !== undefined) ||
+            (incomingType !== "movie" && aiMeta.episode !== null && aiMeta.episode !== undefined) ||
+            (incomingType !== "movie" && aiMeta.isBatch) ||
+            isArchivePack ||
+            (incomingType !== "movie" && episodeNum !== undefined) ||
             (qualityKey && (qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"))) ||
-            /\b(?:season\s*\d{1,2}|s\d{1,2}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(rawNameToParse)
+            (incomingType !== "movie" && /\b(?:season\s*\d{1,2}|s\d{1,2}[-._\s]*e\d{1,3}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(rawNameToParse))
         );
 
-        if (incomingType === "movie" && !hasSeriesSignal) {
+        if (incomingType === "movie" && !isArchivePack) {
             aiMeta.type = "movie";
+            aiMeta.season = null;
+            aiMeta.episode = null;
             aiMeta.isBatch = false;
             // Ensure movie has canonical TMDB title and year
             try {

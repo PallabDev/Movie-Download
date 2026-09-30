@@ -311,20 +311,20 @@ export function createDownloadWorker() {
             // 1. Strict series detection: preserve series classification and check archives/keywords
             const hasArchiveExt = Boolean(data.fileName && /\.(?:zip|rar|tar|gz)$/i.test(data.fileName)) ||
                                   Boolean(data.downloadUrl && /\.(?:zip|rar|tar|gz)(?:\?|$)/i.test(data.downloadUrl));
-            const hasSeriesKeywords = /\b(?:season\s*\d{1,2}|s\d{1,2}(?:\s*e\d{1,2})?|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(
+            const hasSeriesKeywords = /\b(?:season\s*\d{1,2}|s\d{1,2}[-._\s]*e\d{1,3}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(
                 `${data.title || ""} ${data.cleanTitle || ""} ${data.fileName || ""}`
             );
-            const isExplicitSeries = data.type === "series" ||
+            const isExplicitSeries = (data.type === "series" ||
                                      (data.type as string) === "tv" ||
                                      (data.type as string) === "show" ||
                                      Boolean(data.isBatchPack) ||
-                                     data.season !== undefined ||
-                                     data.episode !== undefined ||
+                                     (data.season !== undefined && data.season !== null && data.type !== "movie") ||
+                                     (data.episode !== undefined && data.episode !== null && data.type !== "movie") ||
                                      hasArchiveExt ||
-                                     hasSeriesKeywords;
+                                     (hasSeriesKeywords && data.type !== "movie"));
 
             let isBatch = Boolean(data.isBatchPack || hasArchiveExt);
-            let mediaType: "movie" | "series" = isExplicitSeries ? "series" : "movie";
+            let mediaType: "movie" | "series" = isExplicitSeries ? "series" : (data.type === "series" ? "series" : "movie");
 
             // Determine target download file path using clean metadata
             let cleanTitle: string = data.cleanTitle || data.title || "Media";
@@ -339,15 +339,20 @@ export function createDownloadWorker() {
                 cleanTitle = aiMeta.title;
                 if (aiMeta.year) cleanYear = aiMeta.year;
 
-                if (isExplicitSeries) {
+                if (data.type === "movie" && !hasArchiveExt) {
+                    // Explicit movie requests must ALWAYS remain in movie folder
+                    mediaType = "movie";
+                    cleanSeason = 1;
+                    cleanEpisode = undefined;
+                    isBatch = false;
+                } else if (isExplicitSeries || mediaType === "series") {
                     // NEVER allow a series to be downgraded to a movie
                     mediaType = "series";
                     if (aiMeta.season !== undefined && aiMeta.season !== null && data.season === undefined) cleanSeason = aiMeta.season;
                     if (aiMeta.episode !== undefined && aiMeta.episode !== null && data.episode === undefined) cleanEpisode = aiMeta.episode;
                     if (aiMeta.isBatch) isBatch = true;
                 } else {
-                    // Check if AI cleaner detected it as a series/show
-                    if (aiMeta.type === "series" || (aiMeta.season !== null && aiMeta.season !== undefined) || (aiMeta.episode !== null && aiMeta.episode !== undefined) || aiMeta.isBatch) {
+                    if (aiMeta.type === "series" || aiMeta.isBatch) {
                         mediaType = "series";
                         if (aiMeta.season !== undefined && aiMeta.season !== null) cleanSeason = aiMeta.season;
                         if (aiMeta.episode !== undefined && aiMeta.episode !== null) cleanEpisode = aiMeta.episode;

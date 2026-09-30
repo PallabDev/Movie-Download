@@ -346,12 +346,12 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
 
             const hasSeriesSignal = isSeriesItem || 
                 aiMeta.type === "series" || 
-                (aiMeta.season !== null && aiMeta.season !== undefined) || 
-                (aiMeta.episode !== null && aiMeta.episode !== undefined) || 
+                (aiMeta.season !== null && aiMeta.season !== undefined && aiMeta.type !== "movie") || 
+                (aiMeta.episode !== null && aiMeta.episode !== undefined && aiMeta.type !== "movie") || 
                 aiMeta.isBatch ||
-                /\b(?:season\s*\d{1,2}|s\d{1,2}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(rawNameToParse);
+                /\b(?:season\s*\d{1,2}|s\d{1,2}[-._\s]*e\d{1,3}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(rawNameToParse);
 
-            if (hasSeriesSignal) {
+            if (hasSeriesSignal && !args.isMovie) {
                 aiMeta.type = "series";
                 if (episodeNum !== undefined) {
                     aiMeta.episode = episodeNum;
@@ -363,6 +363,9 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                 }
             } else {
                 aiMeta.type = "movie";
+                aiMeta.season = null;
+                aiMeta.episode = null;
+                aiMeta.isBatch = false;
                 try {
                     const tmdb = await lookupMedia(aiMeta.title, aiMeta.year);
                     if (tmdb && tmdb.found && tmdb.title) {
@@ -573,15 +576,18 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
         const aiMeta = await parseMediaWithAI(rawNameToParse);
         const hasSeriesDetection = isSeries || 
             aiMeta.type === "series" || 
-            (aiMeta.season !== null && aiMeta.season !== undefined) || 
+            (aiMeta.season !== null && aiMeta.season !== undefined && aiMeta.type !== "movie") || 
             aiMeta.isBatch ||
-            /\b(?:season\s*\d{1,2}|s\d{1,2}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(rawNameToParse);
+            /\b(?:season\s*\d{1,2}|s\d{1,2}[-._\s]*e\d{1,3}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(rawNameToParse);
 
-        if (hasSeriesDetection) {
+        if (hasSeriesDetection && !args.isMovie) {
             aiMeta.type = "series";
             aiMeta.isBatch = true;
         } else {
             aiMeta.type = "movie";
+            aiMeta.season = null;
+            aiMeta.episode = null;
+            aiMeta.isBatch = false;
             try {
                 const tmdb = await lookupMedia(aiMeta.title, aiMeta.year || targetYear);
                 if (tmdb && tmdb.found && tmdb.title) {
