@@ -311,6 +311,7 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
         let servers: any[] = [];
         let actualSize = fileSize || "";
         let isSeriesItem = Boolean(isBatch || episodeNum !== undefined || (qualityKey && (qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"))));
+        let mediaType: "movie" | "series" = isSeriesItem ? "series" : "movie";
 
         // Fast-path: targeted format resolution if qualityKey is known
         if (qualityKey) {
@@ -340,14 +341,22 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
         if (qualityKey && servers.length > 0) {
             actualSize = actualSize || servers[0]?.file_size || "Direct";
 
-            let mediaType: "movie" | "series" = isSeriesItem ? "series" : "movie";
-
             const rawNameToParse = [cleanName, targetLink].filter(Boolean).join(" ");
             const aiMeta = await parseMediaWithAI(rawNameToParse);
-            if (isSeriesItem) {
+
+            const hasSeriesSignal = isSeriesItem || 
+                aiMeta.type === "series" || 
+                (aiMeta.season !== null && aiMeta.season !== undefined) || 
+                (aiMeta.episode !== null && aiMeta.episode !== undefined) || 
+                aiMeta.isBatch ||
+                /\b(?:season\s*\d{1,2}|s\d{1,2}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(rawNameToParse);
+
+            if (hasSeriesSignal) {
                 aiMeta.type = "series";
                 if (episodeNum !== undefined) {
                     aiMeta.episode = episodeNum;
+                    aiMeta.isBatch = false;
+                } else if (aiMeta.episode !== null && aiMeta.episode !== undefined) {
                     aiMeta.isBatch = false;
                 } else {
                     aiMeta.isBatch = true;
@@ -359,6 +368,10 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                     if (tmdb && tmdb.found && tmdb.title) {
                         aiMeta.title = tmdb.title;
                         if (tmdb.year) aiMeta.year = tmdb.year;
+                        if (tmdb.type === "series") {
+                            aiMeta.type = "series";
+                            aiMeta.isBatch = true;
+                        }
                     }
                 } catch {}
             }
@@ -464,7 +477,7 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
         }
 
         const isSeries = quality.isBatchPack || quality.isEpisodeList;
-        let mediaType: "movie" | "series" = isSeries ? "series" : "movie";
+        mediaType = isSeries ? "series" : "movie";
 
         // Check if this media is already active or queued
         try {
@@ -558,7 +571,13 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
 
         const rawNameToParse = [cleanName, targetYear].filter(Boolean).join(" ");
         const aiMeta = await parseMediaWithAI(rawNameToParse);
-        if (isSeries) {
+        const hasSeriesDetection = isSeries || 
+            aiMeta.type === "series" || 
+            (aiMeta.season !== null && aiMeta.season !== undefined) || 
+            aiMeta.isBatch ||
+            /\b(?:season\s*\d{1,2}|s\d{1,2}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(rawNameToParse);
+
+        if (hasSeriesDetection) {
             aiMeta.type = "series";
             aiMeta.isBatch = true;
         } else {
@@ -568,6 +587,10 @@ export async function toolDownloadMedia(args: Record<string, any>, sessionId: st
                 if (tmdb && tmdb.found && tmdb.title) {
                     aiMeta.title = tmdb.title;
                     if (tmdb.year) aiMeta.year = tmdb.year;
+                    if (tmdb.type === "series") {
+                        aiMeta.type = "series";
+                        aiMeta.isBatch = true;
+                    }
                 }
             } catch {}
         }

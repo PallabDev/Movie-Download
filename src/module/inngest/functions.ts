@@ -233,6 +233,7 @@ export const mediaRequestWorkflow = inngest.createFunction(
                     type: "series",
                     title: packLabel,
                     season: s,
+                    isBatchPack: true,
                     fileSize,
                     buttonText: bestOption.text,
                 });
@@ -328,6 +329,8 @@ export const mediaRequestWorkflow = inngest.createFunction(
                         btnMsgId: btnMsg.id,
                         type: "series",
                         title: epLabel,
+                        season: s,
+                        episode: e,
                         fileSize,
                         buttonText: bestOption.text,
                     });

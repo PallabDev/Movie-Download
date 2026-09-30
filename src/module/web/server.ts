@@ -1268,14 +1268,21 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
         }
 
         const incomingType = type || reqMediaType;
-        const isExplicitSeries = Boolean(
+        const hasSeriesSignal = Boolean(
             incomingType === "series" || 
             incomingType === "tv" || 
             incomingType === "show" || 
-            (incomingType !== "movie" && (isBatch || episodeNum !== undefined || (qualityKey && (qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_")))))
+            aiMeta.type === "series" ||
+            (aiMeta.season !== null && aiMeta.season !== undefined) ||
+            (aiMeta.episode !== null && aiMeta.episode !== undefined) ||
+            aiMeta.isBatch ||
+            isBatch ||
+            episodeNum !== undefined ||
+            (qualityKey && (qualityKey.startsWith("batch_") || qualityKey.startsWith("episode_"))) ||
+            /\b(?:season\s*\d{1,2}|s\d{1,2}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(rawNameToParse)
         );
 
-        if (incomingType === "movie" && episodeNum === undefined) {
+        if (incomingType === "movie" && !hasSeriesSignal) {
             aiMeta.type = "movie";
             aiMeta.isBatch = false;
             // Ensure movie has canonical TMDB title and year
@@ -1286,21 +1293,26 @@ app.post("/api/download-specific", requireMod, async (req: any, res) => {
                     if (tmdb.year) aiMeta.year = tmdb.year;
                 }
             } catch {}
-        } else if (isExplicitSeries) {
+        } else if (hasSeriesSignal) {
             aiMeta.type = "series";
             if (episodeNum !== undefined) {
                 aiMeta.episode = episodeNum;
+                aiMeta.isBatch = false;
+            } else if (aiMeta.episode !== null && aiMeta.episode !== undefined && !isBatch) {
                 aiMeta.isBatch = false;
             } else {
                 aiMeta.isBatch = true;
             }
         } else {
-            // Ensure movie has canonical TMDB title and year
+            // Check if TMDB or heuristics confirm series vs movie
             try {
                 const tmdb = await lookupMedia(aiMeta.title, aiMeta.year);
                 if (tmdb && tmdb.found && tmdb.title) {
                     aiMeta.title = tmdb.title;
                     if (tmdb.year) aiMeta.year = tmdb.year;
+                    if (tmdb.type === "series") {
+                        aiMeta.type = "series";
+                    }
                 }
             } catch {}
             if (aiMeta.type !== "series") {
@@ -1630,7 +1642,8 @@ app.post("/api/select", requireMod, async (req: any, res) => {
         // AI Metadata Extraction: clean title, real release year, type, season
         const rawNameToParse = [details.name, chosenYear].filter(Boolean).join(" ");
         const aiMeta = await parseMediaWithAI(rawNameToParse);
-        if (isSeries) {
+        const hasSeriesDetection = isSeries || aiMeta.type === "series" || (aiMeta.season !== null && aiMeta.season !== undefined) || aiMeta.isBatch;
+        if (hasSeriesDetection) {
             aiMeta.type = "series";
             aiMeta.isBatch = true;
         } else {
@@ -1641,6 +1654,10 @@ app.post("/api/select", requireMod, async (req: any, res) => {
                 if (tmdb && tmdb.found && tmdb.title) {
                     aiMeta.title = tmdb.title;
                     if (tmdb.year) aiMeta.year = tmdb.year;
+                    if (tmdb.type === "series") {
+                        aiMeta.type = "series";
+                        aiMeta.isBatch = true;
+                    }
                 }
             } catch {}
         }

@@ -536,9 +536,9 @@ class MoveManager:
             # Unlink source file
             source.unlink()
 
-            # Clean empty parent directories up to SOURCE_MOVIES_DIR
+            # Clean empty parent directories up to DOWNLOAD_ROOT
             p = source.parent.resolve()
-            while p != SOURCE_MOVIES_DIR and SOURCE_MOVIES_DIR in p.parents:
+            while p not in (DOWNLOAD_ROOT, SOURCE_MOVIES_DIR, SOURCE_SHOWS_DIR) and DOWNLOAD_ROOT in p.parents:
                 try:
                     p.rmdir()
                     p = p.parent.resolve()
@@ -671,9 +671,9 @@ class MoveManager:
 
             source.unlink()
 
-            # Clean empty directories up to SOURCE_SHOWS_DIR
+            # Clean empty directories up to DOWNLOAD_ROOT
             p = source.parent.resolve()
-            while p != SOURCE_SHOWS_DIR and SOURCE_SHOWS_DIR in p.parents:
+            while p not in (DOWNLOAD_ROOT, SOURCE_SHOWS_DIR, SOURCE_MOVIES_DIR) and DOWNLOAD_ROOT in p.parents:
                 try:
                     p.rmdir()
                     p = p.parent.resolve()
@@ -860,7 +860,7 @@ class MoveManager:
 
             # Clean parent directory if empty
             p = zip_source.parent.resolve()
-            while p != SOURCE_SHOWS_DIR and SOURCE_SHOWS_DIR in p.parents:
+            while p not in (DOWNLOAD_ROOT, SOURCE_SHOWS_DIR, SOURCE_MOVIES_DIR) and DOWNLOAD_ROOT in p.parents:
                 try:
                     p.rmdir()
                     p = p.parent.resolve()
@@ -897,26 +897,168 @@ move_manager = MoveManager()
 # ---------------------------------------------------------------------------
 # Pending Media Analyzer
 # ---------------------------------------------------------------------------
+def is_show_file_or_folder(path: Path, existing_shows: List[str]) -> Tuple[bool, str, int, Optional[int]]:
+    """
+    Determines whether a media file is an episode or series batch pack.
+    Returns: (is_show, show_name, season_num, episode_num)
+    """
+    name_str = f"{path.parent.name} {path.name}"
+    suffix = path.suffix.lower()
+
+    if suffix in ARCHIVE_EXTS:
+        folder_name = path.parent.name if path.parent not in (SOURCE_MOVIES_DIR, SOURCE_SHOWS_DIR, DOWNLOAD_ROOT) else path.stem
+        raw_title = f"{folder_name} {path.name}"
+        matched_show, _ = match_existing_show(folder_name, existing_shows)
+        season_num = extract_season_num(raw_title)
+        return True, matched_show, season_num, None
+
+    has_season_or_ep = bool(re.search(
+        r"\b(?:s\d{1,2}|season\s*\d{1,2}|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b",
+        name_str, re.I
+    ))
+
+    parent_norm = normalize_title(path.parent.name)
+    existing_match = False
+    matched_existing_name = ""
+    for s in existing_shows:
+        if normalize_title(s) == parent_norm:
+            existing_match = True
+            matched_existing_name = s
+            break
+
+    if not has_season_or_ep and not existing_match:
+        return False, "", 1, None
+
+    folder_name = path.parent.name if path.parent not in (SOURCE_MOVIES_DIR, SOURCE_SHOWS_DIR, DOWNLOAD_ROOT) else path.stem
+    matched_show, _ = match_existing_show(matched_existing_name or folder_name, existing_shows)
+    season_num = extract_season_num(name_str)
+
+    ep_num = None
+    m_ep = re.search(r"(?:e|ep|episode)[-._\s]*(\d{1,3})", path.name, re.I)
+    if m_ep:
+        ep_num = int(m_ep.group(1))
+
+    return True, matched_show, season_num, ep_num
+
+
 def analyze_pending_media() -> Dict[str, Any]:
     """
     Scans download/movies and download/shows to find completed items ready to move.
     Identifies type, clean title, year/season, matched Jellyfin folder, and sizes.
+    Smart classification automatically detects series episodes/archives even if placed in movies folder.
     """
     existing_shows = get_existing_library_shows()
     items: List[Dict[str, Any]] = []
     total_bytes = 0
+    seen_paths = set()
 
-    # 1. Analyze Movies (download/movies)
+    def _add_show_item(p: Path, rel_base: Path):
+        norm_path = str(p.resolve())
+        if norm_path in seen_paths:
+            return
+        seen_paths.add(norm_path)
+
+        st = p.stat()
+        nonlocal total_bytes
+        total_bytes += st.st_size
+        rel_path = str(p.relative_to(rel_base)) if rel_base in p.parents else p.name
+        suffix = p.suffix.lower()
+
+        if suffix in ARCHIVE_EXTS:
+            folder_name = p.parent.name if p.parent not in (SOURCE_SHOWS_DIR, SOURCE_MOVIES_DIR, DOWNLOAD_ROOT) else p.stem
+            raw_title = f"{folder_name} {p.name}"
+            matched_show, is_existing = match_existing_show(folder_name, existing_shows)
+            season_num = extract_season_num(raw_title)
+            season_folder = f"Season {season_num:02d}"
+            target_dest = DEST_SHOWS_DIR / matched_show / season_folder
+
+            items.append({
+                "id": f"zip_{uuid.uuid5(uuid.NAMESPACE_URL, str(p)).hex[:10]}",
+                "type": "batch_zip",
+                "title": matched_show,
+                "season": season_num,
+                "season_folder": season_folder,
+                "file_name": p.name,
+                "relative_path": rel_path,
+                "source_path": str(p),
+                "file_size": st.st_size,
+                "file_size_str": format_bytes_str(st.st_size),
+                "dest_folder": f"{matched_show}/{season_folder}",
+                "dest_path": str(target_dest),
+                "already_in_library": target_dest.exists(),
+                "matched_existing_show": is_existing,
+                "library_show_folder": matched_show
+            })
+        elif suffix in VIDEO_EXTS:
+            parent_show = p.parent.parent.name if p.parent.parent not in (SOURCE_SHOWS_DIR, SOURCE_MOVIES_DIR, DOWNLOAD_ROOT) else p.parent.name
+            if parent_show in (SOURCE_SHOWS_DIR.name, SOURCE_MOVIES_DIR.name):
+                parent_show = p.parent.name
+            matched_show, is_existing = match_existing_show(parent_show, existing_shows)
+            season_num = extract_season_num(str(p))
+            season_folder = f"Season {season_num:02d}"
+            target_dest = DEST_SHOWS_DIR / matched_show / season_folder / p.name
+
+            items.append({
+                "id": f"ep_{uuid.uuid5(uuid.NAMESPACE_URL, str(p)).hex[:10]}",
+                "type": "episode",
+                "title": matched_show,
+                "season": season_num,
+                "season_folder": season_folder,
+                "file_name": p.name,
+                "relative_path": rel_path,
+                "source_path": str(p),
+                "file_size": st.st_size,
+                "file_size_str": format_bytes_str(st.st_size),
+                "dest_folder": f"{matched_show}/{season_folder}",
+                "dest_path": str(target_dest),
+                "already_in_library": target_dest.exists(),
+                "matched_existing_show": is_existing,
+                "library_show_folder": matched_show
+            })
+
+    # 1. Analyze Shows folder (download/shows)
+    if SOURCE_SHOWS_DIR.exists():
+        for p in SOURCE_SHOWS_DIR.rglob("*"):
+            if not p.is_file() or p.is_symlink() or p.name.startswith(".") or ".staging" in p.parts:
+                continue
+            suffix = p.suffix.lower()
+            if suffix in ARCHIVE_EXTS or suffix in VIDEO_EXTS:
+                try:
+                    _add_show_item(p, SOURCE_SHOWS_DIR)
+                except Exception as e:
+                    print(f"[Analyzer] Error reading show file {p}: {e}")
+
+    # 2. Analyze Movies folder (download/movies)
     if SOURCE_MOVIES_DIR.exists():
         for p in SOURCE_MOVIES_DIR.rglob("*"):
-            if not p.is_file() or p.is_symlink() or p.name.startswith(".") or p.suffix.lower() not in VIDEO_EXTS:
+            if not p.is_file() or p.is_symlink() or p.name.startswith("."):
                 continue
+            suffix = p.suffix.lower()
+
             try:
+                # If archive found in movies folder, it's a series batch pack!
+                if suffix in ARCHIVE_EXTS:
+                    _add_show_item(p, SOURCE_MOVIES_DIR)
+                    continue
+
+                if suffix not in VIDEO_EXTS:
+                    continue
+
+                # Check if this video is actually a series episode misrouted to movies
+                is_show, show_name, season_num, _ = is_show_file_or_folder(p, existing_shows)
+                if is_show:
+                    _add_show_item(p, SOURCE_MOVIES_DIR)
+                    continue
+
+                # Regular Movie
+                norm_path = str(p.resolve())
+                if norm_path in seen_paths:
+                    continue
+                seen_paths.add(norm_path)
+
                 st = p.stat()
                 total_bytes += st.st_size
                 rel_path = str(p.relative_to(SOURCE_MOVIES_DIR))
-                
-                # Check parent folder name or file stem
                 folder_title = p.parent.name if p.parent != SOURCE_MOVIES_DIR else p.stem
                 clean_title = clean_title_display(folder_title)
                 year = extract_year(folder_title) or extract_year(p.name)
@@ -940,79 +1082,6 @@ def analyze_pending_media() -> Dict[str, Any]:
                 })
             except Exception as e:
                 print(f"[Analyzer] Error reading movie file {p}: {e}")
-
-    # 2. Analyze Shows (download/shows) - Batch ZIPs and Episodes
-    if SOURCE_SHOWS_DIR.exists():
-        # First scan for ZIP batch packs
-        for p in SOURCE_SHOWS_DIR.rglob("*"):
-            if not p.is_file() or p.is_symlink() or p.name.startswith("."):
-                continue
-            if ".staging" in p.parts:
-                continue
-
-            try:
-                st = p.stat()
-                suffix = p.suffix.lower()
-
-                if suffix in ARCHIVE_EXTS:
-                    # Batch ZIP
-                    total_bytes += st.st_size
-                    rel_path = str(p.relative_to(SOURCE_SHOWS_DIR))
-                    folder_name = p.parent.name if p.parent != SOURCE_SHOWS_DIR else p.stem
-                    raw_title = f"{folder_name} {p.name}"
-                    
-                    matched_show, is_existing = match_existing_show(folder_name, existing_shows)
-                    season_num = extract_season_num(raw_title)
-                    season_folder = f"Season {season_num:02d}"
-                    target_dest = DEST_SHOWS_DIR / matched_show / season_folder
-
-                    items.append({
-                        "id": f"zip_{uuid.uuid5(uuid.NAMESPACE_URL, str(p)).hex[:10]}",
-                        "type": "batch_zip",
-                        "title": matched_show,
-                        "season": season_num,
-                        "season_folder": season_folder,
-                        "file_name": p.name,
-                        "relative_path": rel_path,
-                        "source_path": str(p),
-                        "file_size": st.st_size,
-                        "file_size_str": format_bytes_str(st.st_size),
-                        "dest_folder": f"{matched_show}/{season_folder}",
-                        "dest_path": str(target_dest),
-                        "already_in_library": target_dest.exists(),
-                        "matched_existing_show": is_existing,
-                        "library_show_folder": matched_show
-                    })
-
-                elif suffix in VIDEO_EXTS:
-                    # Single Episode
-                    total_bytes += st.st_size
-                    rel_path = str(p.relative_to(SOURCE_SHOWS_DIR))
-                    parent_show = p.parent.parent.name if p.parent.parent != SOURCE_SHOWS_DIR else p.parent.name
-                    matched_show, is_existing = match_existing_show(parent_show, existing_shows)
-                    season_num = extract_season_num(str(p))
-                    season_folder = f"Season {season_num:02d}"
-                    target_dest = DEST_SHOWS_DIR / matched_show / season_folder / p.name
-
-                    items.append({
-                        "id": f"ep_{uuid.uuid5(uuid.NAMESPACE_URL, str(p)).hex[:10]}",
-                        "type": "episode",
-                        "title": matched_show,
-                        "season": season_num,
-                        "season_folder": season_folder,
-                        "file_name": p.name,
-                        "relative_path": rel_path,
-                        "source_path": str(p),
-                        "file_size": st.st_size,
-                        "file_size_str": format_bytes_str(st.st_size),
-                        "dest_folder": f"{matched_show}/{season_folder}",
-                        "dest_path": str(target_dest),
-                        "already_in_library": target_dest.exists(),
-                        "matched_existing_show": is_existing,
-                        "library_show_folder": matched_show
-                    })
-            except Exception as e:
-                print(f"[Analyzer] Error reading show file {p}: {e}")
 
     # Sort items by type (movies first, then series) and title
     items.sort(key=lambda x: (x["type"] != "movie", x["title"].lower()))
@@ -1583,9 +1652,30 @@ def home():
     )
 
 
+def find_empty_folders() -> List[Path]:
+    """Finds empty subdirectories under DOWNLOAD_ROOT (excluding root, movies, shows, and .staging)."""
+    empty = []
+    protected = {DOWNLOAD_ROOT, SOURCE_MOVIES_DIR, SOURCE_SHOWS_DIR, SOURCE_SHOWS_DIR / ".staging"}
+    if not DOWNLOAD_ROOT.exists():
+        return []
+    for root_dir, dirs, files in os.walk(DOWNLOAD_ROOT, topdown=False):
+        p = Path(root_dir).resolve()
+        if p in protected or any(part.startswith(".") for part in p.parts):
+            continue
+        if p != DOWNLOAD_ROOT and DOWNLOAD_ROOT in p.parents:
+            try:
+                # Check if directory has no files and no subdirectories
+                if not any(p.iterdir()):
+                    empty.append(p)
+            except OSError:
+                pass
+    return empty
+
+
 @app.get("/mv")
 def moves():
     analyzed = analyze_pending_media()
+    empty_folders = find_empty_folders()
     with db() as conn:
         history = conn.execute("""
             SELECT * FROM moves 
@@ -1597,12 +1687,32 @@ def moves():
     return render_template(
         "moves.html",
         files=[Path(i["source_path"]) for i in analyzed["items"]],
-        empty_folders=[],
+        empty_folders=empty_folders,
         history=history,
         source=SOURCE_DIR,
         destination=DESTINATION_DIR,
         move_status=move_manager.get_status()
     )
+
+
+@app.post("/mv/clean_empty")
+def clean_empty_folders_endpoint():
+    try:
+        empty = find_empty_folders()
+        cleaned_count = 0
+        for folder in empty:
+            try:
+                folder.rmdir()
+                cleaned_count += 1
+            except OSError:
+                pass
+        return jsonify({
+            "status": "ok",
+            "count": cleaned_count,
+            "message": f"Successfully removed {cleaned_count} empty folder(s)." if cleaned_count > 0 else "No empty folders found to clean."
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.post("/mv")
@@ -1611,7 +1721,14 @@ def start_moves_legacy():
     analyzed = analyze_pending_media()
     items_to_queue = []
     for item in analyzed["items"]:
-        if not selected or item["source_path"] in selected or item["file_name"] in selected:
+        src_path = Path(item["source_path"])
+        rel_to_src = str(src_path.relative_to(SOURCE_DIR)) if SOURCE_DIR in src_path.parents else ""
+        if (not selected or 
+            item["source_path"] in selected or 
+            item["file_name"] in selected or 
+            item.get("relative_path") in selected or 
+            rel_to_src in selected or
+            str(src_path) in selected):
             items_to_queue.append(item)
 
     if not items_to_queue:

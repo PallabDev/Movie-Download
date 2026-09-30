@@ -308,19 +308,29 @@ export function createDownloadWorker() {
                 throw new Error(`This download link is currently unavailable or has expired on the upstream server. Please try selecting another quality or release.`);
             }
 
+            // 1. Strict series detection: preserve series classification and check archives/keywords
+            const hasArchiveExt = Boolean(data.fileName && /\.(?:zip|rar|tar|gz)$/i.test(data.fileName)) ||
+                                  Boolean(data.downloadUrl && /\.(?:zip|rar|tar|gz)(?:\?|$)/i.test(data.downloadUrl));
+            const hasSeriesKeywords = /\b(?:season\s*\d{1,2}|s\d{1,2}(?:\s*e\d{1,2})?|ep(?:isode)?\s*\d{1,3}|full\s*batch|full\s*season|batch\s*pack|all\s*episodes|oad|ova|specials?)\b/i.test(
+                `${data.title || ""} ${data.cleanTitle || ""} ${data.fileName || ""}`
+            );
+            const isExplicitSeries = data.type === "series" ||
+                                     (data.type as string) === "tv" ||
+                                     (data.type as string) === "show" ||
+                                     Boolean(data.isBatchPack) ||
+                                     data.season !== undefined ||
+                                     data.episode !== undefined ||
+                                     hasArchiveExt ||
+                                     hasSeriesKeywords;
+
+            let isBatch = Boolean(data.isBatchPack || hasArchiveExt);
+            let mediaType: "movie" | "series" = isExplicitSeries ? "series" : "movie";
+
             // Determine target download file path using clean metadata
             let cleanTitle: string = data.cleanTitle || data.title || "Media";
             let cleanYear = data.year && /^\d{4}$/.test(String(data.year).trim()) ? String(data.year).trim() : undefined;
             let cleanSeason = data.season !== undefined && data.season !== null ? data.season : 1;
-            let cleanEpisode = data.episode || 1;
-            let isBatch = Boolean(data.isBatchPack);
-
-            // Strict type classification: Ensure movies are never misrouted to shows
-            const isExplicitMovie = data.type === "movie" || (!data.season && !data.episode && !data.isBatchPack && data.type !== "series" && data.type !== "tv" && data.type !== "show");
-            let mediaType: "movie" | "series" = isExplicitMovie ? "movie" : "series";
-            if (isExplicitMovie) {
-                isBatch = false;
-            }
+            let cleanEpisode = data.episode;
 
             // ALWAYS use the AI cleaner harness to resolve canonical TMDB/IMDb title and release year
             const rawNameToParse = [cleanTitle, cleanYear, data.fileName].filter(Boolean).join(" ");
@@ -328,17 +338,35 @@ export function createDownloadWorker() {
             if (aiMeta && aiMeta.title && aiMeta.title !== "Unknown Media") {
                 cleanTitle = aiMeta.title;
                 if (aiMeta.year) cleanYear = aiMeta.year;
-                if (!isExplicitMovie) {
+
+                if (isExplicitSeries) {
+                    // NEVER allow a series to be downgraded to a movie
+                    mediaType = "series";
                     if (aiMeta.season !== undefined && aiMeta.season !== null && data.season === undefined) cleanSeason = aiMeta.season;
                     if (aiMeta.episode !== undefined && aiMeta.episode !== null && data.episode === undefined) cleanEpisode = aiMeta.episode;
                     if (aiMeta.isBatch) isBatch = true;
-                    if (aiMeta.type === "series" || aiMeta.type === "movie") mediaType = aiMeta.type;
+                } else {
+                    // Check if AI cleaner detected it as a series/show
+                    if (aiMeta.type === "series" || (aiMeta.season !== null && aiMeta.season !== undefined) || (aiMeta.episode !== null && aiMeta.episode !== undefined) || aiMeta.isBatch) {
+                        mediaType = "series";
+                        if (aiMeta.season !== undefined && aiMeta.season !== null) cleanSeason = aiMeta.season;
+                        if (aiMeta.episode !== undefined && aiMeta.episode !== null) cleanEpisode = aiMeta.episode;
+                        if (aiMeta.isBatch) isBatch = true;
+                    } else {
+                        mediaType = "movie";
+                    }
                 }
+            }
+
+            // Final safeguard: Archive files (.zip, .rar, etc.) are always series batch packs
+            if (hasArchiveExt) {
+                mediaType = "series";
+                isBatch = true;
             }
 
             let targetPath: string;
             if (mediaType === "series") {
-                if (isBatch) {
+                if (isBatch || cleanEpisode === undefined || cleanEpisode === null) {
                     targetPath = getBatchPackPath(cleanTitle, cleanSeason, data.fileName);
                 } else {
                     targetPath = getSeriesPath(cleanTitle, cleanSeason, cleanEpisode, data.fileName);
